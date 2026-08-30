@@ -28,6 +28,10 @@ suspend fun main() {
     Registry.buttons = ButtonService(Registry.messages)
     Registry.forget = ForgetService(Registry.requests, Registry.messages)
 
+    val housekeeping = Housekeeping(Registry.requests, Registry.settings, Registry.rates, Registry.messages)
+    startScheduler(ds, housekeeping)
+    housekeeping.refreshRates()   // don't wait a day for the first rate
+
     val bot = TelegramBot(cfg.botToken) {
         // Without this the parser never breaks on a space: "/sell 1000 EUR" is taken as
         // the whole command name, matches nothing in the registry, and the update is
