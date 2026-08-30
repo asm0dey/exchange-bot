@@ -83,7 +83,8 @@ suspend fun settings(update: ProcessedUpdate, bot: TelegramBot) {
     val s = Registry.settings.get(chat.id)
     message {
         "This chat swaps ${s.pair}. Amounts match within ${s.tolerancePct}%, " +
-            "and a request waits ${s.tifDays} days before it lapses."
+            "and a request waits ${s.tifDays} days before it lapses. " +
+            "Admins can change this with /pair, /tolerance and /tif."
     }.send(chat.id, bot)
 }
 
@@ -100,6 +101,9 @@ suspend fun help(update: ProcessedUpdate, bot: TelegramBot) {
         /done a1 @someone — you two swapped
         /reopen — undo your last /done
         /settings — this chat's currencies and limits
+        /pair EUR RUB — admins: change what this chat swaps
+        /tolerance 20 — admins: how close amounts must be to match
+        /tif 7 — admins: how many days a request waits before it lapses
         /forget — erase your data in this chat (send /forget all to me privately for every chat)
         """.trimIndent()
     }.send(chat.id, bot)

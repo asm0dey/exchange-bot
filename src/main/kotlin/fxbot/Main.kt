@@ -21,14 +21,19 @@ suspend fun main(): Unit = coroutineScope {
     // registered first. Every call site passes its Database explicitly for the same reason.
     val db = connectExposed(ds)
 
+    // Shared across every RateClient consumer — it's a stateless wrapper over one GET,
+    // so there's no reason to pay for a second connection pool.
+    val rateClient = RateClient(HttpClient(CIO))
+
     Registry.requests = RequestRepository(ds, crypto, db = db)
     Registry.settings = ChatSettingsRepository(ds, crypto, db = db)
-    Registry.rates = RateService(RateClient(HttpClient(CIO)), RateRepository(ds, db = db))
+    Registry.rates = RateService(rateClient, RateRepository(ds, db = db))
     Registry.service = RequestService(Registry.requests, Registry.settings, Registry.rates)
     Registry.lifecycle = LifecycleService(Registry.requests)
     Registry.messages = MessageLogRepository(ds, crypto, db = db)
     Registry.buttons = ButtonService(Registry.messages)
     Registry.forget = ForgetService(Registry.requests, Registry.messages)
+    Registry.admin = AdminService(Registry.settings, rateClient)
 
     val housekeeping = Housekeeping(Registry.requests, Registry.settings, Registry.rates, Registry.messages)
     startScheduler(ds, housekeeping)
@@ -60,6 +65,9 @@ suspend fun main(): Unit = coroutineScope {
         botCommand("done", "Mark a swap done")
         botCommand("reopen", "Undo your last done")
         botCommand("settings", "This chat's currencies and limits")
+        botCommand("pair", "Admins: change what this chat swaps")
+        botCommand("tolerance", "Admins: how close amounts must be to match")
+        botCommand("tif", "Admins: how many days a request waits")
         botCommand("forget", "Erase your data — add 'all' in a private chat for every group")
         botCommand("help", "What I can do")
         // Later tasks add their own entries as their handlers land. The menu must never
