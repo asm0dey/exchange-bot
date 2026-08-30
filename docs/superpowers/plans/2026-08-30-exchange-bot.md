@@ -1141,6 +1141,12 @@ class RequestRepositoryTest : StringSpec({
         moved[0].chatId shouldBe -1001L
     }
 
+    "byRefToken carries the chat id, because the payload holds it" {
+        val (r, _) = repo("chatid")
+        val a = r.create(-100L, 7L, "alice", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7)
+        r.byRefToken(a.refToken)!!.chatId shouldBe -100L
+    }
+
     "byRefToken returns null for an unknown token" {
         val (r, _) = repo("unknown")
         r.byRefToken("nope".padEnd(22, 'x')).shouldBeNull()
@@ -1210,6 +1216,7 @@ import javax.sql.DataSource
 
 @Serializable
 private data class Payload(
+    val chatId: Long,          // stored so a MAC-keyset rotation can re-derive chat_ref
     val userId: Long,
     val username: String?,
     val side: String,
@@ -1248,7 +1255,7 @@ class RequestRepository(
             val now = clock.instant()
             val expires = now.plusSeconds(tifDays.toLong() * 86_400)
             val payload = Payload(
-                userId, username, side.name, statedCurrency,
+                chatId, userId, username, side.name, statedCurrency,
                 statedAmount.toPlainString(), pair.base, pair.quote,
             )
             c.prepareStatement(
@@ -1295,16 +1302,14 @@ class RequestRepository(
     }
 
     fun resting(chatId: Long): List<Request> = query(
-        "SELECT * FROM request WHERE chat_ref = ? AND state = 'OPEN' ORDER BY expires_at",
-        chatId,
+        "SELECT * FROM request WHERE chat_ref = ? AND state = 'OPEN' ORDER BY expires_at"
     ) { st -> st.setString(1, crypto.ref(chatId.toString())) }
 
     fun byRefToken(token: String): Request? =
         queryOne("SELECT * FROM request WHERE ref_token = ?") { st -> st.setString(1, token) }
 
     fun byShortId(chatId: Long, shortId: String): Request? = queryOne(
-        "SELECT * FROM request WHERE chat_ref = ? AND short_id = ? AND state = 'OPEN'",
-        chatId,
+        "SELECT * FROM request WHERE chat_ref = ? AND short_id = ? AND state = 'OPEN'"
     ) { st ->
         st.setString(1, crypto.ref(chatId.toString()))
         st.setString(2, shortId)
@@ -1315,8 +1320,7 @@ class RequestRepository(
         SELECT * FROM request
         WHERE chat_ref = ? AND user_ref = ? AND state <> 'OPEN'
         ORDER BY row_id DESC LIMIT 1
-        """.trimIndent(),
-        chatId,
+        """.trimIndent()
     ) { st ->
         st.setString(1, crypto.ref(chatId.toString()))
         st.setString(2, crypto.ref(userId.toString()))
@@ -1360,24 +1364,49 @@ class RequestRepository(
     }
 
     /**
-     * A supergroup migration changes the chat id. Payload AAD is the ref token,
-     * not the chat, so nothing needs re-encrypting here (ADR 0002).
+     * A supergroup migration changes the chat id, which lives both in the ref
+     * column and inside the sealed payload, so each row is resealed. The AAD is
+     * the ref token and does not change, so the tokens stay valid throughout.
      */
-    fun rewriteChatRef(oldChatId: Long, newChatId: Long): Int = ds.connection.use { c ->
-        c.prepareStatement("UPDATE request SET chat_ref = ? WHERE chat_ref = ?").use { st ->
-            st.setString(1, crypto.ref(newChatId.toString()))
-            st.setString(2, crypto.ref(oldChatId.toString()))
-            st.executeUpdate()
+    fun rewriteChatRef(oldChatId: Long, newChatId: Long): Int {
+        val oldRef = crypto.ref(oldChatId.toString())
+        val newRef = crypto.ref(newChatId.toString())
+        val rows = query("SELECT * FROM request WHERE chat_ref = ?") { st -> st.setString(1, oldRef) }
+        ds.connection.use { c ->
+            c.autoCommit = false
+            try {
+                for (r in rows) {
+                    val resealed = crypto.seal(
+                        json.encodeToString(
+                            Payload(
+                                newChatId, r.userId, r.username, r.side.name, r.statedCurrency,
+                                r.statedAmount.toPlainString(), r.pair.base, r.pair.quote,
+                            )
+                        ),
+                        r.refToken,
+                    )
+                    c.prepareStatement("UPDATE request SET chat_ref = ?, payload = ? WHERE ref_token = ?").use { st ->
+                        st.setString(1, newRef)
+                        st.setBytes(2, resealed)
+                        st.setString(3, r.refToken)
+                        st.executeUpdate()
+                    }
+                }
+                c.commit()
+            } catch (e: Exception) {
+                c.rollback(); throw e
+            }
         }
+        return rows.size
     }
 
-    private fun query(sql: String, chatId: Long, bind: (java.sql.PreparedStatement) -> Unit): List<Request> =
+    private fun query(sql: String, bind: (java.sql.PreparedStatement) -> Unit): List<Request> =
         ds.connection.use { c ->
             c.prepareStatement(sql).use { st ->
                 bind(st)
                 st.executeQuery().use { rs ->
                     val out = mutableListOf<Request>()
-                    while (rs.next()) out += hydrate(rs, chatId)
+                    while (rs.next()) out += hydrate(rs)
                     out
                 }
             }
@@ -1385,27 +1414,22 @@ class RequestRepository(
 
     private fun queryOne(
         sql: String,
-        chatId: Long? = null,
         bind: (java.sql.PreparedStatement) -> Unit,
     ): Request? = ds.connection.use { c ->
         c.prepareStatement(sql).use { st ->
             bind(st)
-            st.executeQuery().use { rs -> if (rs.next()) hydrate(rs, chatId) else null }
+            st.executeQuery().use { rs -> if (rs.next()) hydrate(rs) else null }
         }
     }
 
-    /**
-     * The chat id is not stored — only its ref — so callers that looked a row up
-     * by ref pass the id they already had. Callers that did not have one get 0,
-     * which the matcher never compares because it filters on the same list.
-     */
-    private fun hydrate(rs: ResultSet, chatId: Long?): Request {
+    /** Every field the domain needs comes out of the sealed payload. */
+    private fun hydrate(rs: ResultSet): Request {
         val refToken = rs.getString("ref_token")
         val p = json.decodeFromString<Payload>(crypto.open(rs.getBytes("payload"), refToken))
         return Request(
             rowId = rs.getLong("row_id"),
             refToken = refToken,
-            chatId = chatId ?: 0L,
+            chatId = p.chatId,
             userId = p.userId,
             username = p.username,
             shortId = rs.getString("short_id"),
@@ -3753,9 +3777,9 @@ import eu.vendeli.tgbot.types.component.ProcessedUpdate
 import eu.vendeli.tgbot.types.component.UpdateType
 
 /**
- * A group upgraded to a supergroup keeps nothing of its old chat id. Requests
- * seal their payload against the ref token, not the chat, so only the settings
- * row needs re-encrypting (ADR 0002).
+ * A group upgraded to a supergroup keeps nothing of its old chat id. The id lives
+ * in the ref columns and inside each sealed payload, so the repositories reseal
+ * their rows; the AAD is the ref token and never changes (ADR 0002).
  */
 class ChatMigrationService(
     private val requests: RequestRepository,
@@ -3947,7 +3971,7 @@ Checked against the spec; three things worth flagging to whoever executes this.
 **Two deviations from the spec, both deliberate:**
 
 1. **`sent_message` gained an encrypted payload (Task 11, `V2`).** The spec's schema stores only `chat_ref`, but editing or deleting a message needs the real chat id and a keyed hash cannot be reversed. The chat id is sealed like every other identity rather than stored in the clear.
-2. **`RequestRepository.byRefToken` returns `chatId = 0`.** The chat id is not stored outside the payload, and rows found by token are only used for authorization and state changes, which key on the token and the user. Anything needing a real chat id goes through `resting(chatId)` or the message log.
+2. **The sealed request payload carries `chatId` (Task 5).** The spec's payload list omits it, but without it a rotation of the MAC keyset would orphan every `chat_ref` with no way to re-derive it — which contradicts the rotation story ADR 0002 tells. Storing it also removes the awkward case where a row fetched by token had no chat id. The cost is that a supergroup migration reseals that chat's rows instead of only updating a column.
 
 **Two places where the framework's exact spelling was not verified**, each with the check to run rather than a guess to make: the `migrate_to_chat_id` property name (Task 15 Step 3 gives the `javap` command) and the `ProcessedUpdate` import set (Task 9 Step 6 points at the neighbour file using the same version). Everything else — `answerCallbackQuery(id).options { text; showAlert }`, `getChatMember(userId)`, `editMessageText(id) { }`, `deleteMessages(List<Long>)`, `sendReturning`, and the 64-byte `callback_data` limit — was read off the 9.6.0 jar and the Bot API docs directly.
 

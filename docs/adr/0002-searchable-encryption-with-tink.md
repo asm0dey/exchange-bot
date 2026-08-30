@@ -30,6 +30,14 @@ right, and Tink costs one dependency.
 
 ## Consequences
 
+Rotating the MAC keyset is not free the way rotating the AEAD keyset is. Tink
+tags carry a key-identity prefix, so new refs match nothing previously stored,
+and lookups are string equality rather than `verifyMac` — a rotation would
+silently return no rows rather than fail. It is recoverable only because every
+sealed payload carries the identifiers its refs were derived from, which is why
+`chat_id` is stored inside the payload rather than left implicit. Rotation means
+re-deriving every ref in a one-off pass, not flipping a key.
+
 The keyed hashes are deterministic, so anyone holding both the database file
 and the MAC keyset can count per-chat and per-user activity and confirm a
 guessed identifier. That is the price of being able to query at all, and it is

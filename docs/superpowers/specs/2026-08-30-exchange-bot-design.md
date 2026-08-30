@@ -402,8 +402,10 @@ sent_message(chat_ref, message_id, sent_at, PK(chat_ref, message_id))
 sent_message_ref(chat_ref, message_id, ref_token, user_ref)
 ```
 
-`payload` holds `{user_id, username, side, stated_currency, stated_amount,
-base, quote}` as JSON.
+`payload` holds `{chat_id, user_id, username, side, stated_currency,
+stated_amount, base, quote}` as JSON. The chat id is sealed rather than left out
+so that rotating the MAC keyset can re-derive every `chat_ref`; without it the
+index would be unrecoverable and the rotation story below would be false.
 
 **Associated data is `ref_token`.** It is unique, never recycled, and
 independent of the chat, so a ciphertext cannot be relocated to another row and
@@ -496,9 +498,10 @@ without handling this, every open request and the chat's settings become
 unreachable at the least predictable moment.
 
 The handler rewrites `chat_ref` on that chat's `request`, `sent_message` and
-`sent_message_ref` rows in one transaction. Because request AAD is `ref_token`,
-no payload re-encryption is needed — only the single `chat_settings` row, whose
-AAD is `chat_ref`, is decrypted and re-encrypted.
+`sent_message_ref` rows in one transaction, resealing each payload that carries
+the chat id. The AAD is the ref token and does not change, so every token stays
+valid across the migration; only `chat_settings`, whose AAD *is* `chat_ref`, is
+resealed under new associated data.
 
 ## Concurrency
 
