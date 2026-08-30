@@ -6,7 +6,7 @@
 A Telegram bot that connects people in the same chat who want to exchange
 currency with each other. Someone posts what they are giving away; the bot
 replies with compatible open requests from that same chat, naming the
-counterpartyies and offering a button to close the deal. Nobody is matched across
+counterparties and offering a button to close the deal. Nobody is matched across
 chats.
 
 ## Scope
@@ -15,9 +15,10 @@ The bot is a noticeboard with arithmetic, not a marketplace. It does not hold
 funds, quote prices, take a fee, or record settlement. It suggests who to talk
 to; the two people agree the actual rate between themselves.
 
-Groups and supergroups only. Channels are rejected with a single message —
-posts there come from a channel identity rather than a person, so there is no
-user to match, mention, or authorize. Private chats serve `/forget all` and
+Groups and supergroups only. A channel post arrives as a different update type
+and reaches no handler at all, so the bot simply ignores it — posts there come
+from a channel identity rather than a person, so there is no user to match,
+mention, or authorize. Private chats serve `/forget all` and
 otherwise reply once with "add me to a group".
 
 Bot language is English only.
@@ -37,7 +38,7 @@ and the currency together, never on either alone:
 | `/sell 95000 RUB` | EUR   | RUB   | Bid    |
 | `/buy 1000 EUR`   | EUR   | RUB   | Bid    |
 
-Four ways to say two things. Two requests are counterpartyies when their sides
+Four ways to say two things. Two requests are counterparties when their sides
 differ — so `/sell` can match `/sell`, `/buy` can match `/buy`, and the verb on
 its own tells you nothing.
 
@@ -141,7 +142,7 @@ Worked example, at a rate of 99.98 and a 20% band:
 ```
 
 The last case is the one worth remembering: identical verbs can be
-counterpartyies, and opposite verbs can be the same side.
+counterparties, and opposite verbs can be the same side.
 
 There is no partial fill and no remainder. A request matches whole or not at
 all.
@@ -165,7 +166,7 @@ network, no Telegram — and carries the bulk of the test suite. SQL does no
 comparison beyond fetching the chat's open set; at chat scale, filtering in
 Kotlin is both faster to write and far easier to test than a clever query.
 
-Consequence accepted deliberately: the same counterpartyies are re-listed each
+Consequence accepted deliberately: the same counterparties are re-listed each
 time someone asks. In a pool the size of one chat that is useful repetition,
 not spam.
 
@@ -204,7 +205,7 @@ configure a pair the bot will never be able to price.
 /cancel <id>             own request -> CANCELLED
 /done <id> @who          both requests -> DONE, announced publicly
 /reopen                  revive your most recently closed request, restart its clock
-/status [mine]           open requests in this chat
+/status                  open requests in this chat
 /settings                read-only, anyone
 /forget                  hard-delete all your data in this chat
 /forget all              private chat only: hard-delete across every chat
@@ -255,7 +256,7 @@ listing up to 5 compatible requests closest first, each with a Done button:
 
 ```
 @bob: /sell 1000 EUR
-  bot: 2 counterpartyies:
+  bot: 2 counterparties:
        • @alice — buy 900 EUR
        • @carol — sell 95,000 RUB (≈950.19 EUR)
        No fit? You're on the waitlist.
@@ -269,7 +270,7 @@ display-only, refreshed whenever the bot sees a message from that user.
 
 Buttons appear on the request reply only — not on `/status` rows, not on
 `/settings`. The button is where the decision is, because the bot has just
-listed who the counterpartyies are. A Done confirmation additionally carries a
+listed who the counterparties are. A Done confirmation additionally carries a
 `↩️ Reopen` button.
 
 Number formatting: `BigDecimal` with trailing zeros stripped and thousands
@@ -277,7 +278,7 @@ grouped (`1,000 EUR`, `95,000 RUB`); notionals in parentheses at 2dp
 (`≈950.19 EUR`); dates as `30 Aug`.
 
 `/status` lists the 20 most recent open requests, closest-to-expiry first, with
-a `+N more — use /status mine` footer. Telegram caps a message at 4096
+a `+N more` footer. Telegram caps a message at 4096
 characters and nothing caps requests per user, so an uncapped listing would
 eventually fail to send outright.
 
@@ -318,11 +319,9 @@ most recent such messages, so one `/cancel` cannot turn into a rate-limit
 stall.
 
 **On press.** A press referencing a request that is no longer `OPEN` is
-rejected with an `answerCallbackQuery` alert ("@alice's request is no longer
-open") and the message is edited in place to re-run matching and show the
-current list. The button that failed is replaced by ones that work, so stale
-messages self-heal instead of accumulating. This also covers anything the
-proactive pass missed.
+rejected with an `answerCallbackQuery` alert visible only to the presser, and
+nothing changes. This is the backstop for anything the proactive pass missed —
+the message is not re-rendered, so a stale list can outlive its buttons.
 
 ## Permissions
 
@@ -513,7 +512,7 @@ One process, but Telegram updates are handled concurrently. Request creation,
 `/done`, and every callback run inside a single transaction whose state
 transition is guarded by `WHERE state = 'OPEN'`. A double `/done` — or the same
 button pressed by both counterparties at once — therefore closes once, and the
-loser reports "already fulfilled".
+loser reports "already closed".
 
 ## Scheduled Work
 

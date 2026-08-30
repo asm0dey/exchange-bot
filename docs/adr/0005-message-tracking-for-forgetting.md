@@ -23,8 +23,10 @@ was wrong, and the claim mattered, because "everyone else's names survive" is no
 a reason this design can offer. The reason to edit rather than delete is the
 48-hour window, and that reason stands on its own.
 
-The same record is what lets stale buttons be stripped when a request closes,
-rather than waiting for someone to press one and be told no.
+The same record is what lets stale buttons be stripped when a request closes —
+on both the command and the button path — rather than waiting for someone to
+press one and be told no. A press on a button the sweep missed is still refused
+safely; it just does not redraw the message it was attached to.
 
 Forgetting remains partial by nature, and the spec says so plainly: it removes
 what the bot stores and cleans up what the bot can still reach. It cannot
