@@ -30,12 +30,24 @@ class RateService(
      * A failed fetch leaves whatever is cached exactly where it is — `client.fetch`
      * returns null on any feed error and this loop simply moves on, so a bad refresh
      * never writes, and therefore never overwrites or erases, a cached rate.
+     *
+     * The set of bases to fetch still comes from configured pairs (that is what bounds
+     * the network calls), but once a response comes back, every quote it carries is
+     * persisted — not just the ones some chat has configured. open.er-api.com returns
+     * ~160 rates per base; discarding the unconfigured ones meant a chat created after
+     * startup had no rate for its pair until the next daily refresh, even though the
+     * rate was already sitting in a response we'd fetched and thrown away.
+     *
+     * `clock.instant()` is read once per base, not per row, so every rate stored from
+     * one response shares one `fetchedAt` — the staleness check in [status] reads that
+     * column, and a smeared timestamp across a single fetch would be untidy.
      */
     suspend fun refresh(pairs: Set<CurrencyPair>) {
         for (base in pairs.map { it.base }.toSet()) {
             val rates = client.fetch(base) ?: continue
-            for (pair in pairs.filter { it.base == base }) {
-                rates[pair.quote]?.let { repo.put(pair.base, pair.quote, it, clock.instant()) }
+            val fetchedAt = clock.instant()
+            for ((quote, rate) in rates) {
+                repo.put(base, quote, rate, fetchedAt)
             }
         }
     }

@@ -50,6 +50,11 @@ class RateServiceTest : StringSpec({
         status.shouldBeInstanceOf<RateStatus.Fresh>()
         status.rate.shouldNotBeNull().shouldBeEqualIgnoringScale(BigDecimal("99.98"))
     }
+    "a refresh stores every rate the feed returns, not just configured pairs" {
+        val (svc, repo) = service("full-response", okClient())
+        svc.refresh(setOf(EURRUB))
+        repo.get("EUR", "USD")!!.rate.shouldBeEqualIgnoringScale(BigDecimal("1.08"))
+    }
     "a dead feed with nothing cached is unavailable" {
         val (svc, _) = service("cold", deadClient())
         svc.refresh(setOf(EURRUB))
