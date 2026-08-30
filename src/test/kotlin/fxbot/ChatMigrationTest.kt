@@ -11,16 +11,17 @@ class ChatMigrationTest : StringSpec({
     "everything the chat owned follows it to the new id" {
         val ds = memDataSource("chatmigrate")
         migrate(ds)
+        val db = connectExposed(ds)
         val crypto = testCrypto()
-        val requests = RequestRepository(ds, crypto)
-        val settings = ChatSettingsRepository(ds, crypto)
-        val log = MessageLogRepository(ds, crypto)
+        val requests = RequestRepository(ds, crypto, db = db)
+        val settings = ChatSettingsRepository(ds, crypto, db = db)
+        val log = MessageLogRepository(ds, crypto, db = db)
 
         requests.create(-100L, 1L, "alice", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7)
         settings.save(ChatSettings(-100L, CurrencyPair("USD", "GBP"), 5, 30))
         log.record(-100L, 10L, listOf("tokA"), listOf(1L))
 
-        ChatMigrationService(requests, settings, log).migrate(-100L, -1001L) shouldBe 1
+        ChatMigrationService(requests, settings, log, db).migrate(-100L, -1001L) shouldBe 1
 
         val moved = requests.resting(-1001L)
         moved shouldHaveSize 1

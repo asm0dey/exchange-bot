@@ -34,7 +34,7 @@ suspend fun main(): Unit = coroutineScope {
     Registry.buttons = ButtonService(Registry.messages)
     Registry.forget = ForgetService(Registry.requests, Registry.messages)
     Registry.admin = AdminService(Registry.settings, rateClient)
-    Registry.migration = ChatMigrationService(Registry.requests, Registry.settings, Registry.messages)
+    Registry.migration = ChatMigrationService(Registry.requests, Registry.settings, Registry.messages, db)
 
     val housekeeping = Housekeeping(Registry.requests, Registry.settings, Registry.rates, Registry.messages)
     startScheduler(ds, housekeeping)
