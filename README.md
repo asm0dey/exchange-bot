@@ -33,6 +33,18 @@ every group it shares with you, not just the current one.
 
 Admins: `/pair EUR RUB`, `/tolerance 20`, `/tif 7`.
 
+## Runtime
+
+Targets Java 25. The production image (built by `Dockerfile`) runs on
+[`bellsoft/hardened-liberica-runtime-container`](https://hub.docker.com/r/bellsoft/hardened-liberica-runtime-container)'s
+`jre-25-cds-distroless-glibc` — a JRE-only, shell-less, hardened base image, with
+a class-data-sharing archive included for faster startup. It runs as a fixed
+non-root uid, `10001`, baked into the image itself (not created by this
+project's `Dockerfile`). Because the runtime has no shell, the container's
+`ENTRYPOINT` invokes `java` directly against an explicit classpath rather than
+the shell launcher script `./gradlew installDist` normally produces; see the
+comments in `Dockerfile` and `docs/runtime-notes.md` for what that forced.
+
 ## Data
 
 The H2 database lives in the `exchange-bot-data` Docker named volume, mounted

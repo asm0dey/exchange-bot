@@ -29,7 +29,17 @@ dependencies {
     testImplementation(libs.ktor.client.mock)
 }
 
-kotlin { jvmToolchain(21) }
+kotlin {
+    // Build on the same JDK vendor the container runs: the production runtime is
+    // BellSoft Liberica (hardened distroless), so compiling on a different vendor's
+    // 25 would mean the bytecode is produced by a JDK nobody actually ships. Without
+    // this pin, the foojay resolver hands back whatever vendor its discovery API
+    // lists first for "25" (in practice, often Azul Zulu).
+    jvmToolchain {
+        languageVersion.set(JavaLanguageVersion.of(25))
+        vendor.set(JvmVendorSpec.BELLSOFT)
+    }
+}
 
 application {
     mainClass.set("fxbot.MainKt")
