@@ -86,7 +86,6 @@ suspend fun help(update: ProcessedUpdate, bot: TelegramBot) {
         /cancel a1 — withdraw your request
         /done a1 @someone — you two swapped
         /reopen — undo your last /done
-        /forget — erase what I store about you here
         /settings — this chat's currencies and limits
         """.trimIndent()
     }.send(chat.id, bot)

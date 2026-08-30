@@ -87,15 +87,82 @@ class LifecycleServiceTest : StringSpec({
         repo.byRefToken(a.refToken)!!.state shouldBe RequestState.DONE
     }
 
+    // --- Fix round 1: holding one valid token must not authorise closing an unrelated
+    // second request. The forged-token test above only proves a NON-participant (userId
+    // 99, owning neither token) is refused; these prove a genuine participant who owns
+    // ONE of the two tokens cannot pair it with an unrelated second token to close it.
+
+    "a presser who owns one token cannot pair it with an uninvolved third party's token in the same chat" {
+        val (svc, repo) = lifecycle("forgedsamechat")
+        val mine = repo.put(-100L, 2L, "alice", Side.BID)
+        val third = repo.put(-100L, 3L, "carol", Side.BID) // same side as `mine` — not a plausible pair
+        svc.done(2L, mine.refToken, third.refToken).shouldBeInstanceOf<ActionResult.Denied>()
+        repo.byRefToken(mine.refToken)!!.state shouldBe RequestState.OPEN
+        repo.byRefToken(third.refToken)!!.state shouldBe RequestState.OPEN
+    }
+    "the same forged pairing across two different chats is refused" {
+        val (svc, repo) = lifecycle("forgedcrosschat")
+        val mine = repo.put(-100L, 2L, "alice", Side.BID)
+        val third = repo.put(-200L, 4L, "dave", Side.OFFER) // opposite side, but an entirely different chat
+        svc.done(2L, mine.refToken, third.refToken).shouldBeInstanceOf<ActionResult.Denied>()
+        repo.byRefToken(mine.refToken)!!.state shouldBe RequestState.OPEN
+        repo.byRefToken(third.refToken)!!.state shouldBe RequestState.OPEN
+    }
+    "two tokens on the same side are refused" {
+        val (svc, repo) = lifecycle("samesidepair")
+        val mine = repo.put(-100L, 1L, "bob", Side.OFFER)
+        val other = repo.put(-100L, 5L, "erin", Side.OFFER)
+        svc.done(1L, mine.refToken, other.refToken).shouldBeInstanceOf<ActionResult.Denied>()
+        repo.byRefToken(mine.refToken)!!.state shouldBe RequestState.OPEN
+        repo.byRefToken(other.refToken)!!.state shouldBe RequestState.OPEN
+    }
+    "a legitimate pair pressed by the second counterparty still closes both, with the message phrased for the presser" {
+        val (svc, repo) = lifecycle("secondpresser")
+        val a = repo.put(-100L, 1L, "bob", Side.OFFER)
+        val b = repo.put(-100L, 2L, "alice", Side.BID)
+        val result = svc.done(2L, a.refToken, b.refToken)
+        result.shouldBeInstanceOf<ActionResult.Ok>()
+        result.text shouldBe "Marked done. If that's wrong, /reopen."
+        repo.byRefToken(a.refToken)!!.state shouldBe RequestState.DONE
+        repo.byRefToken(b.refToken)!!.state shouldBe RequestState.DONE
+    }
+    "the outcome message reflects the presser's own request even when it sits in the button's second slot" {
+        val (svc, repo) = lifecycle("reversedpeergone")
+        val a = repo.put(-100L, 1L, "bob", Side.OFFER)
+        val b = repo.put(-100L, 2L, "alice", Side.BID)
+        svc.cancel(-100L, 1L, a.shortId) // bob's request — payload slot "a" — closes first
+        val result = svc.done(2L, a.refToken, b.refToken) // alice presses; her token sits in slot "b"
+        result.shouldBeInstanceOf<ActionResult.Ok>()
+        result.text shouldContain "only your own"
+        repo.byRefToken(b.refToken)!!.state shouldBe RequestState.DONE
+    }
+
     "reopen revives your most recent closure with a fresh clock" {
         val (svc, repo) = lifecycle("reopen")
         val a = repo.put(-100L, 1L, "bob", Side.OFFER)
         svc.cancel(-100L, 1L, a.shortId)
-        svc.reopen(-100L, 1L).shouldBeInstanceOf<ActionResult.Ok>()
+        svc.reopen(-100L, 1L, 7).shouldBeInstanceOf<ActionResult.Ok>()
         repo.byRefToken(a.refToken)!!.state shouldBe RequestState.OPEN
     }
     "reopen with nothing closed says so" {
         val (svc, _) = lifecycle("reopennothing")
-        svc.reopen(-100L, 1L).shouldBeInstanceOf<ActionResult.Gone>()
+        svc.reopen(-100L, 1L, 7).shouldBeInstanceOf<ActionResult.Gone>()
+    }
+    "reopen by token revives the request named, not merely the most recent closure" {
+        val (svc, repo) = lifecycle("reopentoken")
+        val a = repo.put(-100L, 1L, "bob", Side.OFFER)
+        val b = repo.put(-100L, 1L, "bobtoo", Side.OFFER)
+        svc.cancel(-100L, 1L, a.shortId)
+        svc.cancel(-100L, 1L, b.shortId)
+        svc.reopen(-100L, 1L, 7, a.refToken).shouldBeInstanceOf<ActionResult.Ok>()
+        repo.byRefToken(a.refToken)!!.state shouldBe RequestState.OPEN
+        repo.byRefToken(b.refToken)!!.state shouldBe RequestState.CANCELLED
+    }
+    "reopen refuses a token for a request the caller doesn't own" {
+        val (svc, repo) = lifecycle("reopenforged")
+        val a = repo.put(-100L, 1L, "bob", Side.OFFER)
+        svc.cancel(-100L, 1L, a.shortId)
+        svc.reopen(-100L, 2L, 7, a.refToken).shouldBeInstanceOf<ActionResult.Denied>()
+        repo.byRefToken(a.refToken)!!.state shouldBe RequestState.CANCELLED
     }
 })
