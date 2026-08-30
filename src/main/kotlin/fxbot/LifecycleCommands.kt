@@ -2,7 +2,7 @@ package fxbot
 
 import eu.vendeli.tgbot.TelegramBot
 import eu.vendeli.tgbot.annotations.CommandHandler
-import eu.vendeli.tgbot.api.message.deleteMessages
+import eu.vendeli.tgbot.api.message.deleteMessage
 import eu.vendeli.tgbot.api.message.editMessageText
 import eu.vendeli.tgbot.api.message.message
 import eu.vendeli.tgbot.types.chat.ChatType
@@ -10,6 +10,7 @@ import eu.vendeli.tgbot.types.component.MessageUpdate
 import eu.vendeli.tgbot.types.component.ProcessedUpdate
 import eu.vendeli.tgbot.types.component.getChat
 import eu.vendeli.tgbot.types.component.getUser
+import eu.vendeli.tgbot.types.component.isSuccess
 import eu.vendeli.tgbot.types.msg.EntityType
 
 @CommandHandler(["/cancel"])
@@ -77,17 +78,26 @@ suspend fun forget(update: ProcessedUpdate, bot: TelegramBot) {
 
     val plan = Registry.forget.plan(user.id, if (global) null else chat.id)
 
-    // Best-effort: a message already gone (too old to delete, removed by a
-    // moderator, chat no longer reachable) must not stop the rest of the
-    // cleanup or the confirmation below.
-    for ((msgChatId, msgs) in plan.toDelete.groupBy { it.chatId }) {
-        runCatching { deleteMessages(msgs.map { it.messageId }).send(msgChatId, bot) }
+    // Best-effort, and counted for real: a message already gone (too old to delete,
+    // removed by a moderator, chat no longer reachable) must not stop the rest of the
+    // cleanup, and must not be counted as tidied in the confirmation below — Telegram
+    // reports per-call success via `Response`, not by throwing, so `sendReturning` +
+    // `isSuccess()` is what tells attempts and successes apart; a plain `send()` here
+    // would count every attempt as a success regardless of what Telegram actually did.
+    var deletedMessages = 0
+    for (m in plan.toDelete) {
+        val ok = runCatching { deleteMessage(m.messageId).sendReturning(m.chatId, bot).await().isSuccess() }
+            .getOrDefault(false)
+        if (ok) deletedMessages++
     }
+    var redactedMessages = 0
     for (m in plan.toRedact) {
-        runCatching { editMessageText(m.messageId) { REDACTED }.send(m.chatId, bot) }
+        val ok = runCatching { editMessageText(m.messageId) { REDACTED }.sendReturning(m.chatId, bot).await().isSuccess() }
+            .getOrDefault(false)
+        if (ok) redactedMessages++
     }
 
-    val touched = plan.toDelete.size + plan.toRedact.size
+    val touched = deletedMessages + redactedMessages
     message {
         "Erased ${plan.deletedRequests} request(s) and tidied $touched message(s). " +
             "I can't unsay what was already said, and I can't touch other people's messages."
