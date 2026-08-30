@@ -1,12 +1,13 @@
 # Exchange Bot — Design
 
 **Date:** 2026-08-30
-**Status:** Approved design, not yet implemented
+**Status:** Approved design, grilled across six rounds. Not yet implemented.
 
 A Telegram bot that connects people in the same chat who want to exchange
 currency with each other. Someone posts what they are giving away; the bot
 replies with compatible open requests from that same chat, naming the
-counterparts. Nobody is matched across chats.
+counterparts and offering a button to close the deal. Nobody is matched across
+chats.
 
 ## Scope
 
@@ -14,26 +15,68 @@ The bot is a noticeboard with arithmetic, not a marketplace. It does not hold
 funds, quote prices, take a fee, or record settlement. It suggests who to talk
 to; the two people agree the actual rate between themselves.
 
+Groups and supergroups only. Channels are rejected with a single message —
+posts there come from a channel identity rather than a person, so there is no
+user to match, mention, or authorize. Private chats serve `/forget all` and
+otherwise reply once with "add me to a group".
+
+Bot language is English only.
+
 ## Core Model
 
 ### Request
 
-A request states what a person is **giving away**. Direction is therefore
-implied by the currency, not by the verb:
+A request states what a person is **giving away**. Which side that is comes
+from the verb and the currency **together**, never from either alone:
 
-- `/sell 1000 EUR` — giving 1000 EUR, wanting RUB
-- `/sell 95000 RUB` — giving 95000 RUB, wanting EUR
+| Command          | Wants | Gives | Side       |
+|------------------|-------|-------|------------|
+| `/sell 1000 EUR` | RUB   | EUR   | gives EUR  |
+| `/buy 95000 RUB` | RUB   | EUR   | gives EUR  |
+| `/sell 95000 RUB`| EUR   | RUB   | gives RUB  |
+| `/buy 1000 EUR`  | EUR   | RUB   | gives RUB  |
 
-Those two are counterparts. `/buy` is sugar for the same thing stated from the
-other end (see Commands).
+So a pair has exactly two sides and four ways to say them. Two requests are
+counterparts when they land on different rows of the `Side` column — which
+means `/sell` can match `/sell`, `/buy` can match `/buy`, and the verb alone
+tells you nothing.
 
-Fields: `chat_id`, `user_id`, `username`, `side_currency`, `amount`,
-`stated_currency`, `stated_amount`, `pair`, `state`, `created_at`,
-`expires_at`, plus a short display id.
+`give_currency` is therefore derived at parse time: the stated currency for
+`/sell`, the *other* leg of the pair for `/buy`.
+
+Each request carries three identifiers, for three different jobs:
+
+| Identifier  | Visibility      | Recycled | Purpose                         |
+|-------------|-----------------|----------|---------------------------------|
+| `row_id`    | internal only   | never    | surrogate key, joins            |
+| `short_id`  | shown in chat   | yes      | typed commands (`/cancel a1`)   |
+| `ref_token` | **never shown** | never    | callback payloads, AEAD context |
+
+`short_id` is 2–3 characters, base32 of a per-chat counter, unique only among
+that chat's non-terminal requests. Recycling keeps it short enough to type.
+
+`ref_token` is 128 bits of `SecureRandom`, base64url-encoded to 22 characters.
+It never appears in any message, which keeps callback payloads unguessable — a
+modified client cannot enumerate sequential ids to probe which requests exist.
+
+Fields: `chat_id`, `user_id`, `username`, `give_currency`, `stated_currency`,
+`stated_amount`, `pair`, `state`, `created_at`, `expires_at`.
+
+**Amounts are stored exactly as typed and converted only at match time.**
+`give_currency` records which leg of the pair the person hands over — derived
+from the verb, not from the amount — while `stated_currency` and
+`stated_amount` preserve the literal input. Converting at creation would freeze
+a `/buy 1000 EUR` into a fixed RUB figure that drifts away from the stated
+intent as the rate moves; deferring it means every comparison uses the current
+rate. A trade's size is the same magnitude whichever leg quotes it, so
+normalizing from the stated form is correct for `/sell` and `/buy` alike.
 
 The pair is stamped on the row at creation. An admin changing the chat's pair
 therefore orphans nothing: existing requests keep their own pair, stop matching
 newly created ones, and expire on their TTL.
+
+There is no cap on how many requests one person may hold open. The reply list
+is capped at 5 and `/status` at 20, which bounds the visible effect.
 
 ### States
 
@@ -45,13 +88,12 @@ OPEN ──/cancel──> CANCELLED
 ```
 
 There is no `MATCHED` state. Pairing is advisory: a suggested request stays
-OPEN and can be suggested to other people too.
+`OPEN` and can be suggested to other people too.
 
-### Short ids
-
-2–3 characters, base32 of a per-chat counter. Unique only among that chat's
-non-terminal requests, so ids are recycled and stay short. Used as
-`/cancel a1`, `/done a1 @alice`.
+`/reopen` takes no argument. It revives the caller's **most recently closed**
+request in that chat, because `short_id` recycling makes an id-addressed
+`/reopen` ambiguous — the id may already belong to somebody else's live
+request. It exists for exactly one case: undoing a mistaken `/done`.
 
 ### ChatSettings
 
@@ -68,30 +110,58 @@ Two requests are compatible when all hold:
 - same chat
 - same pair
 - both `OPEN`
-- different `side_currency` (opposite sides of the trade)
+- different `give_currency` (opposite sides of the trade)
 - different `user_id` (no self-match)
 - normalized amounts within the band:
   `|norm_a − norm_b| / max(norm_a, norm_b) ≤ tolerance_pct / 100`
 
-Normalization converts to the pair's base currency: an amount already in base
-is used as-is; an amount in quote is divided by the reference rate.
+Normalization converts the **stated** amount to the pair's base currency: an
+amount already in base is used as-is; an amount in quote is divided by the
+current reference rate.
+
+Worked example, at a rate of 99.98 and a 20% band:
+
+```
+/sell 999 EUR   -> gives EUR, norm = 999 EUR
+/buy  1000 EUR  -> gives RUB, norm = 1000 EUR
+                   |1000 - 999| / 1000 = 0.1%   -> match
+
+/buy  100 RUB   -> gives EUR, norm = 100 / 99.98 = 1.0002 EUR
+/buy  1 EUR     -> gives RUB, norm = 1 EUR
+                   0.02% apart, opposite sides   -> match
+
+/buy  20 RUB    -> gives EUR, norm = 0.2 EUR
+/sell 20 RUB    -> gives RUB, norm = 0.2 EUR
+                   identical magnitude, opposite sides -> match
+
+/sell 1000 EUR  -> gives EUR
+/buy  95000 RUB -> gives EUR
+                   SAME side                     -> no match
+```
+
+The last case is the one worth remembering: identical verbs can be
+counterparts, and opposite verbs can be the same side.
 
 There is no partial fill and no remainder. A request matches whole or not at
 all.
 
+All money is `BigDecimal`, with `MathContext.DECIMAL64` for the rate division.
+It is serialized as a **string** in the encrypted payload — a JSON number would
+round-trip through a double and undo the point.
+
 ### Placement
 
-Matching is a query-on-command, not a background job and not a stored
-suggestion table. On `/sell`, `/buy`, and `/status` the bot fetches that chat's
-OPEN rows and runs:
+Matching is a query-on-command: no background matcher, no stored suggestion
+table. On `/sell`, `/buy`, and `/status` the bot fetches that chat's `OPEN`
+rows and runs:
 
 ```
 findCounterparts(request, openRows, rate, tolerancePct): List<Match>
 ```
 
-sorted by relative distance, capped at 5 results. The function is pure — no
-DB, no network, no Telegram — and carries the bulk of the test suite. SQL does
-no comparison beyond fetching the chat's open set; at chat scale, filtering in
+sorted by relative distance, capped at 5. The function is pure — no DB, no
+network, no Telegram — and carries the bulk of the test suite. SQL does no
+comparison beyond fetching the chat's open set; at chat scale, filtering in
 Kotlin is both faster to write and far easier to test than a clever query.
 
 Consequence accepted deliberately: the same counterparts are re-listed each
@@ -102,12 +172,12 @@ not spam.
 
 Cross-denomination matching (1000 EUR against 95000 RUB) needs a rate.
 
-Source: `open.er-api.com/v6/latest/{base}` — free, no API key, and it still
-carries RUB. ECB, and therefore frankfurter.app, dropped RUB in 2022 and cannot
-be used here.
+Source: `open.er-api.com/v6/latest/{base}` — free, no API key, updates daily,
+and it still carries RUB. **Verified 2026-08-30:** returns `"RUB":99.979239`
+with EUR as base, and accepts RUB as a base. ECB — and therefore
+frankfurter.app — dropped RUB in 2022 and cannot be used here.
 
-Cached in `fx_rate(base, quote, rate, fetched_at)`, refreshed once a day by a
-db-scheduler task for every pair currently in use.
+Cached in `fx_rate(base, quote, rate, fetched_at)`, refreshed once a day.
 
 Degradation, in order:
 
@@ -115,8 +185,15 @@ Degradation, in order:
 2. Feed unreachable, cached rate present — use it. If it is older than 7 days,
    append `rate from <date>, may be stale` to the reply.
 3. No cached rate at all — reply that cross-currency matching is unavailable
-   for now. The request is still registered, and same-denomination matching
-   still runs, because that path needs no rate.
+   for now. Requests of every kind are still registered, and same-denomination
+   matching still runs, because that path needs no rate.
+
+### Currency validation
+
+Two gates. `java.util.Currency.getInstance(code)` first — ISO 4217, stdlib,
+offline, no dependency. Then, at `/pair` time only, the rate feed: a code that
+is ISO-valid but absent from the feed is rejected there, so an admin cannot
+configure a pair the bot will never be able to price.
 
 ## Commands
 
@@ -125,9 +202,12 @@ Degradation, in order:
 /buy  <amount> <ccy>     same, stated from the wanting end
 /cancel <id>             own request -> CANCELLED
 /done <id> @peer         both requests -> FULFILLED, announced publicly
-/reopen <id>             terminal -> OPEN with a fresh TTL
-/status                  this chat's open requests, own ones flagged
+/reopen                  revive your most recently closed request, fresh TTL
+/status [mine]           open requests in this chat
 /settings                read-only, anyone
+/forget                  hard-delete all your data in this chat
+/forget all              private chat only: hard-delete across every chat
+/help                    command list
 /pair <base> <quote>     admin only
 /tolerance <pct>         admin only
 /ttl <days>              admin only
@@ -135,59 +215,113 @@ Degradation, in order:
 
 Every command is scoped by the `chat_id` on the incoming message. That single
 fact enforces "only connect people from one chat" — no cross-chat query exists
-anywhere in the codebase. In a private chat the bot replies once with "add me
-to a group" and does nothing else.
+anywhere in the codebase, with the sole deliberate exception of `/forget all`.
 
-`/buy 1000 EUR` in an EUR/RUB chat means *wanting* 1000 EUR, so it is stored as
-`side_currency = RUB` with the amount converted at the reference rate. When no
-rate is cached, `/buy` stated in the currency the user is not giving is
-rejected with a nudge to restate it as what they are giving.
+`/buy 1000 EUR` in an EUR/RUB chat means *wanting* 1000 EUR, so it stores
+`give_currency = RUB` while keeping `stated_amount = 1000`,
+`stated_currency = EUR`. Because no conversion happens at creation, `/buy`
+needs no cached rate to be accepted; it simply cannot be matched across
+denominations until one exists.
 
-Because that conversion would otherwise make the bot echo a request back in
-words its author never used, the row also carries `stated_amount` and
-`stated_currency` — the literal form the person typed. Matching uses the
-normalized `side_currency`/`amount`; every listing and confirmation displays
-the stated form, with the converted figure appended in parentheses when the two
-differ.
+Listings and confirmations always render the stated form, with the normalized
+figure appended in parentheses when the two differ — so the bot never echoes a
+request back in words its author did not use.
 
 Rejections, each a single line naming the fix: unknown currency, currency not
 in the chat's pair, non-positive amount, unparseable amount, unknown id, id
 belonging to someone else.
 
-`/done` with a peer who has no open request in the chat closes only the
-caller's own request and says so.
+### Peer resolution
 
-Peers are resolved from Telegram message entities, never from display-name
-text, so a typo cannot close the wrong person's request. Three accepted forms,
-in order:
+`/done` resolves its peer from Telegram message entities, never from
+display-name text, so a typo cannot close the wrong person's request. Accepted
+forms, in order:
 
-1. a `mention` entity (`@alice`) — resolved against the chat's known users
-2. a `text_mention` entity — carries a `user_id` directly, which is how a
-   peer *without* a `@username` is named
-3. `/done <id>` sent as a reply to the peer's message — the peer is the
-   replied-to message's sender
+1. a `mention` entity (`@alice`), resolved **only against users holding an open
+   request in this chat** — which is the only population `/done` can validly
+   name, so no user directory table is needed
+2. a `text_mention` entity, which carries a `user_id` directly and is how a
+   peer without a `@username` is named
+3. `/done <id>` sent as a reply to the peer's message
 
-Anything else is rejected with a line explaining those three forms.
+Anything else is rejected with a line explaining those three forms. A named
+peer with no open request closes only the caller's own request, and says so.
 
-## Replies
+## Replies and Buttons
 
 The bot replies publicly in the group, as a reply to the request message,
-listing up to 5 compatible requests closest first:
+listing up to 5 compatible requests closest first, each with a Done button:
 
 ```
 @bob: /sell 1000 EUR
   bot: 2 counterparts:
        • @alice — buy 900 EUR
-       • @carol — sell 95000 RUB (≈1000 EUR)
+       • @carol — sell 95,000 RUB (≈950.19 EUR)
        No fit? You're on the waitlist.
+       [✅ Done with @alice] [✅ Done with @carol] [✖️ Cancel request]
 ```
 
 The public `@mention` is itself the notification to the waiting side, so no
-separate ping mechanism exists.
+separate ping mechanism exists. Users without a `@username` render as an inline
+`tg://user?id=` mention. Everything keys on `user_id`; usernames are
+display-only, refreshed whenever the bot sees a message from that user.
 
-Users without a `@username` are rendered as an inline `tg://user?id=` mention.
-Everything keys on `user_id`; usernames are display-only and refreshed on every
-message seen from that user.
+Buttons appear on the request reply only — not on `/status` rows, not on
+`/settings`. The button is where the decision is, because the bot has just
+listed who the counterparts are. A Done confirmation additionally carries a
+`↩️ Reopen` button.
+
+Number formatting: `BigDecimal` with trailing zeros stripped and thousands
+grouped (`1,000 EUR`, `95,000 RUB`); normalized figures in parentheses at 2dp
+(`≈950.19 EUR`); dates as `30 Aug`.
+
+`/status` lists the 20 most recent open requests, closest-to-expiry first, with
+a `+N more — use /status mine` footer. Telegram caps a message at 4096
+characters and nothing caps requests per user, so an uncapped listing would
+eventually fail to send outright.
+
+### Callback handling
+
+`callback_data` is limited to 64 bytes (**verified** against the Bot API docs)
+and, more importantly, **is not trustworthy**: a modified client can send an
+arbitrary payload. The button is a UI suggestion, never an authorization.
+
+Payload format — two `ref_token`s, about 47 bytes:
+
+```
+d:<ref_token>:<ref_token>     done
+c:<ref_token>                 cancel
+r:<ref_token>                 reopen
+```
+
+`ref_token` rather than `short_id` because short ids are recycled, so a button
+pressed days later could otherwise act on a stranger's request.
+
+Authorization is re-derived server-side from `callback_query.from.id` on every
+press:
+
+- **Done** — permitted if the presser owns **either** referenced request.
+  Either participant may confirm the trade happened.
+- **Cancel**, **Reopen** — owner only.
+
+A press by anyone else gets an `answerCallbackQuery` alert visible only to
+them. Buttons are visible to the whole group, so this path will be exercised.
+
+### Stale buttons
+
+Two mechanisms, belt and braces:
+
+**Proactive.** When a request goes terminal, the bot edits the messages
+carrying buttons for it, stripping those buttons. Fan-out is capped at the 10
+most recent such messages, so one `/cancel` cannot turn into a rate-limit
+stall.
+
+**On press.** A press referencing a request that is no longer `OPEN` is
+rejected with an `answerCallbackQuery` alert ("@alice's request is no longer
+open") and the message is edited in place to re-run matching and show the
+current list. The button that failed is replaced by ones that work, so stale
+messages self-heal instead of accumulating. This also covers anything the
+proactive pass missed.
 
 ## Permissions
 
@@ -208,57 +342,87 @@ Hikari password = "$DB_FILE_KEY $DB_USER_PW"   (H2 syntax: file pw, space, user 
 ```
 
 Covers the whole file including indexes and backups. No application code.
+Flyway connects through the same DataSource, so migrations run inside the
+cipher.
 
 Known limit: H2's file cipher provides confidentiality but not integrity — it
 has no MAC. Layer 2 supplies integrity for the sensitive fields.
 
-### Layer 2 — column encryption
+### Layer 2 — Google Tink
 
-JDK standard library only: `AES/GCM/NoPadding`, `HmacSHA256`, `SecureRandom`.
-No new dependency.
+`com.google.crypto.tink:tink` (1.18.0, June 2025) — pure Java, no native
+library, no Dockerfile changes.
 
-One 32-byte master key from the environment is split by HKDF into `k_enc`
-(confidentiality) and `k_idx` (searchable refs), so the two paths never share
-key material.
+Two keysets, so the confidential and searchable paths never share key material:
+
+- **AEAD keyset** (`AES256_GCM`) encrypts row payloads:
+  `Aead.encrypt(plaintext, associatedData)`.
+- **MAC keyset** (`HMAC_SHA256`) computes the searchable refs.
+
+Both are Tink JSON keysets produced by `tinkey create-keyset`, supplied as
+environment variables and parsed with `TinkJsonProtoKeysetFormat.parseKeyset`.
+
+Tink's keyset model carries key ids and rotation state, which is why there is
+no `key_version` column and no bespoke rotation tool: rotating the AEAD key is
+`tinkey rotate-keyset` plus a redeploy retaining the old key for decryption,
+with no re-encryption pass. Rotating the **MAC** key is not free the same way —
+every `chat_ref` and `user_ref` must be recomputed, which requires decrypting
+each payload to recover the underlying ids. That remains possible as a one-off
+job; it is simply not automatic.
+
+*Considered and rejected:* Cossack Labs Themis. Its Secure Cell Seal mode is
+the same primitive (AES-256-GCM, packed nonce, `context` as AAD) with an
+equally good API, but `java-themis` is a JNI binding whose JAR does not bundle
+the native library — libthemis must be installed via apt/yum/brew, only x86_64
+is documented, there is no Alpine or Docker guidance, and the JVM binding's
+last release is 0.15.2 from September 2023. Themis earns its native dependency
+when the same ciphertext must be read by Swift, Go, or Python clients; this bot
+has one JVM process and no second language.
+
+### Schema
 
 ```
 request(
-  row_id      BIGINT PK
-  chat_ref    CHAR(44)     HMAC-SHA256(k_idx, chat_id)     -- searchable
-  user_ref    CHAR(44)     HMAC-SHA256(k_idx, user_id)     -- searchable
-  short_id    VARCHAR(4)                                   -- plaintext
-  state       VARCHAR                                      -- plaintext
-  created_at  TIMESTAMP                                    -- plaintext
-  expires_at  TIMESTAMP                                    -- plaintext
-  payload     VARBINARY    nonce || AES-256-GCM ciphertext
-  key_version SMALLINT
+  row_id      BIGINT IDENTITY PK
+  ref_token   CHAR(22)   UNIQUE NOT NULL  -- 128-bit random, base64url, never shown
+  chat_ref    CHAR(44)   NOT NULL         -- Tink MAC(chat_id), searchable
+  user_ref    CHAR(44)   NOT NULL         -- Tink MAC(user_id), searchable
+  short_id    VARCHAR(4) NOT NULL         -- plaintext, meaningless without its chat
+  state       VARCHAR(16) NOT NULL        -- plaintext, not sensitive
+  created_at  TIMESTAMP  NOT NULL         -- plaintext, sweep needs it
+  expires_at  TIMESTAMP  NOT NULL         -- plaintext, sweep needs it
+  payload     VARBINARY  NOT NULL         -- Tink AEAD
 )
+indexes: (chat_ref, state), (user_ref), unique(ref_token)
+
+chat_settings(chat_ref PK, payload, updated_at)
+fx_rate(base, quote, rate, fetched_at)          -- plaintext, public data
+sent_message(chat_ref, message_id, sent_at, PK(chat_ref, message_id))
+sent_message_ref(chat_ref, message_id, ref_token, user_ref)
 ```
 
-`payload` holds `{user_id, username, side_currency, amount, stated_amount,
-stated_currency, base, quote}` as
-JSON. AAD is `chat_ref || short_id`, binding a ciphertext to its row so a blob
-cannot be relocated to another row.
+`payload` holds `{user_id, username, give_currency, stated_currency,
+stated_amount, base, quote}` as JSON.
 
-`short_id`, `state` and the timestamps stay plaintext: the first is meaningless
-without its chat, and the sweep must filter on the others.
+**Associated data is `ref_token`.** It is unique, never recycled, and
+independent of the chat, so a ciphertext cannot be relocated to another row and
+a chat migration does not invalidate it. (`chat_settings` uses `chat_ref` as
+its AAD, so migration re-encrypts that single row.)
 
-`chat_settings` gets the same treatment (`chat_ref` plus payload). `fx_rate`
-stays plaintext — it is public data.
+`short_id` uniqueness among a chat's non-terminal requests cannot be a partial
+unique index — H2 has none — so it is enforced in application code inside the
+insert transaction.
 
-Query cost is zero, because matching already works the way this requires: SQL
-selects by `chat_ref` and `state` only, and every comparison happens in Kotlin
+Query cost is unaffected, because matching already works the way this requires:
+SQL selects by `chat_ref` and `state`, and every comparison happens in Kotlin
 over decrypted rows.
-
-`key_version` ships as a column now. A rotation tool does not — it gets written
-when a key actually needs rotating.
 
 ### What this does not buy
 
-The refs are deterministic. Anyone holding both the database file and `k_idx`
-can count per-chat and per-user activity and can confirm a *guessed* chat or
-user id. That is the inherent price of searchable encryption. Without `k_idx`,
-which never leaves the process, those attacks fail.
+The refs are deterministic. Anyone holding both the database file and the MAC
+keyset can count per-chat and per-user activity and can confirm a *guessed*
+chat or user id. That is the inherent price of searchable encryption. Without
+the MAC keyset, which never leaves the process, those attacks fail.
 
 Range queries on amount are impossible under this scheme. The design never
 needed them.
@@ -266,33 +430,96 @@ needed them.
 Neither layer protects data while the process is running: the keys are in
 process memory and rows are decrypted there.
 
-### Key handling
+### Environment
 
 ```
-BOT_TOKEN      telegram bot token
-DB_FILE_KEY    H2 file password
-DB_USER_PW     H2 user password
-DATA_KEY       base64, must decode to exactly 32 bytes   (openssl rand -base64 32)
+BOT_TOKEN        telegram bot token
+DB_FILE_KEY      H2 file password
+DB_USER_PW       H2 user password
+DATA_KEYSET      Tink AEAD keyset, JSON  (tinkey create-keyset --key-template AES256_GCM)
+INDEX_KEYSET     Tink MAC keyset, JSON   (tinkey create-keyset --key-template HMAC_SHA256_256BITTAG)
 ```
 
-Startup validates that all four are present and that `DATA_KEY` decodes to
-exactly 32 bytes; otherwise the process exits non-zero naming the missing or
-malformed variable. Keys are never logged and no command echoes them. `.env` is
-gitignored; `.env.example` is committed with empty values. Docker receives them
-through `env_file` or secrets, never baked into an image.
+Startup validates that all five are present and that both keysets parse;
+otherwise the process exits non-zero naming the missing or malformed variable.
+Keys are never logged and no command echoes them. `.env` is gitignored;
+`.env.example` is committed with empty values. Docker receives them through
+`env_file` or secrets, never baked into an image.
+
+## Data Deletion
+
+`/forget` in a group hard-`DELETE`s every row belonging to that user in that
+chat, terminal ones included — TTL only flips state, which leaves the payload
+in the file.
+
+`/forget all`, accepted only in a private chat with the bot, deletes that
+user's rows across every chat. It is a single `DELETE WHERE user_ref = ?`,
+because `user_ref` is chat-independent. Restricting it to a DM keeps a group
+command from silently reaching into other groups.
+
+Both then clean up the bot's own messages that named the user, best-effort:
+
+- Messages where that person was one of several named: **edited** to redact
+  their line, preserving everyone else's names and working buttons.
+- Messages entirely about them: **deleted** where possible.
+
+**Verified Bot API limits (2026-08-30):** `deleteMessage` — *"A message can
+only be deleted if it was sent less than 48 hours ago."* `editMessageText` has
+no such window for a bot's own messages; the 48-hour clause there applies only
+to business messages the bot did not send. So redaction reaches back much
+further than deletion does, and batch `deleteMessages` covers the ≤48h case.
+
+Nobody is notified — a notification would broadcast the very fact the person
+asked to erase. Dead buttons pointing at deleted rows fall into the
+stale-button rejection path.
+
+**Stated limitation:** `/forget` removes stored data and cleans up what the bot
+can still reach. It does not un-say what was said in the chat, and it cannot
+touch other people's messages.
+
+### Message tracking
+
+`sent_message` plus the `sent_message_ref` join table exist to answer two
+queries: *which messages named this user* (for `/forget`) and *which messages
+carry buttons for this request* (for proactive stripping).
+
+Retention: 90 days, pruned daily. Deletion only works inside 48h, but
+redaction-by-edit works across the whole window, so retention follows the
+longer horizon. Bounded growth matters here because the table holds `user_ref`s.
+
+## Chat Migration
+
+When a group is upgraded to a supergroup, Telegram issues a **new** `chat_id`
+and sends `migrate_to_chat_id` once. Every row keys on `MAC(chat_id)`, so
+without handling this, every open request and the chat's settings become
+unreachable at the least predictable moment.
+
+The handler rewrites `chat_ref` on that chat's `request`, `sent_message` and
+`sent_message_ref` rows in one transaction. Because request AAD is `ref_token`,
+no payload re-encryption is needed — only the single `chat_settings` row, whose
+AAD is `chat_ref`, is decrypted and re-encrypted.
 
 ## Concurrency
 
-One process, but Telegram updates are handled concurrently. Request creation
-and `/done` run inside a single transaction whose state transition is guarded
-by `WHERE state = 'OPEN'`. A double `/done` therefore closes once, and the
-second attempt reports "already fulfilled".
+One process, but Telegram updates are handled concurrently. Request creation,
+`/done`, and every callback run inside a single transaction whose state
+transition is guarded by `WHERE state = 'OPEN'`. A double `/done` — or the same
+button pressed by both participants at once — therefore closes once, and the
+loser reports "already fulfilled".
 
-## Expiry
+## Scheduled Work
 
-A daily db-scheduler task flips `OPEN` rows past `expires_at` to `EXPIRED`.
-No message is sent; the change shows up in `/status`. TTL is per chat,
-default 7 days.
+Two db-scheduler tasks, both **parameterless**:
+
+- **TTL sweep** — daily, `UPDATE ... WHERE state='OPEN' AND expires_at < now`,
+  plus the 90-day `sent_message` prune. No message is sent; the change shows up
+  in `/status`.
+- **Rate refresh** — daily, enumerates the pairs in use itself.
+
+Parameterless matters for more than tidiness: db-scheduler's `scheduled_tasks`
+table stores `task_data` as a plaintext BLOB. Tasks that carried a `chat_id` or
+a pair would leak around Layer 2. With no parameters, `task_data` is always
+empty and there is nothing to encrypt.
 
 ## Stack
 
@@ -302,8 +529,11 @@ layer:
 - Kotlin/JVM, JDK 21 toolchain
 - `eu.vendeli:telegram-bot` with the `ktnip` KSP processor
 - H2 file database, HikariCP
+- **Flyway** for migrations, with Java-based migrations available for
+  decrypt-transform-re-encrypt steps that DDL cannot express
 - db-scheduler for the TTL sweep and the daily rate refresh
 - Ktor client (CIO) for the rate feed
+- Google Tink for column encryption
 - kotlinx-serialization, kotlinx-coroutines, slf4j-simple
 - kotest for tests, `ktor-client-mock` for the rate client
 - Dockerfile on a JRE base
@@ -318,26 +548,71 @@ Pure functions carry the suite:
 
 - **Matcher** — tolerance boundaries exactly at the band edge, both
   denominations, cross-denomination through the rate, self-match exclusion,
-  same-side exclusion, ordering and the cap at 5.
-- **Command parser** — every rejection case above, plus `/buy` conversion.
-- **Short ids** — recycling after a request reaches a terminal state.
-- **Crypto** — round trip, wrong key, tampered ciphertext, wrong AAD.
-- **Repository** — in-memory H2 with a fixed test key; asserts that a raw
+  ordering and the cap at 5. All four command forms against all four, asserting
+  the side table: `/sell 999 EUR` ↔ `/buy 1000 EUR`, `/buy 100 RUB` ↔
+  `/buy 1 EUR`, `/buy 20 RUB` ↔ `/sell 20 RUB`, and `/sell 1000 EUR` **not**
+  matching `/buy 95000 RUB`.
+- **Deferred conversion** — a `/buy` request normalizes differently after the
+  rate changes, and always tracks its stated amount rather than a frozen one.
+- **Command parser** — every rejection case above, plus `/buy` accepted with no
+  cached rate.
+- **Short ids** — recycling after a request reaches a terminal state, and the
+  in-transaction uniqueness guard.
+- **Callback authorization** — forged `callback_data`, a non-participant
+  pressing Done, either participant pressing Done, a token for a terminal
+  request.
+- **Crypto** — round trip, wrong key, tampered ciphertext, wrong AAD, and that
+  a `ref_token` cannot decrypt another row's payload.
+- **Repository** — in-memory H2 with fixed test keysets; asserts that a raw
   `SELECT payload` never contains a username in the clear.
 - **Rate client** — `ktor-client-mock`: happy path, HTTP failure with a warm
   cache, HTTP failure with a cold cache, stale-cache annotation.
+- **Migration handler** — `chat_ref` rewrite leaves payloads decryptable.
+- **`/forget`** — rows gone, multi-subject message redacted rather than
+  deleted, single-subject message deleted.
 
 The Telegram transport is not mocked end to end. Handlers are thin and delegate
 to the tested functions above.
+
+## Decision Log
+
+| #  | Decision |
+|----|----------|
+| 1  | Google Tink for column crypto; Themis rejected over its JNI native dependency |
+| 2  | `/reopen` takes no id (short ids recycle); inline buttons added |
+| 3  | `@mention` resolved only against open-request holders — no user directory |
+| 4  | `BigDecimal`, serialized as a string |
+| 5  | `java.util.Currency` first, rate feed as a second gate at `/pair` |
+| 6  | Handle `migrate_to_chat_id`; rewrite `chat_ref` in one transaction |
+| 7  | No per-user request cap |
+| 8  | English only — no i18n layer, no `/lang` |
+| 9  | Two Tink keysets (AEAD + MAC) supplied as environment variables |
+| 10 | Scheduled tasks parameterless, so `task_data` never holds sensitive values |
+| 11 | Flyway, with Java migrations for crypto-aware steps |
+| 12 | Buttons on the request reply only |
+| 13 | `/status` capped at 20 with a `+N more` footer |
+| 14 | `/forget` per-chat; `/forget all` in a private chat only |
+| 15 | Synthetic `ref_token` in callbacks, never shown in chat |
+| 16 | Done pressable by either participant; stale presses rejected and re-rendered |
+| 17 | Deletion notifies nobody; best-effort message cleanup |
+| 18 | Channels rejected |
+| 19 | `sent_message` + `sent_message_ref` join table |
+| 20 | Proactive button stripping, fan-out capped at 10, lazy backstop |
+| 21 | Redact multi-subject messages, delete single-subject ones |
+| 22 | 90-day message-tracking retention, pruned daily |
+| 23 | Store amounts as stated; convert at match time, never at creation |
 
 ## Deliberately Excluded
 
 - Partial fills and remainders
 - An order book, rate quoting, or price-time priority
 - Exclusive pairing and a `MATCHED` state
-- Cross-chat matching
+- Cross-chat matching (except `/forget all`)
 - A persisted suggestion table
 - A background matcher job
-- DM-based notification
-- A key rotation tool
+- DM-based match notification
+- Per-user request caps and command rate limiting
+- A user directory table
+- Internationalization
+- A bespoke key rotation tool
 - GraalVM native image
