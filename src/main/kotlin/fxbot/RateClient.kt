@@ -26,10 +26,20 @@ private data class FeedResponse(val result: String, val rates: Map<String, JsonE
 class RateClient(private val http: HttpClient) {
     private val json = Json { ignoreUnknownKeys = true }
 
-    suspend fun fetch(base: String): Map<String, BigDecimal>? = runCatching {
-        val body = http.get("https://open.er-api.com/v6/latest/$base").bodyAsText()
-        val parsed = json.decodeFromString<FeedResponse>(body)
-        if (parsed.result != "success") return null
-        parsed.rates.mapValues { (_, v) -> BigDecimal(v.jsonPrimitive.content) }
-    }.getOrNull()
+    /**
+     * A feed failure is a null, not an exception — degradation is the design. But
+     * cancellation is not a failure: catching it here would let a cancelled refresh
+     * keep running, so it is rethrown before anything else is caught.
+     */
+    suspend fun fetch(base: String): Map<String, BigDecimal>? =
+        try {
+            val body = http.get("https://open.er-api.com/v6/latest/$base").bodyAsText()
+            val parsed = json.decodeFromString<FeedResponse>(body)
+            if (parsed.result != "success") null
+            else parsed.rates.mapValues { (_, v) -> BigDecimal(v.jsonPrimitive.content) }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
 }

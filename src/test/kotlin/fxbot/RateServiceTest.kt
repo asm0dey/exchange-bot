@@ -9,7 +9,6 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.engine.mock.respondError
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
@@ -71,6 +70,16 @@ class RateServiceTest : StringSpec({
         val status = svc.status(EURRUB)
         status.shouldBeInstanceOf<RateStatus.Stale>()
         status.rate.shouldNotBeNull().shouldBeEqualIgnoringScale(BigDecimal("95.00"))
+    }
+    "a cache exactly seven days old is still fresh" {
+        val (svc, repo) = service("boundary-fresh", deadClient())
+        repo.put("EUR", "RUB", BigDecimal("95.00"), T0.minusSeconds(7 * 86_400))
+        svc.status(EURRUB).shouldBeInstanceOf<RateStatus.Fresh>()
+    }
+    "a cache one second past seven days is stale" {
+        val (svc, repo) = service("boundary-stale", deadClient())
+        repo.put("EUR", "RUB", BigDecimal("95.00"), T0.minusSeconds(7 * 86_400 + 1))
+        svc.status(EURRUB).shouldBeInstanceOf<RateStatus.Stale>()
     }
     "a refresh failure never erases a cached rate" {
         val (svc, repo) = service("keep", deadClient())
