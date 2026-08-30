@@ -151,9 +151,13 @@ class RequestRepository(
             }
         }
 
+    /** Stamps `closed_at` like every other close, so recency ordering sees expiries. */
     fun expireDue(now: Instant): Int = ds.connection.use { c ->
-        c.prepareStatement("UPDATE request SET state = 'EXPIRED' WHERE state = 'OPEN' AND expires_at < ?").use { st ->
+        c.prepareStatement(
+            "UPDATE request SET state = 'EXPIRED', closed_at = ? WHERE state = 'OPEN' AND expires_at < ?"
+        ).use { st ->
             st.setTimestamp(1, Timestamp.from(now))
+            st.setTimestamp(2, Timestamp.from(now))
             st.executeUpdate()
         }
     }

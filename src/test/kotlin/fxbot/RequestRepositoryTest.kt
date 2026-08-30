@@ -114,6 +114,16 @@ class RequestRepositoryTest : StringSpec({
         r.resting(-100L) shouldHaveSize 0
     }
 
+    "an expired request counts as recently closed" {
+        val (r, _) = repo("expiryrecency")
+        val a = r.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7)
+        val b = r.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("2"), EURRUB, 7)
+        r.transition(a.refToken, RequestState.OPEN, RequestState.CANCELLED)
+        r.expireDue(T0.plusSeconds(8 * 86_400)) shouldBe 1
+        // b expired after a was cancelled, so b is the more recent closure.
+        r.mostRecentlyClosed(-100L, 1L)!!.refToken shouldBe b.refToken
+    }
+
     "forgetting removes rows in one chat, or everywhere" {
         val (r, _) = repo("forget")
         val here = r.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7)
