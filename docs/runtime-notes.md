@@ -304,3 +304,89 @@ no Gradle-cache-sized layer anywhere. Final image: 236MB.
 - **CI runner availability of Docker/BuildKit** was not checked — this
   project's CI configuration is unchanged by this work; only the local build
   and run were verified.
+
+## Bot-token validation at startup, and the residual gap while running
+
+**The gap this closes.** `Main.kt`'s bounded polling-loop restart (count
+consecutive failures, back off, exit after five) was written believing it
+would catch a revoked or mistyped bot token, on the theory that the
+library's `TgUpdateHandler.classify` promotes a 401/403 to a thrown, Fatal
+exception. It doesn't, under this bot's actual configuration: `sendReturning`
+— used both by that polling loop and by every other send site in this
+codebase — reports a Telegram-side rejection as a `Response.Failure` value,
+not a thrown exception, because `throwExOnActionsFailure` defaults to
+`false` and is never overridden here. A rejected token therefore never
+reaches the polling loop's `catch` block; `consecutiveFailures` never moves;
+the bot polls Telegram forever on a token that doesn't work, with no exit
+and no orchestrator-visible signal. This was observed live: 100+ real
+connection attempts against a 401, no exit, no operator-visible failure.
+
+**What's now covered.** `Main.kt` calls `getMe().sendReturning(bot).await()`
+once at startup — after the `TelegramBot` client is constructed, after the
+database/scheduler wiring, before `setMyCommands` and before polling starts
+— and checks `.isSuccess()` on the result, the same `Response`-based check
+the bug report above says the codebase must use. A `Response.Failure` (Telegram
+was reached and explicitly rejected the token) logs a redacted message and
+exits 1. This catches the overwhelmingly common cases: a mistyped token, a
+token revoked while the bot was down, a token pasted with stray whitespace —
+at the moment a deployment starts and an operator is watching, rather than
+never.
+
+A thrown exception from that same call — the request never reaching
+Telegram at all: DNS not up yet, connection refused, connect timeout — is
+treated as inconclusive, not as a rejection. It's logged as a warning and
+startup proceeds. Treating a transport failure as a rejected token would
+turn an ordinary few-second network blip at container start into a crash
+loop, which would be a worse failure mode than the one being fixed.
+
+Startup ordering: the check runs after `migrate(ds)`/`connectExposed(ds)`,
+not before. Ordering it before the database work would fail faster on the
+single most likely cause (a bad token doesn't need a database at all), but
+the `TelegramBot` client is constructed later in the composition root, and
+moving that construction earlier — ahead of `Registry`/`Housekeeping`
+wiring that doesn't depend on it either — is a larger structural change than
+this fix. The database/migration work is local (H2 + Flyway on disk),
+idempotent, and fast, so ordering the check after it costs an operator a
+fraction of a second of extra wait on the bad-token path, not a materially
+worse diagnostic experience. Moving `TelegramBot` construction earlier is a
+reasonable follow-up if startup latency on the failure path ever matters.
+
+**What's still not covered: a token revoked while the bot is already
+running.** The startup check only runs once. Once polling begins, a token
+revoked mid-run hits the exact same `Response.Failure`-not-a-throw path as
+the original bug, inside the library's own `getUpdatesAction.sendReturning`
+call — the polling loop's `catch` block still never sees it (its comment now
+says so explicitly, instead of claiming coverage it doesn't have). The bot
+keeps polling Telegram forever on a token that no longer works, with no exit
+and no orchestrator-visible signal beyond whatever the vendeli library's own
+internal per-request failure log line emits. This is a known, accepted gap,
+not an oversight — recorded here rather than silently left for the next
+person to rediscover live.
+
+**Closing it would mean one of two deliberate changes, neither made here:**
+
+1. **Flip `throwExOnActionsFailure` to `true`.** This changes the contract
+   for every `send`/`sendReturning` call site in the codebase —
+   `Commands.kt`, `LifecycleCommands.kt`, `AdminCommands.kt` — all of which
+   were written assuming a Telegram-side failure comes back as a
+   `Response.Failure` value (or `null`, via `getOrNull()`), not as a thrown
+   exception. `AdminCommands.kt`'s `isAdmin` is the clearest example: it
+   already has a `try/catch` specifically because it expects the throw path
+   to be rare, and treats a caught exception the same as a `null` result.
+   Flipping the flag globally would require re-auditing each call site for
+   whether an unexpected throw there is now handled correctly, or becomes a
+   new, unhandled failure mode. That's a real review, not a side effect of a
+   startup-check fix.
+2. **Replace the polling layer** with something that surfaces a rejected
+   token as a fatal, throw-based condition independent of
+   `throwExOnActionsFailure` — for example, polling `getMe()` periodically
+   alongside the update loop and treating its `Response.Failure` as fatal on
+   its own bounded-retry policy, or driving `getUpdates` directly instead of
+   through `TgUpdateHandler.handleUpdates`. Either is a real design decision
+   — how often, what counts as "consecutive," whether it shares the existing
+   `consecutiveFailures` counter — not a one-line tweak.
+
+Both are deliberately out of scope here. The startup check closes the loud
+majority of real-world cases; the while-running case remains open, on
+purpose, until one of the above is chosen as a deliberate decision rather
+than a side effect.

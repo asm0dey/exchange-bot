@@ -1,8 +1,10 @@
 package fxbot
 
 import eu.vendeli.tgbot.TelegramBot
+import eu.vendeli.tgbot.api.botactions.getMe
 import eu.vendeli.tgbot.api.botactions.setMyCommands
 import eu.vendeli.tgbot.types.component.UpdateType
+import eu.vendeli.tgbot.types.component.isSuccess
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import kotlinx.coroutines.coroutineScope
@@ -67,6 +69,24 @@ suspend fun main(): Unit = coroutineScope {
         }
     }
 
+    // A revoked, mistyped, or whitespace-mangled token is the overwhelmingly common startup
+    // failure, and it must surface here, where an operator watching a deployment sees it —
+    // not later, silently, inside the polling loop below. See `validateBotToken`'s doc comment
+    // for why this checks a Response rather than relying on a throw.
+    when (val validation = validateBotToken(bot)) {
+        is TokenValidation.Rejected -> {
+            // NEVER log the response body or an exception message here — see the restart-loop
+            // comment below for why (the same request-URL-embeds-the-token reasoning applies).
+            logger.error("exchange-bot: Telegram rejected the bot token at startup; exiting so the orchestrator notices")
+            exitProcess(1)
+        }
+        is TokenValidation.Unknown -> logger.warn(
+            "exchange-bot: could not reach Telegram to validate the bot token at startup " +
+                "(${validation.causeClass}); proceeding — this says nothing about the token",
+        )
+        TokenValidation.Valid -> {}
+    }
+
     setMyCommands {
         botCommand("sell", "Hand over currency you have")
         botCommand("buy", "Ask for currency you want to receive")
@@ -84,12 +104,18 @@ suspend fun main(): Unit = coroutineScope {
 
     logger.info("exchange-bot: listening")
 
-    // A revoked/mistyped token, or any other Fatal condition the library's polling loop
-    // classifies (see TgUpdateHandler.classify — HttpRequestTimeoutException,
-    // SerializationException, TgFailureException, and every ClientRequestException
-    // including 401/403), makes handleUpdates() throw instead of looping forever. Retrying
-    // that forever, silently, is exactly how a dead bot goes unnoticed: no orchestrator or
-    // human ever learns. Count consecutive failures and give up loudly instead.
+    // This bounds genuine thrown exceptions from the polling loop: a SerializationException
+    // on a malformed payload, an HttpRequestTimeoutException, or (if throwExOnActionsFailure
+    // is ever flipped to true) a TgFailureException — the Fatal conditions
+    // TgUpdateHandler.classify promotes to a throw. It does NOT bound a revoked or mistyped
+    // bot token: getUpdates fails the exact same way getMe does (see the startup check
+    // above) — as a Response.Failure, not a thrown exception, because throwExOnActionsFailure
+    // defaults to false and is never overridden in this codebase — so classify's
+    // ClientRequestException/401/403 branch is unreachable here under this bot's actual
+    // configuration. Retrying an unthrown failure forever, silently, is exactly how a dead
+    // bot goes unnoticed; that risk is why the token is validated once at startup instead
+    // (see above), not by this loop. This loop still earns its place for the exceptions it
+    // does bound — count consecutive failures and give up loudly on those.
     var consecutiveFailures = 0
     while (true) {
         val sessionStart = System.nanoTime()
@@ -107,14 +133,13 @@ suspend fun main(): Unit = coroutineScope {
             if ((System.nanoTime() - sessionStart) >= HEALTHY_SESSION_NANOS) consecutiveFailures = 0
             consecutiveFailures++
 
-            // NEVER log e.message (or any cause's message) here. For a rejected-token
-            // failure this is a ClientRequestException whose message embeds the full request
-            // URL — and this bot's requests go to https://api.telegram.org/bot<TOKEN>/...,
-            // so printing it would put the bot token in stderr and the container log. Class
-            // names carry enough signal to diagnose (a ClientRequestException chain here
-            // means Telegram rejected the request, most likely 401/403 = revoked/bad token)
-            // without ever touching a message. The next person tempted to "improve" this by
-            // adding e.message: don't — see above.
+            // NEVER log e.message (or any cause's message) here. Every request this bot makes
+            // goes to https://api.telegram.org/bot<TOKEN>/..., so any exception whose message
+            // embeds the request URL (a ClientRequestException, if one ever does reach this
+            // catch — see the comment above on why it normally doesn't) would put the bot
+            // token in stderr and the container log if printed. Class names carry enough
+            // signal to diagnose without ever touching a message. The next person tempted to
+            // "improve" this by adding e.message: don't — see above.
             val diagnosis = generateSequence(e as Throwable) { it.cause }.joinToString(" <- ") { it.javaClass.simpleName }
             logger.warn("exchange-bot: listener error ($diagnosis); failure $consecutiveFailures/$MAX_CONSECUTIVE_FAILURES")
             runCatching { bot.update.stopListener() }
@@ -137,3 +162,34 @@ private const val RESTART_DELAY = 5L
 // Slightly above the 30s updatesPollingTimeout configured above — see the comment at the
 // catch site for why this is the "did at least one poll probably succeed" threshold.
 private val HEALTHY_SESSION_NANOS = 35.seconds.inWholeNanoseconds
+
+/** Outcome of [validateBotToken] — three-way, not a Boolean, because "could not tell" is a
+ * real third state and must never be conflated with "confirmed rejected" (see below). */
+internal sealed interface TokenValidation {
+    data object Valid : TokenValidation
+    data object Rejected : TokenValidation
+    data class Unknown(val causeClass: String) : TokenValidation
+}
+
+/**
+ * Calls `getMe` once and classifies the result. Checks `.isSuccess()` on the returned
+ * `Response`, not a thrown exception: `throwExOnActionsFailure` defaults to false and is
+ * never overridden in this codebase, so a Telegram-side rejection (401/403 for a bad token)
+ * comes back as `Response.Failure`, never a throw — the exact assumption every other send
+ * site here already makes (see `AdminCommands.isAdmin`). A bare `send()` cannot do this job:
+ * it never surfaces a Telegram-side failure at all.
+ *
+ * An exception thrown from the call itself is a different, genuinely ambiguous case: the
+ * request never reached Telegram (DNS not up yet, connection refused, connect timeout), so
+ * it says nothing about the token one way or the other — it is [TokenValidation.Unknown],
+ * never [TokenValidation.Rejected]. Treating it as a rejection would turn an ordinary
+ * few-second network blip at startup into a crash loop.
+ */
+internal suspend fun validateBotToken(bot: TelegramBot): TokenValidation = try {
+    val identity = getMe().sendReturning(bot).await()
+    if (identity.isSuccess()) TokenValidation.Valid else TokenValidation.Rejected
+} catch (e: kotlinx.coroutines.CancellationException) {
+    throw e
+} catch (e: Exception) {
+    TokenValidation.Unknown(e.javaClass.simpleName)
+}
