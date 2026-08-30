@@ -31,6 +31,7 @@ suspend fun doneCallback(a: String?, b: String?, update: ProcessedUpdate, bot: T
     } else {
         Registry.lifecycle.done(update.getUser().id, a, b)
     }
+    logCommand("done_button", result.outcomeLabel())
     respond(result, update, bot)
 }
 
@@ -38,6 +39,7 @@ suspend fun doneCallback(a: String?, b: String?, update: ProcessedUpdate, bot: T
 suspend fun cancelCallback(t: String?, update: ProcessedUpdate, bot: TelegramBot) {
     val result = if (t == null) ActionResult.Denied(BROKEN_BUTTON)
         else Registry.lifecycle.cancelByToken(update.getUser().id, t)
+    logCommand("cancel_button", result.outcomeLabel())
     respond(result, update, bot)
 }
 
@@ -47,6 +49,7 @@ suspend fun reopenCallback(t: String?, update: ProcessedUpdate, bot: TelegramBot
     val tif = Registry.settings.get(chat.id).tifDays
     val result = if (t == null) ActionResult.Denied(BROKEN_BUTTON)
         else Registry.lifecycle.reopen(chat.id, update.getUser().id, tif, t)
+    logCommand("reopen_button", result.outcomeLabel())
     respond(result, update, bot)
 }
 

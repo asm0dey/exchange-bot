@@ -39,31 +39,45 @@ private suspend fun isAdmin(chatId: Long, userId: Long, bot: TelegramBot): Boole
     return status == "creator" || status == "administrator"
 }
 
-private suspend fun adminOnly(update: ProcessedUpdate, bot: TelegramBot, body: suspend (List<String>) -> String) {
+/**
+ * `command` is a fixed label from the call site, never derived from user input. The
+ * outcome category deliberately stops at "handled" / "not_admin": [body] returns free-form
+ * reply text (a validation message or a confirmation) that this wrapper never inspects, so
+ * there is no structured result to log a finer category from without string-matching our
+ * own reply text — see docs/logging-notes.md.
+ */
+private suspend fun adminOnly(
+    command: String,
+    update: ProcessedUpdate,
+    bot: TelegramBot,
+    body: suspend (List<String>) -> String,
+) {
     if (!inGroupOrExplain(update, bot)) return
     val chat = update.getChat()
     val user = update.getUser()
     if (!isAdmin(chat.id, user.id, bot)) {
+        logCommand(command, "not_admin")
         message { NOT_ADMIN }.send(chat.id, bot)
         return
     }
     val args = update.text.trim().split(Regex("\\s+")).drop(1)
     val text = body(args)
+    logCommand(command, "handled")
     message { text }.send(chat.id, bot)
 }
 
 @CommandHandler(["/pair"])
-suspend fun pair(update: ProcessedUpdate, bot: TelegramBot) = adminOnly(update, bot) { args ->
+suspend fun pair(update: ProcessedUpdate, bot: TelegramBot) = adminOnly("pair", update, bot) { args ->
     if (args.size < 2) "Tell me both currencies, like /pair EUR RUB"
     else Registry.admin.setPair(update.getChat().id, args[0], args[1])
 }
 
 @CommandHandler(["/tolerance"])
-suspend fun tolerance(update: ProcessedUpdate, bot: TelegramBot) = adminOnly(update, bot) { args ->
+suspend fun tolerance(update: ProcessedUpdate, bot: TelegramBot) = adminOnly("tolerance", update, bot) { args ->
     Registry.admin.setTolerance(update.getChat().id, args.firstOrNull().orEmpty())
 }
 
 @CommandHandler(["/tif"])
-suspend fun tif(update: ProcessedUpdate, bot: TelegramBot) = adminOnly(update, bot) { args ->
+suspend fun tif(update: ProcessedUpdate, bot: TelegramBot) = adminOnly("tif", update, bot) { args ->
     Registry.admin.setTif(update.getChat().id, args.firstOrNull().orEmpty())
 }

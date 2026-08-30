@@ -9,9 +9,17 @@ import eu.vendeli.tgbot.types.component.ProcessedUpdate
 import eu.vendeli.tgbot.types.component.getChat
 import eu.vendeli.tgbot.types.component.getOrNull
 import eu.vendeli.tgbot.types.component.getUser
+import org.slf4j.LoggerFactory
 
 private const val PRIVATE_HINT =
     "I introduce people who want to swap currency inside a group chat. Add me to your group to use me."
+
+private val cmdLogger = LoggerFactory.getLogger("fxbot.commands")
+
+/** The only shape a command-surface log line may take: the command name (fixed, from the
+ *  handler registry, never user input) and a fixed outcome label — never who sent it, what
+ *  chat it was sent in, or what they typed. Internal so every command file shares it. */
+internal fun logCommand(command: String, outcome: String) = cmdLogger.debug("command=$command outcome=$outcome")
 
 /** Channels have no per-person sender to match, mention, or authorize. */
 private fun ProcessedUpdate.isGroupChat(): Boolean =
@@ -37,13 +45,19 @@ private suspend fun handlePost(verb: Verb, update: ProcessedUpdate, bot: Telegra
     val chat = update.getChat()
     val user = update.getUser()
     val args = update.text.trim().split(Regex("\\s+")).drop(1)
+    val command = verb.name.lowercase()
     if (args.size < 2) {
+        logCommand(command, "missing_args")
         message { "Tell me the amount and the currency, like: /sell 1000 EUR" }.send(chat.id, bot)
         return
     }
     when (val result = Registry.service.post(chat.id, user.id, user.username, verb, args[0], args[1])) {
-        is PostResult.Rejected -> message { result.reason }.send(chat.id, bot)
+        is PostResult.Rejected -> {
+            logCommand(command, "rejected")
+            message { result.reason }.send(chat.id, bot)
+        }
         is PostResult.Posted -> {
+            logCommand(command, "posted")
             val text = renderSuggestions(result.found, result.status)
             val buttons = suggestionButtons(result.request, result.found)
             val sent = message { text }
@@ -71,6 +85,7 @@ suspend fun status(update: ProcessedUpdate, bot: TelegramBot) {
     if (!inGroupOrExplain(update, bot)) return
     val chat = update.getChat()
     val user = update.getUser()
+    logCommand("status", "shown")
     message { renderStatus(Registry.requests.resting(chat.id), user.id) }
         .options { parseMode = ParseMode.HTML }
         .send(chat.id, bot)
@@ -81,6 +96,7 @@ suspend fun settings(update: ProcessedUpdate, bot: TelegramBot) {
     if (!inGroupOrExplain(update, bot)) return
     val chat = update.getChat()
     val s = Registry.settings.get(chat.id)
+    logCommand("settings", "shown")
     message {
         "This chat swaps ${s.pair}. Amounts match within ${s.tolerancePct}%, " +
             "and a request waits ${s.tifDays} days before it lapses. " +
@@ -105,6 +121,7 @@ private val HELP_TEXT = """
 @CommandHandler(["/help"])
 suspend fun help(update: ProcessedUpdate, bot: TelegramBot) {
     if (!inGroupOrExplain(update, bot)) return
+    logCommand("help", "shown")
     message { HELP_TEXT }.send(update.getChat().id, bot)
 }
 
@@ -117,5 +134,6 @@ suspend fun help(update: ProcessedUpdate, bot: TelegramBot) {
 @CommandHandler(["/start"])
 suspend fun start(update: ProcessedUpdate, bot: TelegramBot) {
     val chat = update.getChat()
+    logCommand("start", "shown")
     message { if (update.isGroupChat()) HELP_TEXT else PRIVATE_HINT }.send(chat.id, bot)
 }

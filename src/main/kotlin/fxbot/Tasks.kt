@@ -4,11 +4,13 @@ import com.github.kagkarlsson.scheduler.Scheduler
 import com.github.kagkarlsson.scheduler.task.helper.Tasks
 import com.github.kagkarlsson.scheduler.task.schedule.Schedules
 import kotlinx.coroutines.runBlocking
+import org.slf4j.LoggerFactory
 import java.time.Clock
 import java.time.Duration
 import javax.sql.DataSource
 
 private val RETENTION: Duration = Duration.ofDays(90)
+private val logger = LoggerFactory.getLogger("fxbot.Housekeeping")
 
 class Housekeeping(
     private val requests: RequestRepository,
@@ -17,10 +19,12 @@ class Housekeeping(
     private val log: MessageLogRepository,
     private val clock: Clock = Clock.systemUTC(),
 ) {
-    /** Lapses what is past its time in force, and prunes the message record. */
+    /** Lapses what is past its time in force, and prunes the message record. Counts only —
+     *  no chat/request identity belongs in this log line. */
     fun sweep(): Int {
         val expired = requests.expireDue(clock.instant())
-        log.prune(clock.instant().minus(RETENTION))
+        val pruned = log.prune(clock.instant().minus(RETENTION))
+        logger.info("sweep: expired=$expired pruned=$pruned")
         return expired
     }
 

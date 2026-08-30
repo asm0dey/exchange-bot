@@ -19,7 +19,8 @@ dependencies {
     implementation(libs.hikari)
     implementation(libs.tink)
     implementation(libs.flyway.core)
-    implementation(libs.slf4j.simple)
+    implementation(libs.tinylog.impl)
+    implementation(libs.slf4j.tinylog)
     implementation(libs.exposed.core)
     implementation(libs.exposed.jdbc)
 

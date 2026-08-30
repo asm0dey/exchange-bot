@@ -8,11 +8,18 @@ import io.ktor.client.engine.cio.CIO
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import org.slf4j.LoggerFactory
 import kotlin.system.exitProcess
 import kotlin.time.Duration.Companion.seconds
 
+private val logger = LoggerFactory.getLogger("fxbot.Main")
+
 suspend fun main(): Unit = coroutineScope {
     val cfg = loadConfig(System::getenv)
+    // Config shape, never values: whether DB_PATH was left at its default or overridden.
+    // Every other field is a required secret (see Config.toString's redaction) and has no
+    // "shape" worth reporting beyond "present", which loadConfig already enforces by throwing.
+    logger.info("exchange-bot starting: dbPath=" + if (cfg.dbPath == DEFAULT_DB_PATH) "default" else "custom")
     val crypto = Crypto(cfg.dataKeyset, cfg.indexKeyset)
     val ds = createDataSource(cfg)
     migrate(ds)
@@ -75,7 +82,7 @@ suspend fun main(): Unit = coroutineScope {
         botCommand("help", "What I can do")
     }.send(bot)
 
-    println("exchange-bot: listening")
+    logger.info("exchange-bot: listening")
 
     // A revoked/mistyped token, or any other Fatal condition the library's polling loop
     // classifies (see TgUpdateHandler.classify — HttpRequestTimeoutException,
@@ -109,13 +116,11 @@ suspend fun main(): Unit = coroutineScope {
             // without ever touching a message. The next person tempted to "improve" this by
             // adding e.message: don't — see above.
             val diagnosis = generateSequence(e as Throwable) { it.cause }.joinToString(" <- ") { it.javaClass.simpleName }
-            System.err.println(
-                "exchange-bot: listener error ($diagnosis); failure $consecutiveFailures/$MAX_CONSECUTIVE_FAILURES",
-            )
+            logger.warn("exchange-bot: listener error ($diagnosis); failure $consecutiveFailures/$MAX_CONSECUTIVE_FAILURES")
             runCatching { bot.update.stopListener() }
 
             if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-                System.err.println(
+                logger.error(
                     "exchange-bot: giving up after $consecutiveFailures consecutive failures with no " +
                         "successful poll; exiting so the orchestrator notices",
                 )

@@ -1,5 +1,8 @@
 package fxbot
 
+/** Exposed so callers can report config SHAPE (default vs overridden) without logging the value itself. */
+const val DEFAULT_DB_PATH = "./data/exchange"
+
 data class Config(
     val botToken: String,
     val dbPath: String,
@@ -25,7 +28,7 @@ fun loadConfig(env: (String) -> String?): Config {
     }
     return Config(
         botToken = required("BOT_TOKEN"),
-        dbPath = env("DB_PATH")?.takeIf { it.isNotBlank() } ?: "./data/exchange",
+        dbPath = env("DB_PATH")?.takeIf { it.isNotBlank() } ?: DEFAULT_DB_PATH,
         dbFileKey = required("DB_FILE_KEY"),
         dbUserPw = required("DB_USER_PW"),
         dataKeyset = required("DATA_KEYSET"),

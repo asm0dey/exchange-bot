@@ -9,6 +9,14 @@ sealed interface ActionResult {
     data class Gone(override val text: String) : ActionResult
 }
 
+/** Fixed outcome label for command-surface logging — never the [ActionResult.text] itself,
+ *  which can carry a counterparty's name via [mention]. */
+internal fun ActionResult.outcomeLabel(): String = when (this) {
+    is ActionResult.Ok -> "ok"
+    is ActionResult.Denied -> "denied"
+    is ActionResult.Gone -> "gone"
+}
+
 /**
  * Authorization is decided here, from the acting user id — never from anything a
  * client sent us (callback_data is a UI suggestion, not proof of identity). Cancel

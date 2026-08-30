@@ -46,10 +46,13 @@ suspend fun cancel(update: ProcessedUpdate, bot: TelegramBot) {
     val user = update.getUser()
     val shortId = update.text.trim().split(Regex("\\s+")).getOrNull(1)
     if (shortId == null) {
+        logCommand("cancel", "missing_args")
         message { "Which one? Try /cancel a1 — /status lists them." }.send(chat.id, bot)
         return
     }
-    replyToClose(chat.id, bot, Registry.lifecycle.cancel(chat.id, user.id, shortId))
+    val result = Registry.lifecycle.cancel(chat.id, user.id, shortId)
+    logCommand("cancel", result.outcomeLabel())
+    replyToClose(chat.id, bot, result)
 }
 
 @CommandHandler(["/reopen"])
@@ -57,7 +60,9 @@ suspend fun reopen(update: ProcessedUpdate, bot: TelegramBot) {
     if (!inGroupOrExplain(update, bot)) return
     val chat = update.getChat()
     val tif = Registry.settings.get(chat.id).tifDays
-    message { Registry.lifecycle.reopen(chat.id, update.getUser().id, tif).text }.send(chat.id, bot)
+    val result = Registry.lifecycle.reopen(chat.id, update.getUser().id, tif)
+    logCommand("reopen", result.outcomeLabel())
+    message { result.text }.send(chat.id, bot)
 }
 
 @CommandHandler(["/done"])
@@ -68,11 +73,14 @@ suspend fun done(update: ProcessedUpdate, bot: TelegramBot) {
     val parts = update.text.trim().split(Regex("\\s+"))
     val shortId = parts.getOrNull(1)
     if (shortId == null) {
+        logCommand("done", "missing_args")
         message { "Which one? Try /done a1 @someone" }.send(chat.id, bot)
         return
     }
     val peerId = resolvePeer(update, chat.id)
-    replyToClose(chat.id, bot, Registry.lifecycle.doneByShortId(chat.id, user.id, shortId, peerId))
+    val result = Registry.lifecycle.doneByShortId(chat.id, user.id, shortId, peerId)
+    logCommand("done", result.outcomeLabel())
+    replyToClose(chat.id, bot, result)
 }
 
 private const val REDACTED = "(a message was edited at someone's request)"
@@ -93,6 +101,7 @@ suspend fun forget(update: ProcessedUpdate, bot: TelegramBot) {
 
     if (global) {
         if (chat.type != ChatType.Private) {
+            logCommand("forget", "private_chat_required")
             message {
                 "Send /forget all to me in a private chat — from here I'd be reaching into your other groups."
             }.send(chat.id, bot)
@@ -102,6 +111,7 @@ suspend fun forget(update: ProcessedUpdate, bot: TelegramBot) {
         return
     }
 
+    logCommand("forget", if (global) "erased_global" else "erased_chat")
     val plan = Registry.forget.plan(user.id, if (global) null else chat.id)
 
     // Best-effort, and counted for real: a message already gone (too old to delete,

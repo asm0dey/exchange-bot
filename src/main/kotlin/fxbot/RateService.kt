@@ -1,11 +1,13 @@
 package fxbot
 
+import org.slf4j.LoggerFactory
 import java.math.BigDecimal
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
 
 private val STALE_AFTER: Duration = Duration.ofDays(7)
+private val logger = LoggerFactory.getLogger("fxbot.RateService")
 
 /**
  * The three degradation states, from best to worst: a fresh cached rate; the feed unreachable
@@ -43,19 +45,35 @@ class RateService(
      * column, and a smeared timestamp across a single fetch would be untidy.
      */
     suspend fun refresh(pairs: Set<CurrencyPair>) {
-        for (base in pairs.map { it.base }.toSet()) {
+        val bases = pairs.map { it.base }.toSet()
+        var refreshed = 0
+        for (base in bases) {
             val rates = client.fetch(base) ?: continue
+            refreshed++
             val fetchedAt = clock.instant()
             for ((quote, rate) in rates) {
                 repo.put(base, quote, rate, fetchedAt)
             }
         }
+        // Counts only. A bare base currency code (e.g. "EUR") is not identifying — it's one
+        // of a small fixed ISO 4217 set, not tied to any chat or person — but nothing else
+        // about this run belongs here.
+        logger.info("rate refresh: bases=${bases.size} refreshed=$refreshed")
     }
 
     fun status(pair: CurrencyPair): RateStatus {
-        val cached = repo.get(pair.base, pair.quote) ?: return RateStatus.Unavailable
+        val cached = repo.get(pair.base, pair.quote)
+        if (cached == null) {
+            logger.info("rate status: base=${pair.base} outcome=unavailable")
+            return RateStatus.Unavailable
+        }
         val age = Duration.between(cached.fetchedAt, clock.instant())
-        return if (age > STALE_AFTER) RateStatus.Stale(cached.rate, cached.fetchedAt)
-        else RateStatus.Fresh(cached.rate)
+        return if (age > STALE_AFTER) {
+            logger.info("rate status: base=${pair.base} outcome=degraded_to_cache")
+            RateStatus.Stale(cached.rate, cached.fetchedAt)
+        } else {
+            logger.info("rate status: base=${pair.base} outcome=fresh")
+            RateStatus.Fresh(cached.rate)
+        }
     }
 }
