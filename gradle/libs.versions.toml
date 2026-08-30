@@ -12,6 +12,7 @@ slf4j = "2.0.18"
 kotest = "6.2.3"
 tink = "1.18.0"
 flyway = "11.8.2"
+exposed = "1.5.0"
 
 [libraries]
 telegram-bot = { module = "eu.vendeli:telegram-bot", version.ref = "telegrambot" }
@@ -29,6 +30,8 @@ tink = { module = "com.google.crypto.tink:tink", version.ref = "tink" }
 flyway-core = { module = "org.flywaydb:flyway-core", version.ref = "flyway" }
 kotest-runner = { module = "io.kotest:kotest-runner-junit5", version.ref = "kotest" }
 kotest-assertions = { module = "io.kotest:kotest-assertions-core", version.ref = "kotest" }
+exposed-core = { module = "org.jetbrains.exposed:exposed-core", version.ref = "exposed" }
+exposed-jdbc = { module = "org.jetbrains.exposed:exposed-jdbc", version.ref = "exposed" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }

@@ -20,6 +20,8 @@ dependencies {
     implementation(libs.tink)
     implementation(libs.flyway.core)
     implementation(libs.slf4j.simple)
+    implementation(libs.exposed.core)
+    implementation(libs.exposed.jdbc)
 
     testImplementation(libs.kotest.runner)
     testImplementation(libs.kotest.assertions)

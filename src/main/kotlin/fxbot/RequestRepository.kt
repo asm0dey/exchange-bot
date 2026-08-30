@@ -2,10 +2,18 @@ package fxbot
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import org.jetbrains.exposed.v1.core.ResultRow
+import org.jetbrains.exposed.v1.core.SortOrder
+import org.jetbrains.exposed.v1.core.and
+import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.less
+import org.jetbrains.exposed.v1.core.neq
+import org.jetbrains.exposed.v1.jdbc.deleteWhere
+import org.jetbrains.exposed.v1.jdbc.insert
+import org.jetbrains.exposed.v1.jdbc.selectAll
+import org.jetbrains.exposed.v1.jdbc.transactions.transaction
+import org.jetbrains.exposed.v1.jdbc.update
 import java.math.BigDecimal
-import java.sql.Connection
-import java.sql.ResultSet
-import java.sql.Timestamp
 import java.time.Clock
 import java.time.Instant
 import java.util.concurrent.locks.ReentrantLock
@@ -29,11 +37,19 @@ private val SHORT_IDS: List<String> =
     ('a'..'z').map { it.toString() } + ('a'..'z').flatMap { c -> ('0'..'9').map { "$c$it" } }
 
 class RequestRepository(
-    private val ds: DataSource,
+    ds: DataSource,
     private val crypto: Crypto,
     private val clock: Clock = Clock.systemUTC(),
 ) {
     private val json = Json { ignoreUnknownKeys = true }
+
+    // Exposed registers a transaction manager per Database instance, not one global
+    // default, so every transaction() call below is handed this instance explicitly
+    // rather than relying on a thread-local default that a second repository (a second
+    // test, a second pool) could overwrite. This still never lets Exposed open its own
+    // connections — every query runs through the Hikari pool the caller built and
+    // Flyway already migrated.
+    private val db = connectExposed(ds)
 
     // Short ids are unique only among a chat's live requests, and H2 has no partial
     // unique index to enforce that. `SELECT ... FOR UPDATE` cannot do it either: it
@@ -55,138 +71,108 @@ class RequestRepository(
         pair: CurrencyPair,
         tifDays: Int,
     ): Request = allocationLock.withLock {
-        ds.connection.use { c ->
-            c.autoCommit = false
-            try {
-                val chatRef = crypto.ref(chatId.toString())
-                val shortId = allocateShortId(c, chatRef)
-                val refToken = newRefToken()
-                val now = clock.instant()
-                val expires = now.plusSeconds(tifDays.toLong() * 86_400)
-                val payload = Payload(
-                    chatId, userId, username, side.name, statedCurrency,
-                    statedAmount.toPlainString(), pair.base, pair.quote,
-                )
-                c.prepareStatement(
-                    """
-                    INSERT INTO request (ref_token, chat_ref, user_ref, short_id, state,
-                                         created_at, expires_at, payload)
-                    VALUES (?, ?, ?, ?, 'OPEN', ?, ?, ?)
-                    """.trimIndent()
-                ).use { st ->
-                    st.setString(1, refToken)
-                    st.setString(2, chatRef)
-                    st.setString(3, crypto.ref(userId.toString()))
-                    st.setString(4, shortId)
-                    st.setTimestamp(5, Timestamp.from(now))
-                    st.setTimestamp(6, Timestamp.from(expires))
-                    st.setBytes(7, crypto.seal(json.encodeToString(payload), refToken))
-                    st.executeUpdate()
-                }
-                c.commit()
-                Request(
-                    rowId = 0, refToken = refToken, chatId = chatId, userId = userId,
-                    username = username, shortId = shortId, side = side,
-                    statedCurrency = statedCurrency, statedAmount = statedAmount, pair = pair,
-                    state = RequestState.OPEN, createdAt = now, expiresAt = expires,
-                )
-            } catch (e: Exception) {
-                c.rollback(); throw e
-            } finally {
-                c.autoCommit = true
+        transaction(db) {
+            val chatRef = crypto.ref(chatId.toString())
+            val shortId = allocateShortId(chatRef)
+            val refToken = newRefToken()
+            val now = clock.instant()
+            val expires = now.plusSeconds(tifDays.toLong() * 86_400)
+            val payload = Payload(
+                chatId, userId, username, side.name, statedCurrency,
+                statedAmount.toPlainString(), pair.base, pair.quote,
+            )
+            Requests.insert {
+                it[Requests.refToken] = refToken
+                it[Requests.chatRef] = chatRef
+                it[Requests.userRef] = crypto.ref(userId.toString())
+                it[Requests.shortId] = shortId
+                it[Requests.state] = RequestState.OPEN.name
+                it[Requests.createdAt] = now
+                it[Requests.expiresAt] = expires
+                it[Requests.payload] = crypto.seal(json.encodeToString(payload), refToken)
             }
+            Request(
+                rowId = 0, refToken = refToken, chatId = chatId, userId = userId,
+                username = username, shortId = shortId, side = side,
+                statedCurrency = statedCurrency, statedAmount = statedAmount, pair = pair,
+                state = RequestState.OPEN, createdAt = now, expiresAt = expires,
+            )
         }
     }
 
-    /** The caller holds [allocationLock]; see its comment for why that is the guard. */
-    private fun allocateShortId(c: Connection, chatRef: String): String {
-        val taken = mutableSetOf<String>()
-        c.prepareStatement("SELECT short_id FROM request WHERE chat_ref = ? AND state = 'OPEN'").use { st ->
-            st.setString(1, chatRef)
-            st.executeQuery().use { rs -> while (rs.next()) taken += rs.getString(1) }
-        }
+    /** The caller holds [allocationLock] and is already inside its transaction; see its comment for why that is the guard. */
+    private fun allocateShortId(chatRef: String): String {
+        val taken = Requests.selectAll()
+            .where { (Requests.chatRef eq chatRef) and (Requests.state eq RequestState.OPEN.name) }
+            .map { it[Requests.shortId] }
+            .toSet()
         return SHORT_IDS.firstOrNull { it !in taken }
             ?: error("this chat has more resting requests than there are short ids")
     }
 
-    fun resting(chatId: Long): List<Request> = query(
-        "SELECT * FROM request WHERE chat_ref = ? AND state = 'OPEN' ORDER BY expires_at, row_id"
-    ) { st -> st.setString(1, crypto.ref(chatId.toString())) }
-
-    fun byRefToken(token: String): Request? =
-        queryOne("SELECT * FROM request WHERE ref_token = ?") { st -> st.setString(1, token) }
-
-    fun byShortId(chatId: Long, shortId: String): Request? = queryOne(
-        "SELECT * FROM request WHERE chat_ref = ? AND short_id = ? AND state = 'OPEN'"
-    ) { st ->
-        st.setString(1, crypto.ref(chatId.toString()))
-        st.setString(2, shortId)
+    fun resting(chatId: Long): List<Request> = transaction(db) {
+        val chatRef = crypto.ref(chatId.toString())
+        Requests.selectAll()
+            .where { (Requests.chatRef eq chatRef) and (Requests.state eq RequestState.OPEN.name) }
+            .orderBy(Requests.expiresAt to SortOrder.ASC, Requests.rowId to SortOrder.ASC)
+            .map { hydrate(it) }
     }
 
-    fun mostRecentlyClosed(chatId: Long, userId: Long): Request? = queryOne(
-        """
-        SELECT * FROM request
-        WHERE chat_ref = ? AND user_ref = ? AND state <> 'OPEN'
-        ORDER BY closed_at DESC, row_id DESC LIMIT 1
-        """.trimIndent()
-    ) { st ->
-        st.setString(1, crypto.ref(chatId.toString()))
-        st.setString(2, crypto.ref(userId.toString()))
+    fun byRefToken(token: String): Request? = transaction(db) {
+        Requests.selectAll().where { Requests.refToken eq token }.firstOrNull()?.let { hydrate(it) }
+    }
+
+    fun byShortId(chatId: Long, shortId: String): Request? = transaction(db) {
+        val chatRef = crypto.ref(chatId.toString())
+        Requests.selectAll()
+            .where {
+                (Requests.chatRef eq chatRef) and (Requests.shortId eq shortId) and
+                    (Requests.state eq RequestState.OPEN.name)
+            }
+            .firstOrNull()?.let { hydrate(it) }
+    }
+
+    fun mostRecentlyClosed(chatId: Long, userId: Long): Request? = transaction(db) {
+        val chatRef = crypto.ref(chatId.toString())
+        val userRef = crypto.ref(userId.toString())
+        Requests.selectAll()
+            .where {
+                (Requests.chatRef eq chatRef) and (Requests.userRef eq userRef) and
+                    (Requests.state neq RequestState.OPEN.name)
+            }
+            .orderBy(Requests.closedAt to SortOrder.DESC, Requests.rowId to SortOrder.DESC)
+            .limit(1)
+            .firstOrNull()?.let { hydrate(it) }
     }
 
     /**
      * Guarded by the expected state, so a double press closes exactly once.
      * Stamps `closed_at` so "most recently closed" means what it says.
      */
-    fun transition(refToken: String, from: RequestState, to: RequestState): Boolean =
-        ds.connection.use { c ->
-            c.prepareStatement(
-                "UPDATE request SET state = ?, closed_at = ? WHERE ref_token = ? AND state = ?"
-            ).use { st ->
-                st.setString(1, to.name)
-                st.setTimestamp(2, if (to == RequestState.OPEN) null else Timestamp.from(clock.instant()))
-                st.setString(3, refToken)
-                st.setString(4, from.name)
-                st.executeUpdate() == 1
-            }
-        }
+    fun transition(refToken: String, from: RequestState, to: RequestState): Boolean = transaction(db) {
+        Requests.update({ (Requests.refToken eq refToken) and (Requests.state eq from.name) }) {
+            it[Requests.state] = to.name
+            it[Requests.closedAt] = if (to == RequestState.OPEN) null else clock.instant()
+        } == 1
+    }
 
     /** Stamps `closed_at` like every other close, so recency ordering sees expiries. */
-    fun expireDue(now: Instant): Int = ds.connection.use { c ->
-        c.prepareStatement(
-            "UPDATE request SET state = 'EXPIRED', closed_at = ? WHERE state = 'OPEN' AND expires_at < ?"
-        ).use { st ->
-            st.setTimestamp(1, Timestamp.from(now))
-            st.setTimestamp(2, Timestamp.from(now))
-            st.executeUpdate()
+    fun expireDue(now: Instant): Int = transaction(db) {
+        Requests.update({ (Requests.state eq RequestState.OPEN.name) and (Requests.expiresAt less now) }) {
+            it[Requests.state] = RequestState.EXPIRED.name
+            it[Requests.closedAt] = now
         }
     }
 
     /** Returns the ref tokens removed, so message cleanup knows what to strip. */
-    fun deleteFor(userId: Long, chatId: Long?): List<String> = ds.connection.use { c ->
-        c.autoCommit = false
-        try {
-            val userRef = crypto.ref(userId.toString())
-            val chatRef = chatId?.let { crypto.ref(it.toString()) }
-            val where = if (chatRef == null) "user_ref = ?" else "user_ref = ? AND chat_ref = ?"
-            val tokens = mutableListOf<String>()
-            c.prepareStatement("SELECT ref_token FROM request WHERE $where").use { st ->
-                st.setString(1, userRef)
-                chatRef?.let { st.setString(2, it) }
-                st.executeQuery().use { rs -> while (rs.next()) tokens += rs.getString(1) }
-            }
-            c.prepareStatement("DELETE FROM request WHERE $where").use { st ->
-                st.setString(1, userRef)
-                chatRef?.let { st.setString(2, it) }
-                st.executeUpdate()
-            }
-            c.commit()
-            tokens
-        } catch (e: Exception) {
-            c.rollback(); throw e
-        } finally {
-            c.autoCommit = true
-        }
+    fun deleteFor(userId: Long, chatId: Long?): List<String> = transaction(db) {
+        val userRef = crypto.ref(userId.toString())
+        val chatRef = chatId?.let { crypto.ref(it.toString()) }
+        val predicate = if (chatRef == null) Requests.userRef eq userRef
+                        else (Requests.userRef eq userRef) and (Requests.chatRef eq chatRef)
+        val tokens = Requests.selectAll().where { predicate }.map { it[Requests.refToken] }
+        Requests.deleteWhere { predicate }
+        tokens
     }
 
     /**
@@ -194,87 +180,51 @@ class RequestRepository(
      * column and inside the sealed payload, so each row is resealed. The AAD is
      * the ref token and does not change, so the tokens stay valid throughout.
      *
-     * The read and every reseal happen on one connection inside one transaction,
-     * so a row inserted into the old chat mid-migration is not stranded under a
-     * chat ref that no longer resolves.
+     * The read and every reseal happen inside one transaction, so a row inserted
+     * into the old chat mid-migration is not stranded under a chat ref that no
+     * longer resolves.
      */
-    fun rewriteChatRef(oldChatId: Long, newChatId: Long): Int = ds.connection.use { c ->
-        c.autoCommit = false
-        try {
-            val oldRef = crypto.ref(oldChatId.toString())
-            val newRef = crypto.ref(newChatId.toString())
-            val rows = mutableListOf<Request>()
-            c.prepareStatement("SELECT * FROM request WHERE chat_ref = ?").use { st ->
-                st.setString(1, oldRef)
-                st.executeQuery().use { rs -> while (rs.next()) rows += hydrate(rs) }
-            }
-            var updated = 0
-            for (r in rows) {
-                val resealed = crypto.seal(
-                    json.encodeToString(
-                        Payload(
-                            newChatId, r.userId, r.username, r.side.name, r.statedCurrency,
-                            r.statedAmount.toPlainString(), r.pair.base, r.pair.quote,
-                        )
-                    ),
-                    r.refToken,
-                )
-                c.prepareStatement("UPDATE request SET chat_ref = ?, payload = ? WHERE ref_token = ?").use { st ->
-                    st.setString(1, newRef)
-                    st.setBytes(2, resealed)
-                    st.setString(3, r.refToken)
-                    updated += st.executeUpdate()
-                }
-            }
-            c.commit()
-            updated
-        } catch (e: Exception) {
-            c.rollback(); throw e
-        } finally {
-            c.autoCommit = true
-        }
-    }
-
-    private fun query(sql: String, bind: (java.sql.PreparedStatement) -> Unit): List<Request> =
-        ds.connection.use { c ->
-            c.prepareStatement(sql).use { st ->
-                bind(st)
-                st.executeQuery().use { rs ->
-                    val out = mutableListOf<Request>()
-                    while (rs.next()) out += hydrate(rs)
-                    out
-                }
+    fun rewriteChatRef(oldChatId: Long, newChatId: Long): Int = transaction(db) {
+        val oldRef = crypto.ref(oldChatId.toString())
+        val newRef = crypto.ref(newChatId.toString())
+        val rows = Requests.selectAll().where { Requests.chatRef eq oldRef }.map { hydrate(it) }
+        var updated = 0
+        for (r in rows) {
+            val resealed = crypto.seal(
+                json.encodeToString(
+                    Payload(
+                        newChatId, r.userId, r.username, r.side.name, r.statedCurrency,
+                        r.statedAmount.toPlainString(), r.pair.base, r.pair.quote,
+                    )
+                ),
+                r.refToken,
+            )
+            updated += Requests.update({ Requests.refToken eq r.refToken }) {
+                it[Requests.chatRef] = newRef
+                it[Requests.payload] = resealed
             }
         }
-
-    private fun queryOne(
-        sql: String,
-        bind: (java.sql.PreparedStatement) -> Unit,
-    ): Request? = ds.connection.use { c ->
-        c.prepareStatement(sql).use { st ->
-            bind(st)
-            st.executeQuery().use { rs -> if (rs.next()) hydrate(rs) else null }
-        }
+        updated
     }
 
     /** Every field the domain needs comes out of the sealed payload. */
-    private fun hydrate(rs: ResultSet): Request {
-        val refToken = rs.getString("ref_token")
-        val p = json.decodeFromString<Payload>(crypto.open(rs.getBytes("payload"), refToken))
+    private fun hydrate(row: ResultRow): Request {
+        val refToken = row[Requests.refToken]
+        val p = json.decodeFromString<Payload>(crypto.open(row[Requests.payload], refToken))
         return Request(
-            rowId = rs.getLong("row_id"),
+            rowId = row[Requests.rowId],
             refToken = refToken,
             chatId = p.chatId,
             userId = p.userId,
             username = p.username,
-            shortId = rs.getString("short_id"),
+            shortId = row[Requests.shortId],
             side = Side.valueOf(p.side),
             statedCurrency = p.statedCurrency,
             statedAmount = BigDecimal(p.statedAmount),
             pair = CurrencyPair(p.base, p.quote),
-            state = RequestState.valueOf(rs.getString("state")),
-            createdAt = rs.getTimestamp("created_at").toInstant(),
-            expiresAt = rs.getTimestamp("expires_at").toInstant(),
+            state = RequestState.valueOf(row[Requests.state]),
+            createdAt = row[Requests.createdAt],
+            expiresAt = row[Requests.expiresAt],
         )
     }
 }
