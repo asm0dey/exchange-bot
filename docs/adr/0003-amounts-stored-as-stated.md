@@ -1,10 +1,10 @@
 # Amounts are stored exactly as typed and converted only when compared
 
-A request keeps the amount and currency the person wrote, plus which side they
-are on; the conversion into a common unit happens at comparison time using the
-current reference rate. The obvious alternative — normalising on write — would
-freeze a rate into the row, so someone who asked for 1000 EUR would silently
-come to mean a different number of euros every time the market moved.
+A request keeps the amount and currency the person wrote, plus its side; the
+notional is derived at comparison time from the current reference rate. The
+obvious alternative — deriving it on write — would freeze a rate into the row,
+so someone who asked for 1000 EUR would silently come to mean a different
+number of euros every time the market moved.
 
 ## Consequences
 

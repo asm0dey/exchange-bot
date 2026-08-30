@@ -6,7 +6,7 @@
 A Telegram bot that connects people in the same chat who want to exchange
 currency with each other. Someone posts what they are giving away; the bot
 replies with compatible open requests from that same chat, naming the
-counterparts and offering a button to close the deal. Nobody is matched across
+counterpartyies and offering a button to close the deal. Nobody is matched across
 chats.
 
 ## Scope
@@ -26,23 +26,25 @@ Bot language is English only.
 
 ### Request
 
-A request states what a person is **giving away**. Which side that is comes
-from the verb and the currency **together**, never from either alone:
+A request has a **side**, and there are only two: **Offer** gives the base
+currency, **Bid** receives it. Which one a command means depends on the verb
+and the currency together, never on either alone:
 
-| Command          | Wants | Gives | Side       |
-|------------------|-------|-------|------------|
-| `/sell 1000 EUR` | RUB   | EUR   | gives EUR  |
-| `/buy 95000 RUB` | RUB   | EUR   | gives EUR  |
-| `/sell 95000 RUB`| EUR   | RUB   | gives RUB  |
-| `/buy 1000 EUR`  | EUR   | RUB   | gives RUB  |
+| Command           | Wants | Gives | Side   |
+|-------------------|-------|-------|--------|
+| `/sell 1000 EUR`  | RUB   | EUR   | Offer  |
+| `/buy 95000 RUB`  | RUB   | EUR   | Offer  |
+| `/sell 95000 RUB` | EUR   | RUB   | Bid    |
+| `/buy 1000 EUR`   | EUR   | RUB   | Bid    |
 
-So a pair has exactly two sides and four ways to say them. Two requests are
-counterparts when they land on different rows of the `Side` column — which
-means `/sell` can match `/sell`, `/buy` can match `/buy`, and the verb alone
-tells you nothing.
+Four ways to say two things. Two requests are counterpartyies when their sides
+differ — so `/sell` can match `/sell`, `/buy` can match `/buy`, and the verb on
+its own tells you nothing.
 
-`give_currency` is therefore derived at parse time: the stated currency for
-`/sell`, the *other* leg of the pair for `/buy`.
+Derivation at parse time is one line: the side is **Offer** when the verb is
+`sell` and the stated currency is the base, or the verb is `buy` and the stated
+currency is the quote; otherwise **Bid**. Equivalently — you are offering
+exactly when you hand over the base currency.
 
 Each request carries three identifiers, for three different jobs:
 
@@ -59,21 +61,20 @@ that chat's non-terminal requests. Recycling keeps it short enough to type.
 It never appears in any message, which keeps callback payloads unguessable — a
 modified client cannot enumerate sequential ids to probe which requests exist.
 
-Fields: `chat_id`, `user_id`, `username`, `give_currency`, `stated_currency`,
+Fields: `chat_id`, `user_id`, `username`, `side`, `stated_currency`,
 `stated_amount`, `pair`, `state`, `created_at`, `expires_at`.
 
-**Amounts are stored exactly as typed and converted only at match time.**
-`give_currency` records which leg of the pair the person hands over — derived
-from the verb, not from the amount — while `stated_currency` and
-`stated_amount` preserve the literal input. Converting at creation would freeze
-a `/buy 1000 EUR` into a fixed RUB figure that drifts away from the stated
-intent as the rate moves; deferring it means every comparison uses the current
-rate. A trade's size is the same magnitude whichever leg quotes it, so
-normalizing from the stated form is correct for `/sell` and `/buy` alike.
+**Amounts are stored exactly as typed, and a notional is derived only at match
+time.** `stated_currency` and `stated_amount` preserve the literal input.
+Converting at creation would freeze a `/buy 1000 EUR` into a fixed RUB figure
+that drifts away from the stated intent as the rate moves; deriving the
+notional on demand means every comparison uses the current rate. A trade's size
+is the same magnitude whichever leg quotes it, so the notional is well defined
+from either side.
 
 The pair is stamped on the row at creation. An admin changing the chat's pair
 therefore orphans nothing: existing requests keep their own pair, stop matching
-newly created ones, and expire on their TTL.
+newly created ones, and expire on their time in force.
 
 There is no cap on how many requests one person may hold open. The reply list
 is capped at 5 and `/status` at 20, which bounds the visible effect.
@@ -82,9 +83,9 @@ is capped at 5 and `/status` at 20, which bounds the visible effect.
 
 ```
 OPEN ──/cancel──> CANCELLED
- │  ──/done────> FULFILLED     (both sides, in one transaction)
+ │  ──/done────> DONE     (both sides, in one transaction)
  │  ──sweep────> EXPIRED
- └<─ /reopen ── FULFILLED | CANCELLED   (fresh TTL)
+ └<─ /reopen ── DONE | CANCELLED   (clock restarts)
 ```
 
 There is no `MATCHED` state. Pairing is advisory: a suggested request stays
@@ -98,7 +99,7 @@ request. It exists for exactly one case: undoing a mistaken `/done`.
 ### ChatSettings
 
 `chat_id`, `base_ccy`, `quote_ccy`, `tolerance_pct` (default 20),
-`ttl_days` (default 7). The row is created lazily on the chat's first command
+`tif_days` (default 7). The row is created lazily on the chat's first command
 with defaults EUR/RUB.
 
 ## Matching
@@ -110,37 +111,37 @@ Two requests are compatible when all hold:
 - same chat
 - same pair
 - both `OPEN`
-- different `give_currency` (opposite sides of the trade)
+- different `side` (one Bid, one Offer)
 - different `user_id` (no self-match)
-- normalized amounts within the band:
-  `|norm_a − norm_b| / max(norm_a, norm_b) ≤ tolerance_pct / 100`
+- notionals within the size tolerance:
+  `|n_a − n_b| / max(n_a, n_b) ≤ tolerance_pct / 100`
 
-Normalization converts the **stated** amount to the pair's base currency: an
+A notional is the **stated** amount expressed in the pair's base currency: an
 amount already in base is used as-is; an amount in quote is divided by the
 current reference rate.
 
 Worked example, at a rate of 99.98 and a 20% band:
 
 ```
-/sell 999 EUR   -> gives EUR, norm = 999 EUR
-/buy  1000 EUR  -> gives RUB, norm = 1000 EUR
-                   |1000 - 999| / 1000 = 0.1%   -> match
+/sell 999 EUR   -> Offer, notional = 999 EUR
+/buy  1000 EUR  -> Bid,   notional = 1000 EUR
+                   |1000 - 999| / 1000 = 0.1%    -> match
 
-/buy  100 RUB   -> gives EUR, norm = 100 / 99.98 = 1.0002 EUR
-/buy  1 EUR     -> gives RUB, norm = 1 EUR
-                   0.02% apart, opposite sides   -> match
+/buy  100 RUB   -> Offer, notional = 100 / 99.98 = 1.0002 EUR
+/buy  1 EUR     -> Bid,   notional = 1 EUR
+                   0.02% apart, sides differ     -> match
 
-/buy  20 RUB    -> gives EUR, norm = 0.2 EUR
-/sell 20 RUB    -> gives RUB, norm = 0.2 EUR
-                   identical magnitude, opposite sides -> match
+/buy  20 RUB    -> Offer, notional = 0.2 EUR
+/sell 20 RUB    -> Bid,   notional = 0.2 EUR
+                   identical notional, sides differ -> match
 
-/sell 1000 EUR  -> gives EUR
-/buy  95000 RUB -> gives EUR
+/sell 1000 EUR  -> Offer
+/buy  95000 RUB -> Offer
                    SAME side                     -> no match
 ```
 
 The last case is the one worth remembering: identical verbs can be
-counterparts, and opposite verbs can be the same side.
+counterpartyies, and opposite verbs can be the same side.
 
 There is no partial fill and no remainder. A request matches whole or not at
 all.
@@ -156,7 +157,7 @@ table. On `/sell`, `/buy`, and `/status` the bot fetches that chat's `OPEN`
 rows and runs:
 
 ```
-findCounterparts(request, openRows, rate, tolerancePct): List<Match>
+findCounterpartyies(request, openRows, rate, tolerancePct): List<Match>
 ```
 
 sorted by relative distance, capped at 5. The function is pure — no DB, no
@@ -164,7 +165,7 @@ network, no Telegram — and carries the bulk of the test suite. SQL does no
 comparison beyond fetching the chat's open set; at chat scale, filtering in
 Kotlin is both faster to write and far easier to test than a clever query.
 
-Consequence accepted deliberately: the same counterparts are re-listed each
+Consequence accepted deliberately: the same counterpartyies are re-listed each
 time someone asks. In a pool the size of one chat that is useful repetition,
 not spam.
 
@@ -201,8 +202,8 @@ configure a pair the bot will never be able to price.
 /sell <amount> <ccy>     open a request: giving <amount> of <ccy>
 /buy  <amount> <ccy>     same, stated from the wanting end
 /cancel <id>             own request -> CANCELLED
-/done <id> @who          both requests -> FULFILLED, announced publicly
-/reopen                  revive your most recently closed request, fresh TTL
+/done <id> @who          both requests -> DONE, announced publicly
+/reopen                  revive your most recently closed request, restart its clock
 /status [mine]           open requests in this chat
 /settings                read-only, anyone
 /forget                  hard-delete all your data in this chat
@@ -210,7 +211,7 @@ configure a pair the bot will never be able to price.
 /help                    command list
 /pair <base> <quote>     admin only
 /tolerance <pct>         admin only
-/ttl <days>              admin only
+/tif <days>              admin only   (time in force)
 ```
 
 Every command is scoped by the `chat_id` on the incoming message. That single
@@ -218,22 +219,21 @@ fact enforces "only connect people from one chat" — no cross-chat query exists
 anywhere in the codebase, with the sole deliberate exception of `/forget all`.
 
 `/buy 1000 EUR` in an EUR/RUB chat means *wanting* 1000 EUR, so it stores
-`give_currency = RUB` while keeping `stated_amount = 1000`,
-`stated_currency = EUR`. Because no conversion happens at creation, `/buy`
-needs no cached rate to be accepted; it simply cannot be matched across
-denominations until one exists.
+`side = BID` while keeping `stated_amount = 1000`, `stated_currency = EUR`.
+Because no conversion happens at creation, `/buy` needs no cached rate to be
+accepted; it simply cannot be matched across denominations until one exists.
 
-Listings and confirmations always render the stated form, with the normalized
-figure appended in parentheses when the two differ — so the bot never echoes a
+Listings and confirmations always render the stated form, with the notional
+appended in parentheses when the two differ — so the bot never echoes a
 request back in words its author did not use.
 
 Rejections, each a single line naming the fix: unknown currency, currency not
 in the chat's pair, non-positive amount, unparseable amount, unknown id, id
 belonging to someone else.
 
-### Counterpart resolution
+### Counterparty resolution
 
-`/done` resolves its counterpart from Telegram message entities, never from
+`/done` resolves its counterparty from Telegram message entities, never from
 display-name text, so a typo cannot close the wrong person's request. Accepted
 forms, in order:
 
@@ -241,11 +241,11 @@ forms, in order:
    request in this chat** — which is the only population `/done` can validly
    name, so no user directory table is needed
 2. a `text_mention` entity, which carries a `user_id` directly and is how a
-   counterpart without a `@username` is named
-3. `/done <id>` sent as a reply to the counterpart's message
+   counterparty without a `@username` is named
+3. `/done <id>` sent as a reply to the counterparty's message
 
 Anything else is rejected with a line explaining those three forms. A named
-counterpart with no open request closes only the caller's own request, and
+counterparty with no open request closes only the caller's own request, and
 says so.
 
 ## Replies and Buttons
@@ -255,7 +255,7 @@ listing up to 5 compatible requests closest first, each with a Done button:
 
 ```
 @bob: /sell 1000 EUR
-  bot: 2 counterparts:
+  bot: 2 counterpartyies:
        • @alice — buy 900 EUR
        • @carol — sell 95,000 RUB (≈950.19 EUR)
        No fit? You're on the waitlist.
@@ -269,11 +269,11 @@ display-only, refreshed whenever the bot sees a message from that user.
 
 Buttons appear on the request reply only — not on `/status` rows, not on
 `/settings`. The button is where the decision is, because the bot has just
-listed who the counterparts are. A Done confirmation additionally carries a
+listed who the counterpartyies are. A Done confirmation additionally carries a
 `↩️ Reopen` button.
 
 Number formatting: `BigDecimal` with trailing zeros stripped and thousands
-grouped (`1,000 EUR`, `95,000 RUB`); normalized figures in parentheses at 2dp
+grouped (`1,000 EUR`, `95,000 RUB`); notionals in parentheses at 2dp
 (`≈950.19 EUR`); dates as `30 Aug`.
 
 `/status` lists the 20 most recent open requests, closest-to-expiry first, with
@@ -302,7 +302,7 @@ Authorization is re-derived server-side from `callback_query.from.id` on every
 press:
 
 - **Done** — permitted if the presser owns **either** referenced request.
-  Either participant may confirm the trade happened.
+  Either counterparty may confirm the trade happened.
 - **Cancel**, **Reopen** — owner only.
 
 A press by anyone else gets an `answerCallbackQuery` alert visible only to
@@ -326,7 +326,7 @@ proactive pass missed.
 
 ## Permissions
 
-`/pair`, `/tolerance` and `/ttl` call `getChatMember` and require status
+`/pair`, `/tolerance` and `/tif` call `getChatMember` and require status
 `creator` or `administrator`. If that API call fails the command is denied with
 the reason — it never fails open.
 
@@ -402,8 +402,8 @@ sent_message(chat_ref, message_id, sent_at, PK(chat_ref, message_id))
 sent_message_ref(chat_ref, message_id, ref_token, user_ref)
 ```
 
-`payload` holds `{user_id, username, give_currency, stated_currency,
-stated_amount, base, quote}` as JSON.
+`payload` holds `{user_id, username, side, stated_currency, stated_amount,
+base, quote}` as JSON.
 
 **Associated data is `ref_token`.** It is unique, never recycled, and
 independent of the chat, so a ciphertext cannot be relocated to another row and
@@ -450,7 +450,7 @@ Keys are never logged and no command echoes them. `.env` is gitignored;
 ## Data Deletion
 
 `/forget` in a group hard-`DELETE`s every row belonging to that user in that
-chat, terminal ones included — TTL only flips state, which leaves the payload
+chat, terminal ones included — Expiry only flips state, which leaves the payload
 in the file.
 
 `/forget all`, accepted only in a private chat with the bot, deletes that
@@ -505,14 +505,14 @@ AAD is `chat_ref`, is decrypted and re-encrypted.
 One process, but Telegram updates are handled concurrently. Request creation,
 `/done`, and every callback run inside a single transaction whose state
 transition is guarded by `WHERE state = 'OPEN'`. A double `/done` — or the same
-button pressed by both participants at once — therefore closes once, and the
+button pressed by both counterparties at once — therefore closes once, and the
 loser reports "already fulfilled".
 
 ## Scheduled Work
 
 Two db-scheduler tasks, both **parameterless**:
 
-- **TTL sweep** — daily, `UPDATE ... WHERE state='OPEN' AND expires_at < now`,
+- **Expiry sweep** — daily, `UPDATE ... WHERE state='OPEN' AND expires_at < now`,
   plus the 90-day `sent_message` prune. No message is sent; the change shows up
   in `/status`.
 - **Rate refresh** — daily, enumerates the pairs in use itself.
@@ -532,7 +532,7 @@ layer:
 - H2 file database, HikariCP
 - **Flyway** for migrations, with Java-based migrations available for
   decrypt-transform-re-encrypt steps that DDL cannot express
-- db-scheduler for the TTL sweep and the daily rate refresh
+- db-scheduler for the expiry sweep and the daily rate refresh
 - Ktor client (CIO) for the rate feed
 - Google Tink for column encryption
 - kotlinx-serialization, kotlinx-coroutines, slf4j-simple
@@ -559,9 +559,8 @@ Pure functions carry the suite:
   cached rate.
 - **Short ids** — recycling after a request reaches a terminal state, and the
   in-transaction uniqueness guard.
-- **Callback authorization** — forged `callback_data`, a non-participant
-  pressing Done, either participant pressing Done, a token for a terminal
-  request.
+- **Callback authorization** — forged `callback_data`, a third party pressing
+  Done, either counterparty pressing Done, a token for a terminal request.
 - **Crypto** — round trip, wrong key, tampered ciphertext, wrong AAD, and that
   a `ref_token` cannot decrypt another row's payload.
 - **Repository** — in-memory H2 with fixed test keysets; asserts that a raw
@@ -594,20 +593,21 @@ to the tested functions above.
 | 13 | `/status` capped at 20 with a `+N more` footer |
 | 14 | `/forget` per-chat; `/forget all` in a private chat only |
 | 15 | Synthetic `ref_token` in callbacks, never shown in chat |
-| 16 | Done pressable by either participant; stale presses rejected and re-rendered |
+| 16 | Done pressable by either counterparty; stale presses rejected and re-rendered |
 | 17 | Deletion notifies nobody; best-effort message cleanup |
 | 18 | Channels rejected |
 | 19 | `sent_message` + `sent_message_ref` join table |
 | 20 | Proactive button stripping, fan-out capped at 10, lazy backstop |
 | 21 | Redact multi-subject messages, delete single-subject ones |
 | 22 | 90-day message-tracking retention, pruned daily |
-| 23 | Store amounts as stated; convert at match time, never at creation |
+| 23 | Store amounts as stated; derive the notional at match time, never at creation |
+| 24 | OTC broking vocabulary in the model (Bid/Offer, notional, counterparty, done, resting, time in force); plain English in user-facing strings; *order*, *book*, *fill* rejected as implying semantics this bot does not offer |
 
 ## Deliberately Excluded
 
 - Partial fills and remainders
 - An order book, rate quoting, or price-time priority
-- Exclusive pairing and a `MATCHED` state
+- Exclusive matching and a `MATCHED` state
 - Cross-chat matching (except `/forget all`)
 - A persisted suggestion table
 - A background matcher job
