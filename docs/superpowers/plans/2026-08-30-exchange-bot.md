@@ -2174,7 +2174,7 @@ git commit -m "feat: cached reference rate with graceful degradation"
 
 **Interfaces:**
 - Consumes: `Request`, `Counterparty`, `RateStatus`, `Side`, money formatters.
-- Produces: `fun Side.giveCurrency(pair: CurrencyPair): String`; `fun verbFor(side: Side, statedCurrency: String, pair: CurrencyPair): Verb`; `object Cb` with `done(mine, theirs)`, `cancel(token)`, `reopen(token)`; `data class Button(val label: String, val data: String)`; `fun mention(username: String?, userId: Long, displayName: String): String`; `fun describe(r: Request): String`; `fun renderSuggestions(subject: Request, found: List<Counterparty>, status: RateStatus): String`; `fun suggestionButtons(subject: Request, found: List<Counterparty>): List<Button>`; `fun renderStatus(requests: List<Request>, viewerId: Long, limit: Int = 20): String`.
+- Produces: `fun Side.giveCurrency(pair: CurrencyPair): String`; `fun verbFor(side: Side, statedCurrency: String, pair: CurrencyPair): Verb`; `object Cb` with `done(mine, theirs)`, `cancel(token)`, `reopen(token)`; `data class Button(val label: String, val data: String)`; `fun mention(username: String?, userId: Long, displayName: String): String`; `fun describe(r: Request): String`; `fun renderSuggestions(found: List<Counterparty>, status: RateStatus): String`; `fun suggestionButtons(subject: Request, found: List<Counterparty>): List<Button>`; `fun renderStatus(requests: List<Request>, viewerId: Long, limit: Int = 20): String`.
 
 Messages are sent with **HTML parse mode** — it needs only `&`, `<` and `>` escaped, unlike MarkdownV2, and it is the only way to mention someone who has no `@username`.
 
@@ -2248,7 +2248,7 @@ class RenderTest : StringSpec({
             Counterparty(r(Verb.BUY, "900", "EUR", 2, "alice"), BigDecimal("900"), BigDecimal("0.1")),
             Counterparty(r(Verb.SELL, "95000", "RUB", 3, "carol"), BigDecimal("950.19"), BigDecimal("0.05")),
         )
-        val text = renderSuggestions(subject, found, RateStatus.Fresh(BigDecimal("99.98")))
+        val text = renderSuggestions(found, RateStatus.Fresh(BigDecimal("99.98")))
         text shouldContain "@alice"
         text shouldContain "buy 900 EUR"
         text shouldContain "sell 95,000 RUB"
@@ -2257,18 +2257,18 @@ class RenderTest : StringSpec({
         text shouldNotContain "Bid"
     }
     "no counterparty means a waitlist line, not an error" {
-        val text = renderSuggestions(r(Verb.SELL, "1000", "EUR", 1, "bob"), emptyList(), RateStatus.Fresh(BigDecimal("99.98")))
+        val text = renderSuggestions(emptyList(), RateStatus.Fresh(BigDecimal("99.98")))
         text shouldContain "waitlist"
     }
     "a stale rate is admitted in the message" {
         val text = renderSuggestions(
-            r(Verb.SELL, "1000", "EUR", 1, "bob"), emptyList(),
+            emptyList(),
             RateStatus.Stale(BigDecimal("95"), Instant.parse("2026-08-12T00:00:00Z")),
         )
         text shouldContain "12 Aug"
     }
     "an unavailable rate says so plainly" {
-        val text = renderSuggestions(r(Verb.SELL, "1000", "EUR", 1, "bob"), emptyList(), RateStatus.Unavailable)
+        val text = renderSuggestions(emptyList(), RateStatus.Unavailable)
         text shouldContain "can't check rates"
     }
 
@@ -2354,7 +2354,7 @@ fun describe(r: Request): String {
     return "$verb ${formatAmount(r.statedAmount)} ${r.statedCurrency}"
 }
 
-fun renderSuggestions(subject: Request, found: List<Counterparty>, status: RateStatus): String {
+fun renderSuggestions(found: List<Counterparty>, status: RateStatus): String {
     val lines = StringBuilder()
     if (found.isEmpty()) {
         lines.append("No one matches yet — you're on the waitlist.")
@@ -2630,7 +2630,7 @@ private suspend fun handlePost(verb: Verb, update: ProcessedUpdate, bot: Telegra
     when (val result = Registry.service.post(chat.id, user.id, user.username, verb, args[0], args[1])) {
         is PostResult.Rejected -> message { result.reason }.send(chat.id, bot)
         is PostResult.Posted -> {
-            val text = renderSuggestions(result.request, result.found, result.status)
+            val text = renderSuggestions(result.found, result.status)
             val buttons = suggestionButtons(result.request, result.found)
             message { text }
                 .options { parseMode = ParseMode.HTML }
