@@ -2013,22 +2013,6 @@ class RateServiceTest : StringSpec({
 })
 ```
 
-- [ ] **Step 2: Add the ContentNegotiation dependency**
-
-The mock responses are JSON, and the client parses them. Add to `build.gradle.kts` dependencies:
-
-```kotlin
-    implementation("io.ktor:ktor-client-content-negotiation:3.5.1")
-    implementation("io.ktor:ktor-serialization-kotlinx-json:3.5.1")
-```
-
-and to `gradle/libs.versions.toml` `[libraries]` if you prefer the catalog:
-
-```toml
-ktor-client-content-negotiation = { module = "io.ktor:ktor-client-content-negotiation", version.ref = "ktor" }
-ktor-serialization-json = { module = "io.ktor:ktor-serialization-kotlinx-json", version.ref = "ktor" }
-```
-
 - [ ] **Step 3: Run it and watch it fail**
 
 Run: `./gradlew test --tests 'fxbot.RateServiceTest'`
@@ -2048,8 +2032,11 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.math.BigDecimal
 
+// Rates are read as raw JSON text, never through Double: the feed sends more
+// significant digits than a Double holds, and `v.toString()` after that has already
+// lost them. See the 18-digit test.
 @Serializable
-private data class FeedResponse(val result: String, val rates: Map<String, Double> = emptyMap())
+private data class FeedResponse(val result: String, val rates: Map<String, JsonElement> = emptyMap())
 
 /**
  * open.er-api.com: free, no key, updates daily, and — unlike the ECB feeds —
@@ -2058,12 +2045,22 @@ private data class FeedResponse(val result: String, val rates: Map<String, Doubl
 class RateClient(private val http: HttpClient) {
     private val json = Json { ignoreUnknownKeys = true }
 
-    suspend fun fetch(base: String): Map<String, BigDecimal>? = runCatching {
-        val body = http.get("https://open.er-api.com/v6/latest/$base").bodyAsText()
-        val parsed = json.decodeFromString<FeedResponse>(body)
-        if (parsed.result != "success") return null
-        parsed.rates.mapValues { (_, v) -> BigDecimal(v.toString()) }
-    }.getOrNull()
+    /**
+     * A feed failure is a null, not an exception — degradation is the design. But
+     * cancellation is not a failure: `runCatching` would swallow it and let a cancelled
+     * refresh keep running, so it is rethrown before anything else is caught.
+     */
+    suspend fun fetch(base: String): Map<String, BigDecimal>? =
+        try {
+            val body = http.get("https://open.er-api.com/v6/latest/$base").bodyAsText()
+            val parsed = json.decodeFromString<FeedResponse>(body)
+            if (parsed.result != "success") null
+            else parsed.rates.mapValues { (_, v) -> BigDecimal(v.jsonPrimitive.content) }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
 }
 ```
 
