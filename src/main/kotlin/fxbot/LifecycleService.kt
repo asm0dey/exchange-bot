@@ -16,6 +16,9 @@ sealed interface ActionResult {
  */
 class LifecycleService(private val requests: RequestRepository) {
 
+    /** Text sent with HTML parse mode — see [mention] — so callers must send it that way. */
+    private fun nameOf(r: Request) = mention(r.username, r.userId, r.username ?: "this person")
+
     fun cancel(chatId: Long, userId: Long, shortId: String): ActionResult {
         val r = requests.byShortId(chatId, shortId)
             ?: return ActionResult.Gone("I can't find a waiting request called $shortId here.")
@@ -68,10 +71,29 @@ class LifecycleService(private val requests: RequestRepository) {
         }
 
         return when (requests.markDone(mine.refToken, theirs?.refToken)) {
-            DoneOutcome.BOTH ->
-                ActionResult.Ok("Marked done. If that's wrong, /reopen.", listOfNotNull(mine.refToken, theirs?.refToken))
+            DoneOutcome.BOTH -> {
+                // A known-accepted residual (ADR/progress R45) relies on this announcement to
+                // make a force-close visible: a member can pair their own token with an
+                // uninvolved same-chat opposite-side request and close it out from under its
+                // owner. The mitigation is that the closure names BOTH people publicly and the
+                // wronged party can /reopen — so the text MUST name both, not just say "done".
+                // `theirs` can still be null here (the command path with no counterparty
+                // resolved closes only the caller's own request), in which case there is
+                // nobody else to name.
+                val text = if (theirs != null) {
+                    "Marked done: ${nameOf(mine)} and ${nameOf(theirs)}. If that's wrong, /reopen."
+                } else {
+                    "Marked done. If that's wrong, /reopen."
+                }
+                ActionResult.Ok(text, listOfNotNull(mine.refToken, theirs?.refToken))
+            }
             DoneOutcome.PEER_GONE ->
-                ActionResult.Ok("Closed only your own — the other request was already closed.", listOf(mine.refToken))
+                // theirs is always non-null when markDone returns PEER_GONE — that outcome only
+                // occurs when a theirsToken was supplied and its close failed.
+                ActionResult.Ok(
+                    "Closed only ${nameOf(mine)}'s — ${nameOf(theirs!!)}'s was already closed.",
+                    listOf(mine.refToken),
+                )
             DoneOutcome.ALREADY_CLOSED ->
                 ActionResult.Gone("That one is already closed.")
         }

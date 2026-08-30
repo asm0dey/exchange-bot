@@ -10,7 +10,6 @@ enum class Verb { SELL, BUY }
 
 data class CurrencyPair(val base: String, val quote: String) {
     fun contains(ccy: String) = ccy == base || ccy == quote
-    fun other(ccy: String) = if (ccy == base) quote else base
     override fun toString() = "$base/$quote"
 }
 

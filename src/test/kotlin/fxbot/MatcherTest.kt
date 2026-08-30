@@ -19,21 +19,26 @@ private fun req(
     chatId: Long = -100L,
     state: RequestState = RequestState.OPEN,
     pair: CurrencyPair = EURRUB,
-) = Request(
-    rowId = ++seq,
-    refToken = "tok${seq}".padEnd(22, 'x'),
-    chatId = chatId,
-    userId = userId,
-    username = "u$userId",
-    shortId = "a${seq % 10}",
-    side = sideFor(verb, ccy, pair),
-    statedCurrency = ccy,
-    statedAmount = BigDecimal(amount),
-    pair = pair,
-    state = state,
-    createdAt = Instant.EPOCH,
-    expiresAt = Instant.EPOCH.plusSeconds(604_800),
-)
+): Request {
+    // Bumped once here (regardless of whether `userId` also bumped it via its default),
+    // so refToken/shortId are still unique per call the way they were when this used to
+    // ride on the now-deleted `rowId = ++seq` field assignment.
+    val n = ++seq
+    return Request(
+        refToken = "tok${n}".padEnd(22, 'x'),
+        chatId = chatId,
+        userId = userId,
+        username = "u$userId",
+        shortId = "a${n % 10}",
+        side = sideFor(verb, ccy, pair),
+        statedCurrency = ccy,
+        statedAmount = BigDecimal(amount),
+        pair = pair,
+        state = state,
+        createdAt = Instant.EPOCH,
+        expiresAt = Instant.EPOCH.plusSeconds(604_800),
+    )
+}
 
 class MatcherTest : StringSpec({
     "notional passes a base amount straight through" {

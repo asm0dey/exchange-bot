@@ -45,12 +45,25 @@ class ChatSettingsRepository(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
-    /** No row for this chat means the defaults — `get` never writes one. */
+    /**
+     * No row for this chat means the defaults — and per the spec ("The row is
+     * created lazily on the chat's first command with defaults EUR/RUB"), `get`
+     * PERSISTS them right here. [Housekeeping.refreshRates] enumerates pairs to
+     * fetch solely via [allPairs], which reads only persisted rows; a `get` that
+     * didn't write would leave a chat that never ran an admin command with no
+     * pair ever fetched, and every reply permanently reporting the rate as
+     * unavailable — this is the fix for exactly that.
+     */
     fun get(chatId: Long): ChatSettings = transaction(db) {
         val chatRef = crypto.ref(chatId.toString())
         val payload = readIn(chatRef)
-            ?: return@transaction ChatSettings(chatId, DEFAULT_PAIR, DEFAULT_TOLERANCE, DEFAULT_TIF_DAYS)
-        ChatSettings(chatId, CurrencyPair(payload.base, payload.quote), payload.tolerancePct, payload.tifDays)
+        if (payload != null) {
+            return@transaction ChatSettings(chatId, CurrencyPair(payload.base, payload.quote), payload.tolerancePct, payload.tifDays)
+        }
+        val defaults = ChatSettings(chatId, DEFAULT_PAIR, DEFAULT_TOLERANCE, DEFAULT_TIF_DAYS)
+        val body = SettingsPayload(chatId, DEFAULT_PAIR.base, DEFAULT_PAIR.quote, DEFAULT_TOLERANCE, DEFAULT_TIF_DAYS)
+        writeIn(chatRef, crypto.seal(json.encodeToString(body), chatRef))
+        defaults
     }
 
     fun save(s: ChatSettings): Unit = transaction(db) {

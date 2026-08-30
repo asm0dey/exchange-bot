@@ -94,7 +94,7 @@ class RequestRepository(
                 it[Requests.payload] = crypto.seal(json.encodeToString(payload), refToken)
             }
             Request(
-                rowId = 0, refToken = refToken, chatId = chatId, userId = userId,
+                refToken = refToken, chatId = chatId, userId = userId,
                 username = username, shortId = shortId, side = side,
                 statedCurrency = statedCurrency, statedAmount = statedAmount, pair = pair,
                 state = RequestState.OPEN, createdAt = now, expiresAt = expires,
@@ -245,7 +245,6 @@ class RequestRepository(
         val refToken = row[Requests.refToken]
         val p = json.decodeFromString<Payload>(crypto.open(row[Requests.payload], refToken))
         return Request(
-            rowId = row[Requests.rowId],
             refToken = refToken,
             chatId = p.chatId,
             userId = p.userId,

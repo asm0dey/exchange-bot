@@ -5,6 +5,7 @@ import eu.vendeli.tgbot.annotations.CommandHandler
 import eu.vendeli.tgbot.api.answer.answerCallbackQuery
 import eu.vendeli.tgbot.api.message.message
 import eu.vendeli.tgbot.types.component.CallbackQueryUpdate
+import eu.vendeli.tgbot.types.component.ParseMode
 import eu.vendeli.tgbot.types.component.ProcessedUpdate
 import eu.vendeli.tgbot.types.component.getChat
 import eu.vendeli.tgbot.types.component.getUser
@@ -57,7 +58,16 @@ private suspend fun respond(result: ActionResult, update: ProcessedUpdate, bot: 
             // Dismisses the client's loading spinner without a popup — the outcome is
             // announced to the whole group below, since it may affect the other side too.
             queryId?.let { answerCallbackQuery(it).send(user.id, bot) }
-            message { result.text }.send(update.getChat().id, bot)
+            // HTML: the text may carry a `mention(...)` link/@name built by LifecycleService.
+            val reply = message { result.text }.options { parseMode = ParseMode.HTML }
+            if (result.closedTokens.isEmpty()) {
+                reply.send(update.getChat().id, bot)
+            } else {
+                // Undo, one press away: names the presser's own closed request, so pressing it
+                // never risks reviving a request that belongs to whoever else was named above.
+                reply.inlineKeyboardMarkup { "↩️ Reopen" callback Cb.reopen(result.closedTokens.first()) }
+                    .send(update.getChat().id, bot)
+            }
             Registry.buttons.stripFor(result.closedTokens, update.getChat().id, bot)
         }
         is ActionResult.Denied, is ActionResult.Gone -> {

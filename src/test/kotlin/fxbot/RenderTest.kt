@@ -11,7 +11,7 @@ private val EURRUB = CurrencyPair("EUR", "RUB")
 
 private fun r(verb: Verb, amount: String, ccy: String, user: Long, name: String?, token: String = "t".repeat(22)) =
     Request(
-        rowId = user, refToken = token, chatId = -100L, userId = user, username = name,
+        refToken = token, chatId = -100L, userId = user, username = name,
         shortId = "a$user", side = sideFor(verb, ccy, EURRUB), statedCurrency = ccy,
         statedAmount = BigDecimal(amount), pair = EURRUB, state = RequestState.OPEN,
         createdAt = Instant.EPOCH, expiresAt = Instant.EPOCH,

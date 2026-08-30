@@ -88,23 +88,34 @@ suspend fun settings(update: ProcessedUpdate, bot: TelegramBot) {
     }.send(chat.id, bot)
 }
 
+private val HELP_TEXT = """
+    /sell 1000 EUR — you're handing over 1000 EUR
+    /buy 1000 EUR — you want to receive 1000 EUR
+    /status — who's waiting in this chat
+    /cancel a1 — withdraw your request
+    /done a1 @someone — you two swapped
+    /reopen — undo your last /done
+    /settings — this chat's currencies and limits
+    /pair EUR RUB — admins: change what this chat swaps
+    /tolerance 20 — admins: how close amounts must be to match
+    /tif 7 — admins: how many days a request waits before it lapses
+    /forget — erase your data in this chat (send /forget all to me privately for every chat)
+""".trimIndent()
+
 @CommandHandler(["/help"])
 suspend fun help(update: ProcessedUpdate, bot: TelegramBot) {
     if (!inGroupOrExplain(update, bot)) return
+    message { HELP_TEXT }.send(update.getChat().id, bot)
+}
+
+/**
+ * The spec promises this reply; without it, opening a DM and tapping Start gets
+ * silence. Mirrors [inGroupOrExplain]'s split but inverted — a private chat gets
+ * the "add me to a group" hint, a group gets straight to [HELP_TEXT], since a
+ * `/start` in a group is not asking to be told what a group chat is for.
+ */
+@CommandHandler(["/start"])
+suspend fun start(update: ProcessedUpdate, bot: TelegramBot) {
     val chat = update.getChat()
-    message {
-        """
-        /sell 1000 EUR — you're handing over 1000 EUR
-        /buy 1000 EUR — you want to receive 1000 EUR
-        /status — who's waiting in this chat
-        /cancel a1 — withdraw your request
-        /done a1 @someone — you two swapped
-        /reopen — undo your last /done
-        /settings — this chat's currencies and limits
-        /pair EUR RUB — admins: change what this chat swaps
-        /tolerance 20 — admins: how close amounts must be to match
-        /tif 7 — admins: how many days a request waits before it lapses
-        /forget — erase your data in this chat (send /forget all to me privately for every chat)
-        """.trimIndent()
-    }.send(chat.id, bot)
+    message { if (update.isGroupChat()) HELP_TEXT else PRIVATE_HINT }.send(chat.id, bot)
 }

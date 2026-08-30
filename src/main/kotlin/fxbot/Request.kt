@@ -14,7 +14,6 @@ enum class RequestState {
  * the notional is derived when requests are compared (ADR 0003).
  */
 data class Request(
-    val rowId: Long,
     val refToken: String,
     val chatId: Long,
     val userId: Long,

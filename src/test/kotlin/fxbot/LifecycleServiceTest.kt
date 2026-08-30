@@ -83,7 +83,9 @@ class LifecycleServiceTest : StringSpec({
         svc.cancel(-100L, 2L, b.shortId)
         val result = svc.done(1L, a.refToken, b.refToken)
         result.shouldBeInstanceOf<ActionResult.Ok>()
-        result.text shouldContain "only your own"
+        // Names both sides — R45's mitigation for the accepted force-close residual is that
+        // the announcement names both people, so the wronged party can tell and /reopen.
+        result.text shouldBe "Closed only @bob's — @alice's was already closed."
         repo.byRefToken(a.refToken)!!.state shouldBe RequestState.DONE
     }
 
@@ -122,7 +124,9 @@ class LifecycleServiceTest : StringSpec({
         val b = repo.put(-100L, 2L, "alice", Side.BID)
         val result = svc.done(2L, a.refToken, b.refToken)
         result.shouldBeInstanceOf<ActionResult.Ok>()
-        result.text shouldBe "Marked done. If that's wrong, /reopen."
+        // Names both owners — see the R42/R45 discussion this fix addresses: a bare
+        // "Marked done" leaves a griefed party with no way to tell they were named.
+        result.text shouldBe "Marked done: @alice and @bob. If that's wrong, /reopen."
         repo.byRefToken(a.refToken)!!.state shouldBe RequestState.DONE
         repo.byRefToken(b.refToken)!!.state shouldBe RequestState.DONE
     }
@@ -133,7 +137,10 @@ class LifecycleServiceTest : StringSpec({
         svc.cancel(-100L, 1L, a.shortId) // bob's request — payload slot "a" — closes first
         val result = svc.done(2L, a.refToken, b.refToken) // alice presses; her token sits in slot "b"
         result.shouldBeInstanceOf<ActionResult.Ok>()
-        result.text shouldContain "only your own"
+        // "only [mine]'s" leads, naming the presser's own (alice's) request first — proving
+        // the message is built from `mine`/`theirs` as re-derived for the presser, not from
+        // the button's "a"/"b" argument order.
+        result.text shouldBe "Closed only @alice's — @bob's was already closed."
         repo.byRefToken(b.refToken)!!.state shouldBe RequestState.DONE
     }
 

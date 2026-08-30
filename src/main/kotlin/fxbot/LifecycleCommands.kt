@@ -7,11 +7,28 @@ import eu.vendeli.tgbot.api.message.editMessageText
 import eu.vendeli.tgbot.api.message.message
 import eu.vendeli.tgbot.types.chat.ChatType
 import eu.vendeli.tgbot.types.component.MessageUpdate
+import eu.vendeli.tgbot.types.component.ParseMode
 import eu.vendeli.tgbot.types.component.ProcessedUpdate
 import eu.vendeli.tgbot.types.component.getChat
 import eu.vendeli.tgbot.types.component.getUser
 import eu.vendeli.tgbot.types.component.isSuccess
 import eu.vendeli.tgbot.types.msg.EntityType
+
+/**
+ * Command-path counterpart of [respond]'s Ok branch in Callbacks.kt: same HTML parse
+ * mode (the text may carry a `mention(...)` link/@name), same Reopen button when a
+ * request just closed, same button-cleanup on the messages that suggested it.
+ */
+private suspend fun replyToClose(chatId: Long, bot: TelegramBot, result: ActionResult) {
+    val reply = message { result.text }.options { parseMode = ParseMode.HTML }
+    if (result is ActionResult.Ok && result.closedTokens.isNotEmpty()) {
+        reply.inlineKeyboardMarkup { "↩️ Reopen" callback Cb.reopen(result.closedTokens.first()) }
+            .send(chatId, bot)
+        Registry.buttons.stripFor(result.closedTokens, chatId, bot)
+    } else {
+        reply.send(chatId, bot)
+    }
+}
 
 @CommandHandler(["/cancel"])
 suspend fun cancel(update: ProcessedUpdate, bot: TelegramBot) {
@@ -23,7 +40,7 @@ suspend fun cancel(update: ProcessedUpdate, bot: TelegramBot) {
         message { "Which one? Try /cancel a1 — /status lists them." }.send(chat.id, bot)
         return
     }
-    message { Registry.lifecycle.cancel(chat.id, user.id, shortId).text }.send(chat.id, bot)
+    replyToClose(chat.id, bot, Registry.lifecycle.cancel(chat.id, user.id, shortId))
 }
 
 @CommandHandler(["/reopen"])
@@ -46,7 +63,7 @@ suspend fun done(update: ProcessedUpdate, bot: TelegramBot) {
         return
     }
     val peerId = resolvePeer(update, chat.id)
-    message { Registry.lifecycle.doneByShortId(chat.id, user.id, shortId, peerId).text }.send(chat.id, bot)
+    replyToClose(chat.id, bot, Registry.lifecycle.doneByShortId(chat.id, user.id, shortId, peerId))
 }
 
 private const val REDACTED = "(a message was edited at someone's request)"

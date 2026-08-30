@@ -23,11 +23,9 @@ class SideTest : StringSpec({
         sideFor(Verb.SELL, "EUR", EURRUB) shouldBe sideFor(Verb.BUY, "RUB", EURRUB)
     }
 
-    "pair membership and the other leg" {
+    "pair membership" {
         EURRUB.contains("EUR") shouldBe true
         EURRUB.contains("USD") shouldBe false
-        EURRUB.other("EUR") shouldBe "RUB"
-        EURRUB.other("RUB") shouldBe "EUR"
     }
 
     "currency codes are upper-cased and validated against ISO 4217" {

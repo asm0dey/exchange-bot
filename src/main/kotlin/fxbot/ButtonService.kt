@@ -24,9 +24,13 @@ class ButtonService(private val log: MessageLogRepository) {
             .filter { it.chatId == chatId }
             .distinct()
         for (target in targets) {
-            // One message failing to edit (deleted by a user, bot kicked, etc.) must not
-            // stop the rest of the fan-out from being cleaned up.
-            runCatching { editMessageReplyMarkup(target.messageId).send(target.chatId, bot) }
+            // No runCatching here: `send()` never throws on a Telegram-side failure (message
+            // already deleted, bot kicked, etc. — those come back as a Response the callee
+            // doesn't even look at), so catching around it caught nothing. A message this
+            // pass doesn't reach or can't edit stays stale but harmless — the on-press
+            // rejection path in LifecycleService re-derives state from the database on every
+            // press regardless of what a button still looks like.
+            editMessageReplyMarkup(target.messageId).send(target.chatId, bot)
         }
     }
 }

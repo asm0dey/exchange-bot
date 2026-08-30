@@ -46,6 +46,11 @@ class ChatSettingsRepositoryTest : StringSpec({
         r.save(ChatSettings(-100L, CurrencyPair("USD", "GBP"), 5, 30))
         r.get(-200L).pair shouldBe CurrencyPair("EUR", "RUB")
     }
+    "get on an unknown chat persists the defaults, so the rate refresh sees the pair" {
+        val r = settingsRepo("lazydefault")
+        r.get(-100L)
+        r.allPairs() shouldBe setOf(CurrencyPair("EUR", "RUB"))
+    }
     "every configured pair can be enumerated for the rate refresh" {
         val r = settingsRepo("pairs")
         r.save(ChatSettings(-100L, CurrencyPair("USD", "GBP"), 5, 30))
