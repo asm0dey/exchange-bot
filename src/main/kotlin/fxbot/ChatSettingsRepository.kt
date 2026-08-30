@@ -19,7 +19,13 @@ data class ChatSettings(
 )
 
 @Serializable
-private data class SettingsPayload(val base: String, val quote: String, val tolerancePct: Int, val tifDays: Int)
+private data class SettingsPayload(
+    val chatId: Long,          // stored so a MAC-keyset rotation can re-derive chat_ref
+    val base: String,
+    val quote: String,
+    val tolerancePct: Int,
+    val tifDays: Int,
+)
 
 private val DEFAULT_PAIR = CurrencyPair("EUR", "RUB")
 private const val DEFAULT_TOLERANCE = 20
@@ -49,7 +55,7 @@ class ChatSettingsRepository(
 
     fun save(s: ChatSettings): Unit = transaction(db) {
         val chatRef = crypto.ref(s.chatId.toString())
-        val body = SettingsPayload(s.pair.base, s.pair.quote, s.tolerancePct, s.tifDays)
+        val body = SettingsPayload(s.chatId, s.pair.base, s.pair.quote, s.tolerancePct, s.tifDays)
         writeIn(chatRef, crypto.seal(json.encodeToString(body), chatRef))
     }
 
@@ -63,16 +69,17 @@ class ChatSettingsRepository(
     }
 
     /**
-     * Reads the row under the old ref, reseals the same payload under the new ref
-     * (the AAD here IS the chat ref, unlike every other table), and drops the old
-     * row — all inside one transaction. Returns false when there was nothing to
-     * migrate.
+     * Reads the row under the old ref, reseals the payload — with the NEW chat id
+     * written into it, so a later index-keyset rotation can still re-derive the
+     * right chat_ref — under the new ref (the AAD here IS the chat ref, unlike
+     * every other table), and drops the old row — all inside one transaction.
+     * Returns false when there was nothing to migrate.
      */
     fun rewriteChatRef(oldChatId: Long, newChatId: Long): Boolean = transaction(db) {
         val oldRef = crypto.ref(oldChatId.toString())
         val newRef = crypto.ref(newChatId.toString())
         val payload = readIn(oldRef) ?: return@transaction false
-        writeIn(newRef, crypto.seal(json.encodeToString(payload), newRef))
+        writeIn(newRef, crypto.seal(json.encodeToString(payload.copy(chatId = newChatId)), newRef))
         ChatSettingsTable.deleteWhere { ChatSettingsTable.chatRef eq oldRef }
         true
     }
