@@ -2057,7 +2057,11 @@ class RateClient(private val http: HttpClient) {
             if (parsed.result != "success") null
             else parsed.rates.mapValues { (_, v) -> BigDecimal(v.jsonPrimitive.content) }
         } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
+            // ktor implements a request timeout by cancelling the call's job, so a slow feed
+            // arrives here as a CancellationException wrapping HttpRequestTimeoutException.
+            // That is an unreachable feed, not our caller giving up: degrade to null. A real
+            // cancellation still propagates, so a cancelled refresh still stops.
+            if (e.cause is io.ktor.client.plugins.HttpRequestTimeoutException) null else throw e
         } catch (e: Exception) {
             null
         }
@@ -3850,7 +3854,10 @@ In `Main.kt`, after wiring the repositories:
 ```kotlin
     val housekeeping = Housekeeping(Registry.requests, Registry.settings, Registry.rates, Registry.messages)
     startScheduler(ds, housekeeping)
-    housekeeping.refreshRates()   // don't wait a day for the first rate
+    // Warm the rate cache without waiting a day for the scheduler's first run — but never
+    // gate startup on it. A slow feed must not stop the bot from listening, and ktor
+    // delivers a request timeout as a CancellationException, which RateClient rethrows.
+    launch { runCatching { housekeeping.refreshRates() } }
 ```
 
 - [ ] **Step 4: Build, test, commit**
