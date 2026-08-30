@@ -4,6 +4,7 @@ import com.google.crypto.tink.Aead
 import com.google.crypto.tink.InsecureSecretKeyAccess
 import com.google.crypto.tink.KeysetHandle
 import com.google.crypto.tink.Mac
+import com.google.crypto.tink.RegistryConfiguration
 import com.google.crypto.tink.TinkJsonProtoKeysetFormat
 import com.google.crypto.tink.aead.AeadConfig
 import com.google.crypto.tink.aead.PredefinedAeadParameters
@@ -18,6 +19,16 @@ private val RANDOM = SecureRandom()
 /**
  * The two keysets never share key material: [seal]/[open] protect the payload,
  * [ref] derives the searchable identifiers. See ADR 0002.
+ *
+ * The two keysets rotate differently. The AEAD keyset rotates freely: Tink
+ * keeps retired keys in the keyset, so ciphertexts sealed under an old key
+ * still [open] correctly after a new primary key is added. The MAC keyset
+ * does NOT rotate for free: [ref] is used only for deterministic string
+ * equality lookups (`chat_ref` / `user_ref`), never `verifyMac`, so rotating
+ * the index key changes every stored ref and those rows silently stop
+ * matching — no exception, just no results. Rotating it is a deliberate
+ * one-off job (decrypt each sealed payload, re-derive both refs, rewrite
+ * them), not an operation this class performs automatically. See ADR 0002.
  */
 class Crypto(dataKeysetJson: String, indexKeysetJson: String) {
     private val aead: Aead
@@ -26,8 +37,8 @@ class Crypto(dataKeysetJson: String, indexKeysetJson: String) {
     init {
         AeadConfig.register()
         MacConfig.register()
-        aead = parse(dataKeysetJson).getPrimitive(Aead::class.java)
-        mac = parse(indexKeysetJson).getPrimitive(Mac::class.java)
+        aead = parse(dataKeysetJson).getPrimitive(RegistryConfiguration.get(), Aead::class.java)
+        mac = parse(indexKeysetJson).getPrimitive(RegistryConfiguration.get(), Mac::class.java)
     }
 
     fun seal(plaintext: String, aad: String): ByteArray =

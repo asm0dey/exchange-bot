@@ -7,7 +7,10 @@ data class Config(
     val dbUserPw: String,
     val dataKeyset: String,
     val indexKeyset: String,
-)
+) {
+    /** Overrides the generated one, which would print every secret field verbatim. */
+    override fun toString(): String = "Config(***)"
+}
 
 /**
  * Reads configuration from [env]. Every value is required except DB_PATH.

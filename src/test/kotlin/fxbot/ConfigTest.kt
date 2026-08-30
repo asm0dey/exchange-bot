@@ -37,4 +37,10 @@ class ConfigTest : StringSpec({
         val e = shouldThrow<IllegalStateException> { loadConfig((COMPLETE - "DATA_KEYSET")::get) }
         e.message!!.contains("userpw") shouldBe false
     }
+    "toString never reveals any secret value" {
+        val text = loadConfig(COMPLETE::get).toString()
+        for (secret in COMPLETE.values) {
+            text.contains(secret) shouldBe false
+        }
+    }
 })
