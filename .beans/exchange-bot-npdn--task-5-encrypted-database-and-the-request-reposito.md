@@ -1,11 +1,11 @@
 ---
 # exchange-bot-npdn
 title: 'Task 5: Encrypted database and the request repository'
-status: in-progress
+status: completed
 type: task
 priority: normal
 created_at: 2026-08-30T14:41:03Z
-updated_at: 2026-08-30T14:41:25Z
+updated_at: 2026-08-30T15:11:46Z
 parent: exchange-bot-utgz
 ---
 

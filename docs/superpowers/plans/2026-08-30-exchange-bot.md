@@ -2695,7 +2695,13 @@ suspend fun main() {
     val ds = createDataSource(cfg)
     migrate(ds)
 
-    Registry.requests = RequestRepository(ds, crypto)
+    // The composition root owns the Exposed Database. Repositories take it rather than
+    // registering their own: Exposed's TransactionManager keeps a static registry keyed by
+    // Database, nothing unregisters, and a bare `transaction { }` would bind to whichever
+    // registered first. Every call site passes its Database explicitly for the same reason.
+    val db = connectExposed(ds)
+
+    Registry.requests = RequestRepository(ds, crypto, db = db)
     Registry.settings = ChatSettingsRepository(ds, crypto)
     Registry.rates = RateService(RateClient(HttpClient(CIO)), RateRepository(ds))
     Registry.service = RequestService(Registry.requests, Registry.settings, Registry.rates)
