@@ -25,6 +25,11 @@ suspend fun main() {
     Registry.service = RequestService(Registry.requests, Registry.settings, Registry.rates)
 
     val bot = TelegramBot(cfg.botToken) {
+        // Without this the parser never breaks on a space: "/sell 1000 EUR" is taken as
+        // the whole command name, matches nothing in the registry, and the update is
+        // dropped silently. The framework's native style is "/sell?a=1000&c=EUR", which
+        // is not what this bot documents.
+        commandParsing { restrictSpacesInCommands = true }
         updatesListener { updatesPollingTimeout = 30 }
         httpClient {
             requestTimeoutMillis = 45_000L
@@ -35,14 +40,13 @@ suspend fun main() {
     }
 
     setMyCommands {
-        botCommand("sell", "Offer currency you're handing over")
+        botCommand("sell", "Hand over currency you have")
         botCommand("buy", "Ask for currency you want to receive")
         botCommand("status", "Who's waiting in this chat")
-        botCommand("cancel", "Withdraw one of your requests")
-        botCommand("done", "Mark a swap as completed")
-        botCommand("reopen", "Undo your last /done")
-        botCommand("forget", "Erase what I store about you here")
         botCommand("settings", "This chat's currencies and limits")
+        botCommand("help", "What I can do")
+        // Later tasks add their own entries as their handlers land. The menu must never
+        // advertise a command that does nothing when tapped.
     }.send(bot)
 
     println("exchange-bot: listening")
