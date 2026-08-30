@@ -4127,16 +4127,25 @@ class ChatMigrationService(
     private val requests: RequestRepository,
     private val settings: ChatSettingsRepository,
     private val log: MessageLogRepository,
+    private val db: Database,
 ) {
-    fun migrate(oldChatId: Long, newChatId: Long): Int {
+    /**
+     * All three rewrites are one transaction. Exposed leaves `useNestedTransactions` false
+     * by default and this project does not set it, so each repository's own
+     * `transaction(db)` joins this one and defers its commit — the migration is
+     * all-or-nothing. Without that, a crash between the calls would strand a chat's
+     * settings and message record under a chat ref nothing resolves any more, which is the
+     * silent split-state this task exists to prevent.
+     */
+    fun migrate(oldChatId: Long, newChatId: Long): Int = transaction(db) {
         val moved = requests.rewriteChatRef(oldChatId, newChatId)
         settings.rewriteChatRef(oldChatId, newChatId)
         log.rewriteChatRef(oldChatId, newChatId)
-        return moved
+        moved
     }
 }
 
-@UpdateHandler([UpdateType.MESSAGE])
+@UpdateHandler([UpdateType.MESSAGE], messageKind = [MessageKind.MIGRATE_TO_CHAT])
 suspend fun onChatMigration(update: ProcessedUpdate) {
     val message = (update as? eu.vendeli.tgbot.types.component.MessageUpdate)?.message ?: return
     val newId = message.migrateToChatId ?: return
@@ -4144,7 +4153,7 @@ suspend fun onChatMigration(update: ProcessedUpdate) {
 }
 ```
 
-Add `lateinit var migration: ChatMigrationService` to `Registry` and wire it in `Main.kt`.
+Add `lateinit var migration: ChatMigrationService` to `Registry` and wire it in `Main.kt`, passing the composition root's `db`.
 
 If `migrateToChatId` is spelled differently on this framework version, find the
 right property with:
