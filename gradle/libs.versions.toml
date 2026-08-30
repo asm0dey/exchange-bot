@@ -1,0 +1,39 @@
+[versions]
+kotlin = "2.4.10"
+ksp = "2.3.10"
+telegrambot = "9.6.0"
+ktor = "3.5.1"
+serialization = "1.11.0"
+coroutines = "1.11.0"
+dbscheduler = "16.12.0"
+h2 = "2.4.240"
+hikari = "7.1.0"
+slf4j = "2.0.18"
+kotest = "6.2.3"
+tink = "1.18.0"
+flyway = "11.8.2"
+exposed = "1.5.0"
+
+[libraries]
+telegram-bot = { module = "eu.vendeli:telegram-bot", version.ref = "telegrambot" }
+ktnip = { module = "eu.vendeli:ktnip", version.ref = "telegrambot" }
+ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
+ktor-client-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
+ktor-client-mock = { module = "io.ktor:ktor-client-mock", version.ref = "ktor" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+db-scheduler = { module = "com.github.kagkarlsson:db-scheduler", version.ref = "dbscheduler" }
+h2 = { module = "com.h2database:h2", version.ref = "h2" }
+hikari = { module = "com.zaxxer:HikariCP", version.ref = "hikari" }
+slf4j-simple = { module = "org.slf4j:slf4j-simple", version.ref = "slf4j" }
+tink = { module = "com.google.crypto.tink:tink", version.ref = "tink" }
+flyway-core = { module = "org.flywaydb:flyway-core", version.ref = "flyway" }
+kotest-runner = { module = "io.kotest:kotest-runner-junit5", version.ref = "kotest" }
+kotest-assertions = { module = "io.kotest:kotest-assertions-core", version.ref = "kotest" }
+exposed-core = { module = "org.jetbrains.exposed:exposed-core", version.ref = "exposed" }
+exposed-jdbc = { module = "org.jetbrains.exposed:exposed-jdbc", version.ref = "exposed" }
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }

@@ -17,6 +17,7 @@
 - Kotlin `2.4.10`, KSP `2.3.10`, JVM toolchain **21**, Gradle **9.6.1**.
 - Pinned versions: telegram-bot `9.6.0`, ktor `3.5.1`, kotlinx-serialization `1.11.0`, coroutines `1.11.0`, db-scheduler `16.12.0`, h2 `2.4.240`, HikariCP `7.1.0`, slf4j-simple `2.0.18`, kotest `6.2.3`, Tink `1.18.0`, Flyway `11.8.2`.
 - **H2 support ships inside `flyway-core`.** There is no `flyway-database-h2` artifact — do not add one.
+- **H2 runs in PostgreSQL compatibility mode** (`;MODE=PostgreSQL` on every JDBC URL, production and test alike). Schema columns use `TEXT` and `BYTEA` — never a guessed `CHAR(n)` width. This extends to db-scheduler's table: H2 2.4.240 rejects the `BLOB` keyword outright in this mode (`Mode.disallowedTypes`), so `task_data` is `BYTEA`. db-scheduler reads and writes that column as `byte[]`, and in this design the column is always empty because both scheduled tasks are parameterless.
 - **No GraalVM native-image.** Deliberately excluded (ADR 0004).
 - Package root: `fxbot`. Root project name: `exchange-bot`.
 - **Vocabulary is binding** (ADR + `CONTEXT.md`): `Side.BID` / `Side.OFFER`, `counterparty`, `notional`, `resting`, `DONE`, `time in force`, `size tolerance`. The words **order**, **book**, **fill**, **execution** must not appear in identifiers, comments, or user strings.
@@ -346,8 +347,11 @@ class CryptoTest : StringSpec({
         crypto.ref("-1001") shouldNotBe crypto.ref("-1002")
         Crypto(KeysetGen.aead(), KeysetGen.mac()).ref("-1001") shouldNotBe crypto.ref("-1001")
     }
-    "a ref fits the schema's 44 characters" {
-        crypto.ref("-1001").length shouldBe 44
+    "a ref is a stable non-empty string" {
+        // Columns are TEXT, so no width is asserted — Tink prepends a key-identity
+        // prefix whose size is not ours to hard-code.
+        crypto.ref("-1001").isNotEmpty() shouldBe true
+        crypto.ref("-1001") shouldBe crypto.ref("-1001")
     }
     "ref tokens are 22 characters and unique" {
         val tokens = List(1000) { newRefToken() }
@@ -405,7 +409,7 @@ class Crypto(dataKeysetJson: String, indexKeysetJson: String) {
     fun open(ciphertext: ByteArray, aad: String): String =
         String(aead.decrypt(ciphertext, aad.toByteArray(Charsets.UTF_8)), Charsets.UTF_8)
 
-    /** Deterministic, keyed, 44 characters — see the `CHAR(44)` columns. */
+    /** Deterministic and keyed. Stored in a TEXT column — no width is assumed. */
     fun ref(value: String): String =
         Base64.getEncoder().encodeToString(mac.computeMac(value.toByteArray(Charsets.UTF_8)))
 
@@ -606,8 +610,11 @@ import java.text.DecimalFormatSymbols
 import java.util.Locale
 
 private val SYMBOLS = DecimalFormatSymbols(Locale.US)
-private val GROUPED = DecimalFormat("#,##0.##########", SYMBOLS)
-private val TWO_DP = DecimalFormat("#,##0.00", SYMBOLS)
+
+// DecimalFormat is mutable and not thread-safe, and Telegram updates are handled
+// concurrently, so each call gets its own formatter rather than sharing one.
+private fun grouped() = DecimalFormat("#,##0.##########", SYMBOLS).apply { roundingMode = RoundingMode.HALF_UP }
+private fun twoDp() = DecimalFormat("#,##0.00", SYMBOLS).apply { roundingMode = RoundingMode.HALF_UP }
 
 /** Accepts `1000`, `1 000`, `1,000.50`. Rejects anything not a positive plain number. */
 fun parseAmount(raw: String): BigDecimal? {
@@ -619,10 +626,10 @@ fun parseAmount(raw: String): BigDecimal? {
 }
 
 /** Stated amounts: grouped, trailing zeros stripped. */
-fun formatAmount(v: BigDecimal): String = GROUPED.format(v.stripTrailingZeros())
+fun formatAmount(v: BigDecimal): String = grouped().format(v.stripTrailingZeros())
 
 /** Notionals: grouped, always two decimal places. */
-fun formatNotional(v: BigDecimal): String = TWO_DP.format(v.setScale(2, RoundingMode.HALF_UP))
+fun formatNotional(v: BigDecimal): String = twoDp().format(v.setScale(2, RoundingMode.HALF_UP))
 ```
 
 - [ ] **Step 6: Run the tests**
@@ -752,7 +759,20 @@ class MatcherTest : StringSpec({
         val resting = listOf("1100", "1010", "900", "1050", "950", "1001").map { req(Verb.BUY, it, "EUR") }
         val found = findCounterparties(subject, resting, RATE, 20)
         found shouldHaveSize 5
-        found.first().request.statedAmount shouldBe BigDecimal("1001")
+        // The whole ordering, and which one got dropped: 900 is the farthest away.
+        found.map { it.request.statedAmount } shouldBe
+            listOf("1001", "1010", "1050", "950", "1100").map { BigDecimal(it) }
+    }
+
+    "a subject that is no longer resting matches nobody" {
+        val subject = req(Verb.SELL, "1000", "EUR", state = RequestState.CANCELLED)
+        findCounterparties(subject, listOf(req(Verb.BUY, "1000", "EUR")), RATE, 20).shouldBeEmpty()
+    }
+
+    "a non-positive rate is treated as no rate at all" {
+        val r = req(Verb.SELL, "95000", "RUB")
+        notional(r, BigDecimal.ZERO) shouldBe null
+        notional(r, BigDecimal("-99.98")) shouldBe null
     }
 
     "without a rate, same-denomination requests still match" {
@@ -827,7 +847,9 @@ private val HUNDRED = BigDecimal(100)
  */
 fun notional(r: Request, rate: BigDecimal?): BigDecimal? = when {
     r.statedCurrency == r.pair.base -> r.statedAmount
-    rate == null -> null
+    // A missing rate and a nonsensical one mean the same thing here: size unknown.
+    // Dividing by zero would throw, and a negative rate would yield a negative size.
+    rate == null || rate.signum() <= 0 -> null
     else -> r.statedAmount.divide(rate, MC)
 }
 
@@ -847,6 +869,7 @@ fun findCounterparties(
     tolerancePct: Int,
     limit: Int = 5,
 ): List<Counterparty> {
+    if (subject.state != RequestState.OPEN) return emptyList()
     val limitFraction = BigDecimal(tolerancePct).divide(HUNDRED, MC)
     return resting.asSequence()
         .filter { it.chatId == subject.chatId }
@@ -926,56 +949,58 @@ git commit -m "feat: notional derivation and counterparty matching"
 
 ```sql
 CREATE TABLE request (
-    row_id      BIGINT AUTO_INCREMENT PRIMARY KEY,
-    ref_token   CHAR(22)    NOT NULL,
-    chat_ref    CHAR(44)    NOT NULL,
-    user_ref    CHAR(44)    NOT NULL,
-    short_id    VARCHAR(4)  NOT NULL,
-    state       VARCHAR(16) NOT NULL,
-    created_at  TIMESTAMP   NOT NULL,
-    expires_at  TIMESTAMP   NOT NULL,
-    payload     VARBINARY(4096) NOT NULL
+    row_id      BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    ref_token   TEXT      NOT NULL,
+    chat_ref    TEXT      NOT NULL,
+    user_ref    TEXT      NOT NULL,
+    short_id    TEXT      NOT NULL,
+    state       TEXT      NOT NULL,
+    created_at  TIMESTAMP NOT NULL,
+    expires_at  TIMESTAMP NOT NULL,
+    closed_at   TIMESTAMP,              -- set when the request leaves OPEN
+    payload     BYTEA     NOT NULL
 );
 CREATE UNIQUE INDEX request_ref_token_idx ON request (ref_token);
 CREATE INDEX request_chat_state_idx ON request (chat_ref, state);
 CREATE INDEX request_user_idx ON request (user_ref);
 
 CREATE TABLE chat_settings (
-    chat_ref   CHAR(44) PRIMARY KEY,
-    payload    VARBINARY(2048) NOT NULL,
+    chat_ref   TEXT PRIMARY KEY,
+    payload    BYTEA NOT NULL,
     updated_at TIMESTAMP NOT NULL
 );
 
 CREATE TABLE fx_rate (
-    base       CHAR(3) NOT NULL,
-    quote      CHAR(3) NOT NULL,
+    base       TEXT NOT NULL,
+    quote      TEXT NOT NULL,
     rate       DECIMAL(30, 10) NOT NULL,
     fetched_at TIMESTAMP NOT NULL,
     PRIMARY KEY (base, quote)
 );
 
 CREATE TABLE sent_message (
-    chat_ref   CHAR(44) NOT NULL,
-    message_id BIGINT   NOT NULL,
+    chat_ref   TEXT      NOT NULL,
+    message_id BIGINT    NOT NULL,
     sent_at    TIMESTAMP NOT NULL,
     PRIMARY KEY (chat_ref, message_id)
 );
 
 CREATE TABLE sent_message_ref (
-    chat_ref   CHAR(44) NOT NULL,
-    message_id BIGINT   NOT NULL,
-    ref_token  CHAR(22) NOT NULL,
-    user_ref   CHAR(44) NOT NULL
+    chat_ref   TEXT   NOT NULL,
+    message_id BIGINT NOT NULL,
+    ref_token  TEXT   NOT NULL,
+    user_ref   TEXT   NOT NULL
 );
 CREATE INDEX sent_message_ref_token_idx ON sent_message_ref (ref_token);
 CREATE INDEX sent_message_ref_user_idx ON sent_message_ref (user_ref);
 
--- db-scheduler 16.x canonical schema. task_data stays empty by design (ADR: tasks
--- are parameterless so nothing sensitive lands in this unencrypted BLOB).
+-- db-scheduler 16.x canonical schema, with BLOB spelled BYTEA because H2 rejects the
+-- BLOB keyword under MODE=PostgreSQL. task_data stays empty by design: both tasks are
+-- parameterless, so nothing sensitive lands in this unencrypted column.
 CREATE TABLE scheduled_tasks (
     task_name            VARCHAR(255) NOT NULL,
     task_instance        VARCHAR(255) NOT NULL,
-    task_data            BLOB,
+    task_data            BYTEA,   -- BLOB is rejected under MODE=PostgreSQL; see below
     execution_time       TIMESTAMP WITH TIME ZONE NOT NULL,
     picked               BOOLEAN NOT NULL,
     picked_by            VARCHAR(50),
@@ -1005,7 +1030,7 @@ import com.zaxxer.hikari.HikariDataSource
 /** In-memory, unencrypted: the file cipher is a deployment concern, not a logic one. */
 fun memDataSource(name: String): HikariDataSource =
     HikariDataSource(HikariConfig().apply {
-        jdbcUrl = "jdbc:h2:mem:$name;DB_CLOSE_DELAY=-1"
+        jdbcUrl = "jdbc:h2:mem:$name;DB_CLOSE_DELAY=-1;MODE=PostgreSQL"
         username = "sa"
         password = ""
         maximumPoolSize = 2
@@ -1098,14 +1123,33 @@ class RequestRepositoryTest : StringSpec({
         r.byShortId(-200L, "a").shouldBeNull()
     }
 
-    "most recently closed finds the caller's own last closure" {
+    "most recently closed means closed, not created" {
+        // Closed in REVERSE creation order, so a query ordering by row_id would
+        // return the wrong one and this test would catch it.
         val (r, _) = repo("recent")
         val a = r.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7)
         val b = r.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("2"), EURRUB, 7)
-        r.transition(a.refToken, RequestState.OPEN, RequestState.DONE)
-        r.transition(b.refToken, RequestState.OPEN, RequestState.CANCELLED)
-        r.mostRecentlyClosed(-100L, 1L)!!.refToken shouldBe b.refToken
+        r.transition(b.refToken, RequestState.OPEN, RequestState.DONE)
+        Thread.sleep(2)   // distinct closed_at stamps
+        r.transition(a.refToken, RequestState.OPEN, RequestState.CANCELLED)
+        r.mostRecentlyClosed(-100L, 1L)!!.refToken shouldBe a.refToken
         r.mostRecentlyClosed(-100L, 999L).shouldBeNull()
+    }
+
+    "a fractional amount survives the payload round trip exactly" {
+        val (r, _) = repo("precision")
+        val a = r.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1234.5670"), EURRUB, 7)
+        r.byRefToken(a.refToken)!!.statedAmount shouldBe BigDecimal("1234.5670")
+    }
+
+    "an expired request counts as recently closed" {
+        val (r, _) = repo("expiryrecency")
+        val a = r.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7)
+        val b = r.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("2"), EURRUB, 7)
+        r.transition(a.refToken, RequestState.OPEN, RequestState.CANCELLED)
+        r.expireDue(T0.plusSeconds(8 * 86_400)) shouldBe 1
+        // b expired after a was cancelled, so b is the more recent closure.
+        r.mostRecentlyClosed(-100L, 1L)!!.refToken shouldBe b.refToken
     }
 
     "expiry sweeps only what is due" {
@@ -1118,9 +1162,9 @@ class RequestRepositoryTest : StringSpec({
 
     "forgetting removes rows in one chat, or everywhere" {
         val (r, _) = repo("forget")
-        r.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7)
+        val here = r.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7)
         r.create(-200L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7)
-        r.deleteFor(1L, -100L) shouldHaveSize 1
+        r.deleteFor(1L, -100L).single() shouldBe here.refToken
         r.resting(-200L) shouldHaveSize 1
         r.deleteFor(1L, null) shouldHaveSize 1
         r.resting(-200L) shouldHaveSize 0
@@ -1135,6 +1179,12 @@ class RequestRepositoryTest : StringSpec({
         moved shouldHaveSize 1
         moved[0].username shouldBe "alice"
         moved[0].chatId shouldBe -1001L
+    }
+
+    "byRefToken carries the chat id, because the payload holds it" {
+        val (r, _) = repo("chatid")
+        val a = r.create(-100L, 7L, "alice", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7)
+        r.byRefToken(a.refToken)!!.chatId shouldBe -100L
     }
 
     "byRefToken returns null for an unknown token" {
@@ -1173,13 +1223,17 @@ import javax.sql.DataSource
  * H2 with its file cipher on. The password is the H2 two-part form:
  * file password, a space, then the user password.
  */
-fun createDataSource(cfg: Config): HikariDataSource =
-    HikariDataSource(HikariConfig().apply {
-        jdbcUrl = "jdbc:h2:file:${cfg.dbPath};CIPHER=AES"
+fun createDataSource(cfg: Config): HikariDataSource {
+    // H2 splits the two-part password on the FIRST space, so a space inside the file
+    // key would silently truncate it and shift the remainder into the user password.
+    require(' ' !in cfg.dbFileKey) { "DB_FILE_KEY must not contain a space" }
+    return HikariDataSource(HikariConfig().apply {
+        jdbcUrl = "jdbc:h2:file:${cfg.dbPath};CIPHER=AES;MODE=PostgreSQL"
         username = "sa"
         password = "${cfg.dbFileKey} ${cfg.dbUserPw}"
         maximumPoolSize = 4
     })
+}
 
 /** H2 support ships inside flyway-core; no database module is needed. */
 fun migrate(ds: DataSource) {
@@ -1206,6 +1260,7 @@ import javax.sql.DataSource
 
 @Serializable
 private data class Payload(
+    val chatId: Long,          // stored so a MAC-keyset rotation can re-derive chat_ref
     val userId: Long,
     val username: String?,
     val side: String,
@@ -1226,6 +1281,16 @@ class RequestRepository(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
+    // Short ids are unique only among a chat's live requests, and H2 has no partial
+    // unique index to enforce that. `SELECT ... FOR UPDATE` cannot do it either: it
+    // locks the rows it returns, so a chat with nothing resting locks nothing and two
+    // concurrent creates both pick "a". This lock is the guard, and it holds because
+    // the bot is a single process (ADR 0004).
+    // ponytail: one global lock, not per-chat — allocation is microseconds at chat
+    // scale. Move to a per-chat lock if a busy deployment ever shows contention, and
+    // to a database-level guard if the bot is ever run as more than one instance.
+    private val allocationLock = ReentrantLock()
+
     fun create(
         chatId: Long,
         userId: Long,
@@ -1235,7 +1300,8 @@ class RequestRepository(
         statedAmount: BigDecimal,
         pair: CurrencyPair,
         tifDays: Int,
-    ): Request = ds.connection.use { c ->
+    ): Request = allocationLock.withLock {
+      ds.connection.use { c ->
         c.autoCommit = false
         try {
             val chatRef = crypto.ref(chatId.toString())
@@ -1244,7 +1310,7 @@ class RequestRepository(
             val now = clock.instant()
             val expires = now.plusSeconds(tifDays.toLong() * 86_400)
             val payload = Payload(
-                userId, username, side.name, statedCurrency,
+                chatId, userId, username, side.name, statedCurrency,
                 statedAmount.toPlainString(), pair.base, pair.quote,
             )
             c.prepareStatement(
@@ -1272,17 +1338,16 @@ class RequestRepository(
             )
         } catch (e: Exception) {
             c.rollback(); throw e
+        } finally {
+            c.autoCommit = true   // the pool hands this connection out again
         }
+      }
     }
 
-    /**
-     * Short ids are unique only among a chat's live requests, so they can stay
-     * short. H2 has no partial unique index, so the guard is this allocation
-     * running inside the insert transaction.
-     */
+    /** The caller holds [allocationLock]; see its comment for why that is the guard. */
     private fun allocateShortId(c: Connection, chatRef: String): String {
         val taken = mutableSetOf<String>()
-        c.prepareStatement("SELECT short_id FROM request WHERE chat_ref = ? AND state = 'OPEN' FOR UPDATE").use { st ->
+        c.prepareStatement("SELECT short_id FROM request WHERE chat_ref = ? AND state = 'OPEN'").use { st ->
             st.setString(1, chatRef)
             st.executeQuery().use { rs -> while (rs.next()) taken += rs.getString(1) }
         }
@@ -1291,16 +1356,14 @@ class RequestRepository(
     }
 
     fun resting(chatId: Long): List<Request> = query(
-        "SELECT * FROM request WHERE chat_ref = ? AND state = 'OPEN' ORDER BY expires_at",
-        chatId,
+        "SELECT * FROM request WHERE chat_ref = ? AND state = 'OPEN' ORDER BY expires_at, row_id"
     ) { st -> st.setString(1, crypto.ref(chatId.toString())) }
 
     fun byRefToken(token: String): Request? =
         queryOne("SELECT * FROM request WHERE ref_token = ?") { st -> st.setString(1, token) }
 
     fun byShortId(chatId: Long, shortId: String): Request? = queryOne(
-        "SELECT * FROM request WHERE chat_ref = ? AND short_id = ? AND state = 'OPEN'",
-        chatId,
+        "SELECT * FROM request WHERE chat_ref = ? AND short_id = ? AND state = 'OPEN'"
     ) { st ->
         st.setString(1, crypto.ref(chatId.toString()))
         st.setString(2, shortId)
@@ -1310,70 +1373,125 @@ class RequestRepository(
         """
         SELECT * FROM request
         WHERE chat_ref = ? AND user_ref = ? AND state <> 'OPEN'
-        ORDER BY row_id DESC LIMIT 1
-        """.trimIndent(),
-        chatId,
+        ORDER BY closed_at DESC, row_id DESC LIMIT 1
+        """.trimIndent()
     ) { st ->
         st.setString(1, crypto.ref(chatId.toString()))
         st.setString(2, crypto.ref(userId.toString()))
     }
 
-    /** Guarded by the expected state, so a double press closes exactly once. */
+    /**
+     * Guarded by the expected state, so a double press closes exactly once.
+     * Stamps `closed_at` so "most recently closed" means what it says.
+     */
     fun transition(refToken: String, from: RequestState, to: RequestState): Boolean =
         ds.connection.use { c ->
-            c.prepareStatement("UPDATE request SET state = ? WHERE ref_token = ? AND state = ?").use { st ->
+            c.prepareStatement(
+                "UPDATE request SET state = ?, closed_at = ? WHERE ref_token = ? AND state = ?"
+            ).use { st ->
                 st.setString(1, to.name)
-                st.setString(2, refToken)
-                st.setString(3, from.name)
+                st.setTimestamp(2, if (to == RequestState.OPEN) null else Timestamp.from(clock.instant()))
+                st.setString(3, refToken)
+                st.setString(4, from.name)
                 st.executeUpdate() == 1
             }
         }
 
+    /** Stamps `closed_at` like every other close, so recency ordering sees expiries. */
     fun expireDue(now: Instant): Int = ds.connection.use { c ->
-        c.prepareStatement("UPDATE request SET state = 'EXPIRED' WHERE state = 'OPEN' AND expires_at < ?").use { st ->
+        c.prepareStatement(
+            "UPDATE request SET state = 'EXPIRED', closed_at = ? WHERE state = 'OPEN' AND expires_at < ?"
+        ).use { st ->
             st.setTimestamp(1, Timestamp.from(now))
+            st.setTimestamp(2, Timestamp.from(now))
             st.executeUpdate()
         }
     }
 
-    /** Returns the ref tokens removed, so message cleanup knows what to strip. */
+    /**
+     * Returns the ref tokens removed, so message cleanup knows what to strip.
+     * Read and delete share one transaction: a row inserted between them would
+     * otherwise be erased without its token ever reaching the cleanup step, leaving
+     * a live message pointing at data someone just asked to have erased.
+     */
     fun deleteFor(userId: Long, chatId: Long?): List<String> = ds.connection.use { c ->
         val userRef = crypto.ref(userId.toString())
         val chatRef = chatId?.let { crypto.ref(it.toString()) }
         val where = if (chatRef == null) "user_ref = ?" else "user_ref = ? AND chat_ref = ?"
-        val tokens = mutableListOf<String>()
-        c.prepareStatement("SELECT ref_token FROM request WHERE $where").use { st ->
-            st.setString(1, userRef)
-            chatRef?.let { st.setString(2, it) }
-            st.executeQuery().use { rs -> while (rs.next()) tokens += rs.getString(1) }
+        c.autoCommit = false
+        try {
+            val tokens = mutableListOf<String>()
+            c.prepareStatement("SELECT ref_token FROM request WHERE $where").use { st ->
+                st.setString(1, userRef)
+                chatRef?.let { st.setString(2, it) }
+                st.executeQuery().use { rs -> while (rs.next()) tokens += rs.getString(1) }
+            }
+            c.prepareStatement("DELETE FROM request WHERE $where").use { st ->
+                st.setString(1, userRef)
+                chatRef?.let { st.setString(2, it) }
+                st.executeUpdate()
+            }
+            c.commit()
+            tokens
+        } catch (e: Exception) {
+            c.rollback(); throw e
+        } finally {
+            c.autoCommit = true
         }
-        c.prepareStatement("DELETE FROM request WHERE $where").use { st ->
-            st.setString(1, userRef)
-            chatRef?.let { st.setString(2, it) }
-            st.executeUpdate()
-        }
-        tokens
     }
 
     /**
-     * A supergroup migration changes the chat id. Payload AAD is the ref token,
-     * not the chat, so nothing needs re-encrypting here (ADR 0002).
+     * A supergroup migration changes the chat id, which lives both in the ref
+     * column and inside the sealed payload, so each row is resealed. The AAD is
+     * the ref token and does not change, so the tokens stay valid throughout.
      */
     fun rewriteChatRef(oldChatId: Long, newChatId: Long): Int = ds.connection.use { c ->
-        c.prepareStatement("UPDATE request SET chat_ref = ? WHERE chat_ref = ?").use { st ->
-            st.setString(1, crypto.ref(newChatId.toString()))
-            st.setString(2, crypto.ref(oldChatId.toString()))
-            st.executeUpdate()
+        val oldRef = crypto.ref(oldChatId.toString())
+        val newRef = crypto.ref(newChatId.toString())
+        c.autoCommit = false
+        try {
+            // Read and reseal on the SAME connection inside one transaction: a request
+            // created in the old chat between the two would otherwise be stranded under
+            // a chat ref that no longer resolves.
+            val rows = mutableListOf<Request>()
+            c.prepareStatement("SELECT * FROM request WHERE chat_ref = ?").use { st ->
+                st.setString(1, oldRef)
+                st.executeQuery().use { rs -> while (rs.next()) rows += hydrate(rs) }
+            }
+            var updated = 0
+                for (r in rows) {
+                    val resealed = crypto.seal(
+                        json.encodeToString(
+                            Payload(
+                                newChatId, r.userId, r.username, r.side.name, r.statedCurrency,
+                                r.statedAmount.toPlainString(), r.pair.base, r.pair.quote,
+                            )
+                        ),
+                        r.refToken,
+                    )
+                    c.prepareStatement("UPDATE request SET chat_ref = ?, payload = ? WHERE ref_token = ?").use { st ->
+                        st.setString(1, newRef)
+                        st.setBytes(2, resealed)
+                        st.setString(3, r.refToken)
+                        updated += st.executeUpdate()
+                    }
+                }
+            c.commit()
+            updated
+        } catch (e: Exception) {
+            c.rollback(); throw e
+        } finally {
+            c.autoCommit = true
         }
     }
 
-    private fun query(sql: String, chatId: Long, bind: (java.sql.PreparedStatement) -> Unit): List<Request> =
+    private fun query(sql: String, bind: (java.sql.PreparedStatement) -> Unit): List<Request> =
         ds.connection.use { c ->
             c.prepareStatement(sql).use { st ->
                 bind(st)
                 st.executeQuery().use { rs ->
                     val out = mutableListOf<Request>()
-                    while (rs.next()) out += hydrate(rs, chatId)
+                    while (rs.next()) out += hydrate(rs)
                     out
                 }
             }
@@ -1381,27 +1499,22 @@ class RequestRepository(
 
     private fun queryOne(
         sql: String,
-        chatId: Long? = null,
         bind: (java.sql.PreparedStatement) -> Unit,
     ): Request? = ds.connection.use { c ->
         c.prepareStatement(sql).use { st ->
             bind(st)
-            st.executeQuery().use { rs -> if (rs.next()) hydrate(rs, chatId) else null }
+            st.executeQuery().use { rs -> if (rs.next()) hydrate(rs) else null }
         }
     }
 
-    /**
-     * The chat id is not stored — only its ref — so callers that looked a row up
-     * by ref pass the id they already had. Callers that did not have one get 0,
-     * which the matcher never compares because it filters on the same list.
-     */
-    private fun hydrate(rs: ResultSet, chatId: Long?): Request {
+    /** Every field the domain needs comes out of the sealed payload. */
+    private fun hydrate(rs: ResultSet): Request {
         val refToken = rs.getString("ref_token")
         val p = json.decodeFromString<Payload>(crypto.open(rs.getBytes("payload"), refToken))
         return Request(
             rowId = rs.getLong("row_id"),
             refToken = refToken,
-            chatId = chatId ?: 0L,
+            chatId = p.chatId,
             userId = p.userId,
             username = p.username,
             shortId = rs.getString("short_id"),
@@ -1423,15 +1536,208 @@ Run: `./gradlew test --tests 'fxbot.RequestRepositoryTest'`
 Expected: PASS, 12 tests.
 
 The "chat migration keeps payloads readable" test asserts `chatId shouldBe -1001L`
-because `resting()` passes the id the caller asked for. `byRefToken` yields `chatId = 0`;
-that is only used for state transitions and authorization, which key on the token
-and the user, never on the chat.
+because `rewriteChatRef` reseals each payload with the new id. Every read path —
+`resting`, `byShortId`, `byRefToken` — takes the chat id out of the sealed payload,
+so a row fetched by token knows which chat it belongs to.
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add src/main/kotlin/fxbot/Db.kt src/main/kotlin/fxbot/RequestRepository.kt src/main/resources src/test/kotlin/fxbot/TestDb.kt src/test/kotlin/fxbot/RequestRepositoryTest.kt
 git commit -m "feat: encrypted schema and request repository"
+```
+
+---
+
+### Task 5b: Port persistence to the Exposed DSL
+
+**Files:**
+- Modify: `gradle/libs.versions.toml`, `build.gradle.kts`
+- Create: `src/main/kotlin/fxbot/Tables.kt`
+- Modify: `src/main/kotlin/fxbot/Db.kt`, `src/main/kotlin/fxbot/RequestRepository.kt`
+- Test: `src/test/kotlin/fxbot/SchemaDriftTest.kt`
+
+**Interfaces:**
+- Consumes: `Config`, `Crypto`, `Request`/`RequestState`, `Side`, `CurrencyPair`.
+- Produces: `object Requests : Table("request")` (and one object per remaining table);
+  `RequestRepository` with its existing public signatures **unchanged**.
+
+**This task changes no behaviour.** Every one of the 59 existing tests must still pass,
+untouched. If a test needs editing to go green, the port is wrong — stop and report.
+
+Why: the repository hand-builds SQL strings and assigns parameters positionally
+(`st.setString(3, …)`), which has already produced one off-by-one hazard the reviewer had
+to check by hand and one `$where` string concatenation. Exposed removes both.
+
+Scope is deliberately narrow: `exposed-core` + `exposed-jdbc`, used purely as a query
+layer. **Not** `exposed-dao`, **not** `exposed-crypt` (its algorithms take no associated
+data, so it cannot express the `ref_token` binding, and it would still leave the keyed-MAC
+refs hand-rolled), **not** `exposed-money` (amounts live inside the sealed payload, not in
+columns), **not** `exposed-migration` (Flyway owns the schema). Tink and Flyway are
+untouched.
+
+- [ ] **Step 1: Add the dependencies**
+
+`gradle/libs.versions.toml`:
+
+```toml
+exposed = "1.5.0"
+```
+```toml
+exposed-core = { module = "org.jetbrains.exposed:exposed-core", version.ref = "exposed" }
+exposed-jdbc = { module = "org.jetbrains.exposed:exposed-jdbc", version.ref = "exposed" }
+```
+
+and in `build.gradle.kts` dependencies: `implementation(libs.exposed.core)` and
+`implementation(libs.exposed.jdbc)`.
+
+- [ ] **Step 2: Declare the tables**
+
+`src/main/kotlin/fxbot/Tables.kt` — one object per table already defined in
+`V1__initial.sql`. These must match that file exactly; Step 5's test enforces it.
+
+```kotlin
+package fxbot
+
+import org.jetbrains.exposed.v1.core.Table
+
+object Requests : Table("request") {
+    val rowId = long("row_id").autoIncrement()
+    val refToken = text("ref_token")
+    val chatRef = text("chat_ref")
+    val userRef = text("user_ref")
+    val shortId = text("short_id")
+    val state = text("state")
+    val createdAt = timestamp("created_at")
+    val expiresAt = timestamp("expires_at")
+    val closedAt = timestamp("closed_at").nullable()
+    val payload = binary("payload")
+    override val primaryKey = PrimaryKey(rowId)
+}
+
+object ChatSettingsTable : Table("chat_settings") {
+    val chatRef = text("chat_ref")
+    val payload = binary("payload")
+    val updatedAt = timestamp("updated_at")
+    override val primaryKey = PrimaryKey(chatRef)
+}
+
+object FxRates : Table("fx_rate") {
+    val base = text("base")
+    val quote = text("quote")
+    val rate = decimal("rate", 30, 10)
+    val fetchedAt = timestamp("fetched_at")
+    override val primaryKey = PrimaryKey(base, quote)
+}
+
+object SentMessages : Table("sent_message") {
+    val chatRef = text("chat_ref")
+    val messageId = long("message_id")
+    val sentAt = timestamp("sent_at")
+    val payload = binary("payload").nullable()
+    override val primaryKey = PrimaryKey(chatRef, messageId)
+}
+
+object SentMessageRefs : Table("sent_message_ref") {
+    val chatRef = text("chat_ref")
+    val messageId = long("message_id")
+    val refToken = text("ref_token")
+    val userRef = text("user_ref")
+}
+```
+
+**Verify the imports against the 1.5.0 jar before assuming them.** Exposed 1.x moved to
+`org.jetbrains.exposed.v1.*` packages; `Table` is confirmed at
+`org.jetbrains.exposed.v1.core.Table` and `transaction` at
+`org.jetbrains.exposed.v1.jdbc.transactions.transaction`, but the DSL functions
+(`selectAll`, `insert`, `update`, `deleteWhere`) and the `timestamp` column type may sit
+elsewhere. If `timestamp` requires the `exposed-kotlin-datetime` module, use
+`javaTimestamp`/`java.time` support from core instead of adding a module — report which you
+used. Do not guess an import that does not resolve; find it and say where it was.
+
+- [ ] **Step 3: Connect Exposed to the existing DataSource**
+
+In `Db.kt`, after building the Hikari pool, register it with Exposed. The pool stays the
+one Flyway uses — Exposed does not open its own connections.
+
+```kotlin
+fun connectExposed(ds: DataSource): Database = Database.connect(ds)
+```
+
+Call it in `Main.kt` right after `migrate(ds)`, and in the test helper after the migration.
+
+- [ ] **Step 4: Port `RequestRepository`, method by method**
+
+Keep every public signature identical. Replace each `ds.connection.use { … prepareStatement
+… }` body with a `transaction { }` block containing the DSL equivalent. The rules that must
+survive the port, each of which a previous review round put there:
+
+- `create` stays wrapped in `allocationLock.withLock { }` — the lock, not the database, is
+  what makes short-id allocation safe (ADR 0004, single process).
+- `transition` keeps its state guard in the `where` clause and keeps stamping `closedAt`
+  (null when returning to `OPEN`), and still reports whether exactly one row changed.
+- `expireDue` keeps stamping `closedAt` with its own `now`.
+- `deleteFor` keeps its read and delete in **one** transaction, and the optional chat filter
+  becomes a composed predicate rather than string concatenation:
+  ```kotlin
+  val predicate = if (chatRef == null) Requests.userRef eq userRef
+                  else (Requests.userRef eq userRef) and (Requests.chatRef eq chatRef)
+  ```
+- `rewriteChatRef` keeps its read and its updates in one transaction and returns the number
+  of rows it actually updated.
+- `resting` keeps `orderBy(Requests.expiresAt, Requests.rowId)`.
+
+`transaction { }` replaces the manual `autoCommit`/`commit`/`rollback`/`finally` blocks —
+delete them, do not wrap one inside the other.
+
+- [ ] **Step 5: Write the drift test**
+
+Flyway owns the schema and `Tables.kt` describes it a second time, so they can disagree
+silently — a column renamed in a migration would still compile. This test is what makes the
+duplication safe, and it is not optional.
+
+`src/test/kotlin/fxbot/SchemaDriftTest.kt`:
+
+```kotlin
+package fxbot
+
+import io.kotest.core.spec.style.StringSpec
+import io.kotest.matchers.collections.shouldBeEmpty
+import org.jetbrains.exposed.v1.jdbc.transactions.transaction
+
+class SchemaDriftTest : StringSpec({
+    "the Exposed tables match the schema Flyway creates" {
+        val ds = memDataSource("drift")
+        migrate(ds)
+        connectExposed(ds)
+        transaction {
+            val tables = arrayOf(Requests, ChatSettingsTable, FxRates, SentMessages, SentMessageRefs)
+            // Any statement Exposed would need to run to reach its own definition is a
+            // disagreement between Tables.kt and V1__initial.sql.
+            org.jetbrains.exposed.v1.jdbc.SchemaUtils
+                .statementsRequiredToActualizeScheme(*tables)
+                .shouldBeEmpty()
+        }
+    }
+})
+```
+
+Verify `statementsRequiredToActualizeScheme` exists under that name in 1.5.0 — if it moved
+or was renamed, find the equivalent and use it; if no equivalent exists, assert column
+names and nullability per table by hand rather than dropping the check.
+
+- [ ] **Step 6: Run the whole suite unchanged**
+
+Run: `./gradlew clean test`
+Expected: 60/60 (the 59 existing plus the drift test), no test file edited except the new
+one. Any existing test that needs modification means the port changed behaviour — stop and
+report rather than adjusting it.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add gradle build.gradle.kts src
+git commit -m "refactor: query the database through the Exposed DSL"
 ```
 
 ---
@@ -1512,7 +1818,8 @@ package fxbot
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import java.sql.Timestamp
+import org.jetbrains.exposed.v1.jdbc.Database
+import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import java.time.Clock
 import javax.sql.DataSource
 
@@ -1524,7 +1831,13 @@ data class ChatSettings(
 )
 
 @Serializable
-private data class SettingsPayload(val base: String, val quote: String, val tolerancePct: Int, val tifDays: Int)
+private data class SettingsPayload(
+    val chatId: Long,          // stored so a MAC-keyset rotation can re-derive chat_ref
+    val base: String,
+    val quote: String,
+    val tolerancePct: Int,
+    val tifDays: Int,
+)
 
 private val DEFAULT_PAIR = CurrencyPair("EUR", "RUB")
 private const val DEFAULT_TOLERANCE = 20
@@ -1532,12 +1845,13 @@ private const val DEFAULT_TIF_DAYS = 7
 
 /**
  * This row's associated data is the chat ref, not a ref token, so a chat
- * migration must re-encrypt it — the one row in the schema that does.
+ * migration must reseal it — the one row in the schema that does.
  */
 class ChatSettingsRepository(
     private val ds: DataSource,
     private val crypto: Crypto,
     private val clock: Clock = Clock.systemUTC(),
+    private val db: Database = connectExposed(ds),
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -1549,63 +1863,56 @@ class ChatSettingsRepository(
 
     fun save(s: ChatSettings) {
         val chatRef = crypto.ref(s.chatId.toString())
-        val body = SettingsPayload(s.pair.base, s.pair.quote, s.tolerancePct, s.tifDays)
+        val body = SettingsPayload(s.chatId, s.pair.base, s.pair.quote, s.tolerancePct, s.tifDays)
         write(chatRef, crypto.seal(json.encodeToString(body), chatRef))
     }
 
-    fun allPairs(): Set<CurrencyPair> = ds.connection.use { c ->
-        c.prepareStatement("SELECT chat_ref, payload FROM chat_settings").use { st ->
-            st.executeQuery().use { rs ->
-                val out = mutableSetOf<CurrencyPair>()
-                while (rs.next()) {
-                    val p = json.decodeFromString<SettingsPayload>(
-                        crypto.open(rs.getBytes("payload"), rs.getString("chat_ref"))
-                    )
-                    out += CurrencyPair(p.base, p.quote)
-                }
-                out
-            }
-        }
+    fun allPairs(): Set<CurrencyPair> = transaction(db) {
+        ChatSettingsTable.selectAll().map { row ->
+            val p = json.decodeFromString<SettingsPayload>(
+                crypto.open(row[ChatSettingsTable.payload], row[ChatSettingsTable.chatRef])
+            )
+            CurrencyPair(p.base, p.quote)
+        }.toSet()
     }
 
     fun rewriteChatRef(oldChatId: Long, newChatId: Long): Boolean {
         val oldRef = crypto.ref(oldChatId.toString())
         val newRef = crypto.ref(newChatId.toString())
-        val payload = read(oldRef) ?: return false
-        write(newRef, crypto.seal(json.encodeToString(payload), newRef))
-        ds.connection.use { c ->
-            c.prepareStatement("DELETE FROM chat_settings WHERE chat_ref = ?").use { st ->
-                st.setString(1, oldRef)
-                st.executeUpdate()
-            }
-        }
-        return true
-    }
-
-    private fun read(chatRef: String): SettingsPayload? = ds.connection.use { c ->
-        c.prepareStatement("SELECT payload FROM chat_settings WHERE chat_ref = ?").use { st ->
-            st.setString(1, chatRef)
-            st.executeQuery().use { rs ->
-                if (!rs.next()) null
-                else json.decodeFromString<SettingsPayload>(crypto.open(rs.getBytes(1), chatRef))
-            }
+        return transaction(db) {
+            val payload = readIn(oldRef) ?: return@transaction false
+            writeIn(newRef, crypto.seal(json.encodeToString(payload), newRef))
+            ChatSettingsTable.deleteWhere { ChatSettingsTable.chatRef eq oldRef }
+            true
         }
     }
 
-    private fun write(chatRef: String, sealed: ByteArray) = ds.connection.use { c ->
-        c.prepareStatement(
-            """
-            MERGE INTO chat_settings (chat_ref, payload, updated_at) KEY (chat_ref) VALUES (?, ?, ?)
-            """.trimIndent()
-        ).use { st ->
-            st.setString(1, chatRef)
-            st.setBytes(2, sealed)
-            st.setTimestamp(3, Timestamp.from(clock.instant()))
-            st.executeUpdate()
+    private fun read(chatRef: String): SettingsPayload? = transaction(db) { readIn(chatRef) }
+
+    private fun readIn(chatRef: String): SettingsPayload? =
+        ChatSettingsTable.selectAll()
+            .where { ChatSettingsTable.chatRef eq chatRef }
+            .singleOrNull()
+            ?.let { json.decodeFromString<SettingsPayload>(crypto.open(it[ChatSettingsTable.payload], chatRef)) }
+
+    private fun write(chatRef: String, sealed: ByteArray) = transaction(db) { writeIn(chatRef, sealed) }
+
+    private fun writeIn(chatRef: String, sealed: ByteArray) {
+        ChatSettingsTable.upsert {
+            it[ChatSettingsTable.chatRef] = chatRef
+            it[payload] = sealed
+            it[updatedAt] = clock.instant()
         }
     }
 }
 ```
+
+**Verify the DSL imports against the 1.5.0 jars rather than trusting this sketch** —
+`selectAll`, `deleteWhere` and especially `upsert` may sit in `org.jetbrains.exposed.v1.jdbc`
+rather than core, and `upsert`'s signature for a composite or single-column key may differ.
+Task 5b's report records the packages it verified; start there. If `upsert` does not exist
+under that name, use the delete-then-insert pair inside the same transaction rather than
+hand-writing a `MERGE` statement — the point of this layer is that no SQL is hand-written.
 
 - [ ] **Step 4: Run the tests**
 
@@ -1706,22 +2013,6 @@ class RateServiceTest : StringSpec({
 })
 ```
 
-- [ ] **Step 2: Add the ContentNegotiation dependency**
-
-The mock responses are JSON, and the client parses them. Add to `build.gradle.kts` dependencies:
-
-```kotlin
-    implementation("io.ktor:ktor-client-content-negotiation:3.5.1")
-    implementation("io.ktor:ktor-serialization-kotlinx-json:3.5.1")
-```
-
-and to `gradle/libs.versions.toml` `[libraries]` if you prefer the catalog:
-
-```toml
-ktor-client-content-negotiation = { module = "io.ktor:ktor-client-content-negotiation", version.ref = "ktor" }
-ktor-serialization-json = { module = "io.ktor:ktor-serialization-kotlinx-json", version.ref = "ktor" }
-```
-
 - [ ] **Step 3: Run it and watch it fail**
 
 Run: `./gradlew test --tests 'fxbot.RateServiceTest'`
@@ -1741,8 +2032,11 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.math.BigDecimal
 
+// Rates are read as raw JSON text, never through Double: the feed sends more
+// significant digits than a Double holds, and `v.toString()` after that has already
+// lost them. See the 18-digit test.
 @Serializable
-private data class FeedResponse(val result: String, val rates: Map<String, Double> = emptyMap())
+private data class FeedResponse(val result: String, val rates: Map<String, JsonElement> = emptyMap())
 
 /**
  * open.er-api.com: free, no key, updates daily, and — unlike the ECB feeds —
@@ -1751,12 +2045,26 @@ private data class FeedResponse(val result: String, val rates: Map<String, Doubl
 class RateClient(private val http: HttpClient) {
     private val json = Json { ignoreUnknownKeys = true }
 
-    suspend fun fetch(base: String): Map<String, BigDecimal>? = runCatching {
-        val body = http.get("https://open.er-api.com/v6/latest/$base").bodyAsText()
-        val parsed = json.decodeFromString<FeedResponse>(body)
-        if (parsed.result != "success") return null
-        parsed.rates.mapValues { (_, v) -> BigDecimal(v.toString()) }
-    }.getOrNull()
+    /**
+     * A feed failure is a null, not an exception — degradation is the design. But
+     * cancellation is not a failure: `runCatching` would swallow it and let a cancelled
+     * refresh keep running, so it is rethrown before anything else is caught.
+     */
+    suspend fun fetch(base: String): Map<String, BigDecimal>? =
+        try {
+            val body = http.get("https://open.er-api.com/v6/latest/$base").bodyAsText()
+            val parsed = json.decodeFromString<FeedResponse>(body)
+            if (parsed.result != "success") null
+            else parsed.rates.mapValues { (_, v) -> BigDecimal(v.jsonPrimitive.content) }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // ktor implements a request timeout by cancelling the call's job, so a slow feed
+            // arrives here as a CancellationException wrapping HttpRequestTimeoutException.
+            // That is an unreachable feed, not our caller giving up: degrade to null. A real
+            // cancellation still propagates, so a cancelled refresh still stops.
+            if (e.cause is io.ktor.client.plugins.HttpRequestTimeoutException) null else throw e
+        } catch (e: Exception) {
+            null
+        }
 }
 ```
 
@@ -1767,39 +2075,41 @@ class RateClient(private val http: HttpClient) {
 ```kotlin
 package fxbot
 
+import org.jetbrains.exposed.v1.jdbc.Database
+import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import java.math.BigDecimal
-import java.sql.Timestamp
 import java.time.Instant
 import javax.sql.DataSource
 
 data class CachedRate(val rate: BigDecimal, val fetchedAt: Instant)
 
 /** Public data — the one table with nothing encrypted in it. */
-class RateRepository(private val ds: DataSource) {
-    fun get(base: String, quote: String): CachedRate? = ds.connection.use { c ->
-        c.prepareStatement("SELECT rate, fetched_at FROM fx_rate WHERE base = ? AND quote = ?").use { st ->
-            st.setString(1, base)
-            st.setString(2, quote)
-            st.executeQuery().use { rs ->
-                if (rs.next()) CachedRate(rs.getBigDecimal(1), rs.getTimestamp(2).toInstant()) else null
+class RateRepository(
+    private val ds: DataSource,
+    private val db: Database = connectExposed(ds),
+) {
+    fun get(base: String, quote: String): CachedRate? = transaction(db) {
+        FxRates.selectAll()
+            .where { (FxRates.base eq base) and (FxRates.quote eq quote) }
+            .singleOrNull()
+            ?.let { CachedRate(it[FxRates.rate], it[FxRates.fetchedAt]) }
+    }
+
+    fun put(base: String, quote: String, rate: BigDecimal, at: Instant) {
+        transaction(db) {
+            FxRates.upsert {
+                it[FxRates.base] = base
+                it[FxRates.quote] = quote
+                it[FxRates.rate] = rate
+                it[fetchedAt] = at
             }
         }
     }
-
-    fun put(base: String, quote: String, rate: BigDecimal, at: Instant) = ds.connection.use { c ->
-        c.prepareStatement(
-            "MERGE INTO fx_rate (base, quote, rate, fetched_at) KEY (base, quote) VALUES (?, ?, ?, ?)"
-        ).use { st ->
-            st.setString(1, base)
-            st.setString(2, quote)
-            st.setBigDecimal(3, rate)
-            st.setTimestamp(4, Timestamp.from(at))
-            st.executeUpdate()
-        }
-        Unit
-    }
 }
 ```
+
+Note the constructor now takes the `DataSource` (it previously took one too, but only to
+open connections); `upsert` carries the same verification caveat as Task 6.
 
 `src/main/kotlin/fxbot/RateService.kt`:
 
@@ -1868,7 +2178,7 @@ git commit -m "feat: cached reference rate with graceful degradation"
 
 **Interfaces:**
 - Consumes: `Request`, `Counterparty`, `RateStatus`, `Side`, money formatters.
-- Produces: `fun Side.giveCurrency(pair: CurrencyPair): String`; `fun verbFor(side: Side, statedCurrency: String, pair: CurrencyPair): Verb`; `object Cb` with `done(mine, theirs)`, `cancel(token)`, `reopen(token)`; `data class Button(val label: String, val data: String)`; `fun mention(username: String?, userId: Long, displayName: String): String`; `fun describe(r: Request): String`; `fun renderSuggestions(subject: Request, found: List<Counterparty>, status: RateStatus): String`; `fun suggestionButtons(subject: Request, found: List<Counterparty>): List<Button>`; `fun renderStatus(requests: List<Request>, viewerId: Long, limit: Int = 20): String`.
+- Produces: `fun Side.giveCurrency(pair: CurrencyPair): String`; `fun verbFor(side: Side, statedCurrency: String, pair: CurrencyPair): Verb`; `object Cb` with `done(mine, theirs)`, `cancel(token)`, `reopen(token)`; `data class Button(val label: String, val data: String)`; `fun mention(username: String?, userId: Long, displayName: String): String`; `fun describe(r: Request): String`; `fun renderSuggestions(found: List<Counterparty>, status: RateStatus): String`; `fun suggestionButtons(subject: Request, found: List<Counterparty>): List<Button>`; `fun renderStatus(requests: List<Request>, viewerId: Long, limit: Int = 20): String`.
 
 Messages are sent with **HTML parse mode** — it needs only `&`, `<` and `>` escaped, unlike MarkdownV2, and it is the only way to mention someone who has no `@username`.
 
@@ -1942,7 +2252,7 @@ class RenderTest : StringSpec({
             Counterparty(r(Verb.BUY, "900", "EUR", 2, "alice"), BigDecimal("900"), BigDecimal("0.1")),
             Counterparty(r(Verb.SELL, "95000", "RUB", 3, "carol"), BigDecimal("950.19"), BigDecimal("0.05")),
         )
-        val text = renderSuggestions(subject, found, RateStatus.Fresh(BigDecimal("99.98")))
+        val text = renderSuggestions(found, RateStatus.Fresh(BigDecimal("99.98")))
         text shouldContain "@alice"
         text shouldContain "buy 900 EUR"
         text shouldContain "sell 95,000 RUB"
@@ -1951,18 +2261,18 @@ class RenderTest : StringSpec({
         text shouldNotContain "Bid"
     }
     "no counterparty means a waitlist line, not an error" {
-        val text = renderSuggestions(r(Verb.SELL, "1000", "EUR", 1, "bob"), emptyList(), RateStatus.Fresh(BigDecimal("99.98")))
+        val text = renderSuggestions(emptyList(), RateStatus.Fresh(BigDecimal("99.98")))
         text shouldContain "waitlist"
     }
     "a stale rate is admitted in the message" {
         val text = renderSuggestions(
-            r(Verb.SELL, "1000", "EUR", 1, "bob"), emptyList(),
+            emptyList(),
             RateStatus.Stale(BigDecimal("95"), Instant.parse("2026-08-12T00:00:00Z")),
         )
         text shouldContain "12 Aug"
     }
     "an unavailable rate says so plainly" {
-        val text = renderSuggestions(r(Verb.SELL, "1000", "EUR", 1, "bob"), emptyList(), RateStatus.Unavailable)
+        val text = renderSuggestions(emptyList(), RateStatus.Unavailable)
         text shouldContain "can't check rates"
     }
 
@@ -2048,7 +2358,7 @@ fun describe(r: Request): String {
     return "$verb ${formatAmount(r.statedAmount)} ${r.statedCurrency}"
 }
 
-fun renderSuggestions(subject: Request, found: List<Counterparty>, status: RateStatus): String {
+fun renderSuggestions(found: List<Counterparty>, status: RateStatus): String {
     val lines = StringBuilder()
     if (found.isEmpty()) {
         lines.append("No one matches yet — you're on the waitlist.")
@@ -2309,12 +2619,17 @@ suspend fun sell(update: ProcessedUpdate, bot: TelegramBot) = handlePost(Verb.SE
 @CommandHandler(["/buy"])
 suspend fun buy(update: ProcessedUpdate, bot: TelegramBot) = handlePost(Verb.BUY, update, bot)
 
+/** Every handler runs through this: the private-chat reply is bot behaviour, not a
+ *  special case of posting. Returns true when the caller should carry on. */
+private suspend fun inGroupOrExplain(update: ProcessedUpdate, bot: TelegramBot): Boolean {
+    if (update.isGroupChat()) return true
+    message { PRIVATE_HINT }.send(update.getChat().id, bot)
+    return false
+}
+
 private suspend fun handlePost(verb: Verb, update: ProcessedUpdate, bot: TelegramBot) {
     val chat = update.getChat()
-    if (!update.isGroupChat()) {
-        message { PRIVATE_HINT }.send(chat.id, bot)
-        return
-    }
+    if (!inGroupOrExplain(update, bot)) return
     val user = update.getUser()
     val args = update.text.trim().split(Regex("\\s+")).drop(1)
     if (args.size < 2) {
@@ -2324,7 +2639,7 @@ private suspend fun handlePost(verb: Verb, update: ProcessedUpdate, bot: Telegra
     when (val result = Registry.service.post(chat.id, user.id, user.username, verb, args[0], args[1])) {
         is PostResult.Rejected -> message { result.reason }.send(chat.id, bot)
         is PostResult.Posted -> {
-            val text = renderSuggestions(result.request, result.found, result.status)
+            val text = renderSuggestions(result.found, result.status)
             val buttons = suggestionButtons(result.request, result.found)
             message { text }
                 .options { parseMode = ParseMode.HTML }
@@ -2349,8 +2664,7 @@ suspend fun settings(update: ProcessedUpdate, bot: TelegramBot) {
     val s = Registry.settings.get(chat.id)
     message {
         "This chat swaps ${s.pair}. Amounts match within ${s.tolerancePct}%, " +
-            "and a request waits ${s.tifDays} days before it lapses.\n" +
-            "Admins can change these with /pair, /tolerance and /tif."
+            "and a request waits ${s.tifDays} days before it lapses."
     }.send(chat.id, bot)
 }
 
@@ -2364,7 +2678,6 @@ suspend fun help(update: ProcessedUpdate, bot: TelegramBot) {
         /cancel a1 — withdraw your request
         /done a1 @someone — you two swapped
         /reopen — undo your last /done
-        /forget — erase what I store about you here
         /settings — this chat's currencies and limits
         """.trimIndent()
     }.send(update.getChat().id, bot)
@@ -2389,12 +2702,23 @@ suspend fun main() {
     val ds = createDataSource(cfg)
     migrate(ds)
 
-    Registry.requests = RequestRepository(ds, crypto)
+    // The composition root owns the Exposed Database. Repositories take it rather than
+    // registering their own: Exposed's TransactionManager keeps a static registry keyed by
+    // Database, nothing unregisters, and a bare `transaction { }` would bind to whichever
+    // registered first. Every call site passes its Database explicitly for the same reason.
+    val db = connectExposed(ds)
+
+    Registry.requests = RequestRepository(ds, crypto, db = db)
     Registry.settings = ChatSettingsRepository(ds, crypto)
     Registry.rates = RateService(RateClient(HttpClient(CIO)), RateRepository(ds))
     Registry.service = RequestService(Registry.requests, Registry.settings, Registry.rates)
 
     val bot = TelegramBot(cfg.botToken) {
+        // Without this the parser never breaks on a space: "/sell 1000 EUR" is taken as
+        // the whole command name, matches nothing in the registry, and the update is
+        // dropped silently. The framework's native style is "/sell?a=1000&c=EUR", which
+        // is not what this bot documents.
+        commandParsing { restrictSpacesInCommands = true }
         updatesListener { updatesPollingTimeout = 30 }
         httpClient {
             requestTimeoutMillis = 45_000L
@@ -2405,14 +2729,13 @@ suspend fun main() {
     }
 
     setMyCommands {
-        botCommand("sell", "Offer currency you're handing over")
+        botCommand("sell", "Hand over currency you have")
         botCommand("buy", "Ask for currency you want to receive")
         botCommand("status", "Who's waiting in this chat")
-        botCommand("cancel", "Withdraw one of your requests")
-        botCommand("done", "Mark a swap as completed")
-        botCommand("reopen", "Undo your last /done")
-        botCommand("forget", "Erase what I store about you here")
         botCommand("settings", "This chat's currencies and limits")
+        botCommand("help", "What I can do")
+        // Later tasks add their own entries as their handlers land. The menu must never
+        // advertise a command that does nothing when tapped.
     }.send(bot)
 
     println("exchange-bot: listening")
@@ -2661,12 +2984,36 @@ class LifecycleService(private val requests: RequestRepository) {
         }
     }
 
+    /**
+     * Holding one valid token must not authorise closing an unrelated second request.
+     * Both tokens are published to every member of the chat inside `callback_data`, so a
+     * modified client can pair its own token with any other it has seen. Two checks close
+     * that: the presser must own one of the two, and the two must be a pair the bot could
+     * plausibly have suggested — same chat, opposite sides, both still resting.
+     *
+     * The size tolerance is deliberately NOT re-checked: two people are free to agree a
+     * swap the bot would not have introduced them for, and this only records that they did.
+     */
     fun done(userId: Long, mineToken: String, theirsToken: String?): ActionResult {
-        val mine = requests.byRefToken(mineToken)
+        val a = requests.byRefToken(mineToken)
             ?: return ActionResult.Gone("That request is gone.")
-        val theirs = theirsToken?.let { requests.byRefToken(it) }
-        val isParticipant = mine.userId == userId || theirs?.userId == userId
-        if (!isParticipant) return ActionResult.Denied("Only the two people swapping can mark this done.")
+        val b = theirsToken?.let { requests.byRefToken(it) }
+
+        if (a.userId != userId && b?.userId != userId) {
+            return ActionResult.Denied("Only the two people swapping can mark this done.")
+        }
+        // Report outcomes relative to whoever pressed, not to the button's argument order.
+        val mine = if (a.userId == userId) a else b!!
+        val theirs = if (a.userId == userId) b else a
+
+        if (theirs != null && !(
+                theirs.chatId == mine.chatId &&
+                theirs.side != mine.side &&
+                theirs.userId != mine.userId
+            )
+        ) {
+            return ActionResult.Denied("Those two requests aren't a pair I can close together.")
+        }
 
         return when (requests.markDone(mine.refToken, theirs?.refToken)) {
             DoneOutcome.BOTH ->
@@ -2686,8 +3033,17 @@ class LifecycleService(private val requests: RequestRepository) {
         return done(userId, mine.refToken, theirs?.refToken)
     }
 
-    fun reopen(chatId: Long, userId: Long, tifDays: Int = 7): ActionResult {
-        val last = requests.mostRecentlyClosed(chatId, userId)
+    /**
+     * The command form takes no id and revives the caller's most recent closure. The button
+     * form names a specific request, and must act on that one — a button that names one
+     * request and revives another is a promise the interface does not keep.
+     */
+    fun reopen(chatId: Long, userId: Long, tifDays: Int, token: String? = null): ActionResult {
+        val named = token?.let { requests.byRefToken(it) }
+        if (named != null && named.userId != userId) {
+            return ActionResult.Denied("That's not your request.")
+        }
+        val last = named ?: requests.mostRecentlyClosed(chatId, userId)
             ?: return ActionResult.Gone("You have nothing closed here to bring back.")
         return if (requests.reopen(last.refToken, tifDays)) {
             ActionResult.Ok("Back on the waitlist: ${describe(last)}", emptyList())
@@ -2850,6 +3206,17 @@ git commit -m "feat: cancel, done and reopen via commands and buttons"
 - Test: `src/test/kotlin/fxbot/MessageLogRepositoryTest.kt`
 
 **Interfaces:**
+
+> **This task's code sketch predates the Exposed port (Task 5b).** Write it with the Exposed
+> DSL exactly as `RequestRepository` and `ChatSettingsRepository` now are: `transaction(db)`,
+> typed columns from `Tables.kt`, no `prepareStatement`, no SQL strings, no positional
+> binding. The join in `messagesForToken` becomes `SentMessages.innerJoin(SentMessageRefs)`
+> or an explicit `join(...)` with an `onColumn`/`otherColumn` pair — verify which against the
+> 1.5.0 jars. Everything the sketch says about *behaviour* still holds; only the mechanism
+> changes. `SentMessages` also gains its `payload` column in this task's V2 migration, so add
+> it to the `Tables.kt` object here — the drift test will fail until you do, which is the
+> test doing its job.
+
 - Consumes: `Crypto` (2).
 - Produces: `data class TrackedMessage(val chatId: Long, val messageId: Long)`; `class MessageLogRepository(ds, crypto, clock)` with `record(chatId, messageId, refTokens, userIds)`, `messagesForToken(refToken, limit): List<TrackedMessage>`, `messagesForUser(userId, chatId?): List<TrackedMessage>`, `namesOthers(messageId, chatId, userId): Boolean`, `forget(userId, chatId?)`, `prune(before): Int`, `rewriteChatRef(old, new): Int`; `class ButtonService(log)` with `suspend fun stripFor(tokens: List<String>, chatId: Long, bot: TelegramBot)`.
 
@@ -2863,7 +3230,7 @@ one-way hash — so `sent_message` gains an encrypted payload holding it.
 ```sql
 -- The chat ref is a keyed hash and cannot be reversed, but editing or deleting a
 -- message needs the real chat id. Keep it sealed like every other identity.
-ALTER TABLE sent_message ADD COLUMN payload VARBINARY(512);
+ALTER TABLE sent_message ADD COLUMN payload BYTEA;
 ```
 
 - [ ] **Step 2: Write the failing test**
@@ -3333,7 +3700,7 @@ suspend fun forget(update: ProcessedUpdate, bot: TelegramBot) {
 }
 ```
 
-Add `lateinit var forget: ForgetService` to `Registry` and wire it in `Main.kt`.
+Add `lateinit var forget: ForgetService` to `Registry`, wire it in `Main.kt`, add `botCommand("forget", …)` to `setMyCommands`, and add the `/forget` line to `/help` — earlier tasks deliberately left it out, because until now the command did not exist.
 
 - [ ] **Step 5: Build, test, commit**
 
@@ -3487,7 +3854,10 @@ In `Main.kt`, after wiring the repositories:
 ```kotlin
     val housekeeping = Housekeeping(Registry.requests, Registry.settings, Registry.rates, Registry.messages)
     startScheduler(ds, housekeeping)
-    housekeeping.refreshRates()   // don't wait a day for the first rate
+    // Warm the rate cache without waiting a day for the scheduler's first run — but never
+    // gate startup on it. A slow feed must not stop the bot from listening, and ktor
+    // delivers a request timeout as a CancellationException, which RateClient rethrows.
+    launch { runCatching { housekeeping.refreshRates() } }
 ```
 
 - [ ] **Step 4: Build, test, commit**
@@ -3669,7 +4039,7 @@ suspend fun tif(update: ProcessedUpdate, bot: TelegramBot) = adminOnly(update, b
 }
 ```
 
-Add `lateinit var admin: AdminService` to `Registry`, wire it in `Main.kt`, and add the three commands to `setMyCommands`.
+Add `lateinit var admin: AdminService` to `Registry`, wire it in `Main.kt`, and add `botCommand` entries for `pair`, `tolerance` and `tif` to `setMyCommands`. Also append the sentence about admins changing these settings to `/settings`' reply — Task 9 deliberately left it out, because until now those commands did not exist.
 
 - [ ] **Step 4: Build, test, commit**
 
@@ -3749,24 +4119,33 @@ import eu.vendeli.tgbot.types.component.ProcessedUpdate
 import eu.vendeli.tgbot.types.component.UpdateType
 
 /**
- * A group upgraded to a supergroup keeps nothing of its old chat id. Requests
- * seal their payload against the ref token, not the chat, so only the settings
- * row needs re-encrypting (ADR 0002).
+ * A group upgraded to a supergroup keeps nothing of its old chat id. The id lives
+ * in the ref columns and inside each sealed payload, so the repositories reseal
+ * their rows; the AAD is the ref token and never changes (ADR 0002).
  */
 class ChatMigrationService(
     private val requests: RequestRepository,
     private val settings: ChatSettingsRepository,
     private val log: MessageLogRepository,
+    private val db: Database,
 ) {
-    fun migrate(oldChatId: Long, newChatId: Long): Int {
+    /**
+     * All three rewrites are one transaction. Exposed leaves `useNestedTransactions` false
+     * by default and this project does not set it, so each repository's own
+     * `transaction(db)` joins this one and defers its commit — the migration is
+     * all-or-nothing. Without that, a crash between the calls would strand a chat's
+     * settings and message record under a chat ref nothing resolves any more, which is the
+     * silent split-state this task exists to prevent.
+     */
+    fun migrate(oldChatId: Long, newChatId: Long): Int = transaction(db) {
         val moved = requests.rewriteChatRef(oldChatId, newChatId)
         settings.rewriteChatRef(oldChatId, newChatId)
         log.rewriteChatRef(oldChatId, newChatId)
-        return moved
+        moved
     }
 }
 
-@UpdateHandler([UpdateType.MESSAGE])
+@UpdateHandler([UpdateType.MESSAGE], messageKind = [MessageKind.MIGRATE_TO_CHAT])
 suspend fun onChatMigration(update: ProcessedUpdate) {
     val message = (update as? eu.vendeli.tgbot.types.component.MessageUpdate)?.message ?: return
     val newId = message.migrateToChatId ?: return
@@ -3774,7 +4153,7 @@ suspend fun onChatMigration(update: ProcessedUpdate) {
 }
 ```
 
-Add `lateinit var migration: ChatMigrationService` to `Registry` and wire it in `Main.kt`.
+Add `lateinit var migration: ChatMigrationService` to `Registry` and wire it in `Main.kt`, passing the composition root's `db`.
 
 If `migrateToChatId` is spelled differently on this framework version, find the
 right property with:
@@ -3943,7 +4322,7 @@ Checked against the spec; three things worth flagging to whoever executes this.
 **Two deviations from the spec, both deliberate:**
 
 1. **`sent_message` gained an encrypted payload (Task 11, `V2`).** The spec's schema stores only `chat_ref`, but editing or deleting a message needs the real chat id and a keyed hash cannot be reversed. The chat id is sealed like every other identity rather than stored in the clear.
-2. **`RequestRepository.byRefToken` returns `chatId = 0`.** The chat id is not stored outside the payload, and rows found by token are only used for authorization and state changes, which key on the token and the user. Anything needing a real chat id goes through `resting(chatId)` or the message log.
+2. **The sealed request payload carries `chatId` (Task 5).** The spec's payload list omits it, but without it a rotation of the MAC keyset would orphan every `chat_ref` with no way to re-derive it — which contradicts the rotation story ADR 0002 tells. Storing it also removes the awkward case where a row fetched by token had no chat id. The cost is that a supergroup migration reseals that chat's rows instead of only updating a column.
 
 **Two places where the framework's exact spelling was not verified**, each with the check to run rather than a guess to make: the `migrate_to_chat_id` property name (Task 15 Step 3 gives the `javap` command) and the `ProcessedUpdate` import set (Task 9 Step 6 points at the neighbour file using the same version). Everything else — `answerCallbackQuery(id).options { text; showAlert }`, `getChatMember(userId)`, `editMessageText(id) { }`, `deleteMessages(List<Long>)`, `sendReturning`, and the 64-byte `callback_data` limit — was read off the 9.6.0 jar and the Bot API docs directly.
 
