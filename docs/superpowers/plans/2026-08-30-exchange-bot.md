@@ -1549,6 +1549,199 @@ git commit -m "feat: encrypted schema and request repository"
 
 ---
 
+### Task 5b: Port persistence to the Exposed DSL
+
+**Files:**
+- Modify: `gradle/libs.versions.toml`, `build.gradle.kts`
+- Create: `src/main/kotlin/fxbot/Tables.kt`
+- Modify: `src/main/kotlin/fxbot/Db.kt`, `src/main/kotlin/fxbot/RequestRepository.kt`
+- Test: `src/test/kotlin/fxbot/SchemaDriftTest.kt`
+
+**Interfaces:**
+- Consumes: `Config`, `Crypto`, `Request`/`RequestState`, `Side`, `CurrencyPair`.
+- Produces: `object Requests : Table("request")` (and one object per remaining table);
+  `RequestRepository` with its existing public signatures **unchanged**.
+
+**This task changes no behaviour.** Every one of the 59 existing tests must still pass,
+untouched. If a test needs editing to go green, the port is wrong — stop and report.
+
+Why: the repository hand-builds SQL strings and assigns parameters positionally
+(`st.setString(3, …)`), which has already produced one off-by-one hazard the reviewer had
+to check by hand and one `$where` string concatenation. Exposed removes both.
+
+Scope is deliberately narrow: `exposed-core` + `exposed-jdbc`, used purely as a query
+layer. **Not** `exposed-dao`, **not** `exposed-crypt` (its algorithms take no associated
+data, so it cannot express the `ref_token` binding, and it would still leave the keyed-MAC
+refs hand-rolled), **not** `exposed-money` (amounts live inside the sealed payload, not in
+columns), **not** `exposed-migration` (Flyway owns the schema). Tink and Flyway are
+untouched.
+
+- [ ] **Step 1: Add the dependencies**
+
+`gradle/libs.versions.toml`:
+
+```toml
+exposed = "1.5.0"
+```
+```toml
+exposed-core = { module = "org.jetbrains.exposed:exposed-core", version.ref = "exposed" }
+exposed-jdbc = { module = "org.jetbrains.exposed:exposed-jdbc", version.ref = "exposed" }
+```
+
+and in `build.gradle.kts` dependencies: `implementation(libs.exposed.core)` and
+`implementation(libs.exposed.jdbc)`.
+
+- [ ] **Step 2: Declare the tables**
+
+`src/main/kotlin/fxbot/Tables.kt` — one object per table already defined in
+`V1__initial.sql`. These must match that file exactly; Step 5's test enforces it.
+
+```kotlin
+package fxbot
+
+import org.jetbrains.exposed.v1.core.Table
+
+object Requests : Table("request") {
+    val rowId = long("row_id").autoIncrement()
+    val refToken = text("ref_token")
+    val chatRef = text("chat_ref")
+    val userRef = text("user_ref")
+    val shortId = text("short_id")
+    val state = text("state")
+    val createdAt = timestamp("created_at")
+    val expiresAt = timestamp("expires_at")
+    val closedAt = timestamp("closed_at").nullable()
+    val payload = binary("payload")
+    override val primaryKey = PrimaryKey(rowId)
+}
+
+object ChatSettingsTable : Table("chat_settings") {
+    val chatRef = text("chat_ref")
+    val payload = binary("payload")
+    val updatedAt = timestamp("updated_at")
+    override val primaryKey = PrimaryKey(chatRef)
+}
+
+object FxRates : Table("fx_rate") {
+    val base = text("base")
+    val quote = text("quote")
+    val rate = decimal("rate", 30, 10)
+    val fetchedAt = timestamp("fetched_at")
+    override val primaryKey = PrimaryKey(base, quote)
+}
+
+object SentMessages : Table("sent_message") {
+    val chatRef = text("chat_ref")
+    val messageId = long("message_id")
+    val sentAt = timestamp("sent_at")
+    val payload = binary("payload").nullable()
+    override val primaryKey = PrimaryKey(chatRef, messageId)
+}
+
+object SentMessageRefs : Table("sent_message_ref") {
+    val chatRef = text("chat_ref")
+    val messageId = long("message_id")
+    val refToken = text("ref_token")
+    val userRef = text("user_ref")
+}
+```
+
+**Verify the imports against the 1.5.0 jar before assuming them.** Exposed 1.x moved to
+`org.jetbrains.exposed.v1.*` packages; `Table` is confirmed at
+`org.jetbrains.exposed.v1.core.Table` and `transaction` at
+`org.jetbrains.exposed.v1.jdbc.transactions.transaction`, but the DSL functions
+(`selectAll`, `insert`, `update`, `deleteWhere`) and the `timestamp` column type may sit
+elsewhere. If `timestamp` requires the `exposed-kotlin-datetime` module, use
+`javaTimestamp`/`java.time` support from core instead of adding a module — report which you
+used. Do not guess an import that does not resolve; find it and say where it was.
+
+- [ ] **Step 3: Connect Exposed to the existing DataSource**
+
+In `Db.kt`, after building the Hikari pool, register it with Exposed. The pool stays the
+one Flyway uses — Exposed does not open its own connections.
+
+```kotlin
+fun connectExposed(ds: DataSource): Database = Database.connect(ds)
+```
+
+Call it in `Main.kt` right after `migrate(ds)`, and in the test helper after the migration.
+
+- [ ] **Step 4: Port `RequestRepository`, method by method**
+
+Keep every public signature identical. Replace each `ds.connection.use { … prepareStatement
+… }` body with a `transaction { }` block containing the DSL equivalent. The rules that must
+survive the port, each of which a previous review round put there:
+
+- `create` stays wrapped in `allocationLock.withLock { }` — the lock, not the database, is
+  what makes short-id allocation safe (ADR 0004, single process).
+- `transition` keeps its state guard in the `where` clause and keeps stamping `closedAt`
+  (null when returning to `OPEN`), and still reports whether exactly one row changed.
+- `expireDue` keeps stamping `closedAt` with its own `now`.
+- `deleteFor` keeps its read and delete in **one** transaction, and the optional chat filter
+  becomes a composed predicate rather than string concatenation:
+  ```kotlin
+  val predicate = if (chatRef == null) Requests.userRef eq userRef
+                  else (Requests.userRef eq userRef) and (Requests.chatRef eq chatRef)
+  ```
+- `rewriteChatRef` keeps its read and its updates in one transaction and returns the number
+  of rows it actually updated.
+- `resting` keeps `orderBy(Requests.expiresAt, Requests.rowId)`.
+
+`transaction { }` replaces the manual `autoCommit`/`commit`/`rollback`/`finally` blocks —
+delete them, do not wrap one inside the other.
+
+- [ ] **Step 5: Write the drift test**
+
+Flyway owns the schema and `Tables.kt` describes it a second time, so they can disagree
+silently — a column renamed in a migration would still compile. This test is what makes the
+duplication safe, and it is not optional.
+
+`src/test/kotlin/fxbot/SchemaDriftTest.kt`:
+
+```kotlin
+package fxbot
+
+import io.kotest.core.spec.style.StringSpec
+import io.kotest.matchers.collections.shouldBeEmpty
+import org.jetbrains.exposed.v1.jdbc.transactions.transaction
+
+class SchemaDriftTest : StringSpec({
+    "the Exposed tables match the schema Flyway creates" {
+        val ds = memDataSource("drift")
+        migrate(ds)
+        connectExposed(ds)
+        transaction {
+            val tables = arrayOf(Requests, ChatSettingsTable, FxRates, SentMessages, SentMessageRefs)
+            // Any statement Exposed would need to run to reach its own definition is a
+            // disagreement between Tables.kt and V1__initial.sql.
+            org.jetbrains.exposed.v1.jdbc.SchemaUtils
+                .statementsRequiredToActualizeScheme(*tables)
+                .shouldBeEmpty()
+        }
+    }
+})
+```
+
+Verify `statementsRequiredToActualizeScheme` exists under that name in 1.5.0 — if it moved
+or was renamed, find the equivalent and use it; if no equivalent exists, assert column
+names and nullability per table by hand rather than dropping the check.
+
+- [ ] **Step 6: Run the whole suite unchanged**
+
+Run: `./gradlew clean test`
+Expected: 60/60 (the 59 existing plus the drift test), no test file edited except the new
+one. Any existing test that needs modification means the port changed behaviour — stop and
+report rather than adjusting it.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add gradle build.gradle.kts src
+git commit -m "refactor: query the database through the Exposed DSL"
+```
+
+---
+
 ### Task 6: Chat settings
 
 **Files:**
