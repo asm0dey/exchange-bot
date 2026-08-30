@@ -18,7 +18,16 @@ import java.time.Instant
  * this project's Kotlin 2.4.10 toolchain (`error: unresolved reference` even in a
  * standalone `kotlinc` compile, independent of Gradle — verified by hand). The
  * seconds/nanos bridge below uses only stable, directly-confirmed-resolvable members
- * of both `Instant` types.
+ * of both `Instant` types, and neither direction touches a time zone.
+ *
+ * The JVM-default-zone dependency in this column lives inside Exposed's
+ * `InstantColumnType` itself, not here: writing a value formats it as SQL text via a
+ * `LocalDateTime`, which `InstantColumnType` derives from the `Instant` using the
+ * system default zone (`toLocalDateTime()`/equivalent internally), and reading
+ * reverses that through the same zone. That is exactly what the hand-rolled JDBC this
+ * replaced also did — `java.sql.Timestamp.from(instant)` / `Timestamp.toInstant()`
+ * round-trip through the JVM's default time zone the same way — so this is not a
+ * regression the port introduced.
  */
 private class JavaInstantColumnType : InstantColumnType<Instant>() {
     override fun toInstant(value: Instant): kotlin.time.Instant =

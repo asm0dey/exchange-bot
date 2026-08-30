@@ -8,6 +8,7 @@ import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.less
 import org.jetbrains.exposed.v1.core.neq
+import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
@@ -40,16 +41,15 @@ class RequestRepository(
     ds: DataSource,
     private val crypto: Crypto,
     private val clock: Clock = Clock.systemUTC(),
+    // connectExposed(ds) is memoized per DataSource, so this default is safe to call
+    // from every RequestRepository built on the same pool — it never registers a
+    // second Database with Exposed's transaction manager. Exists as a parameter (not
+    // just a computed property) so a future composition root that already holds a
+    // Database — e.g. Main.kt, connecting once for every repository — can hand it in
+    // directly instead of resolving it again through this same memo table.
+    private val db: Database = connectExposed(ds),
 ) {
     private val json = Json { ignoreUnknownKeys = true }
-
-    // Exposed registers a transaction manager per Database instance, not one global
-    // default, so every transaction() call below is handed this instance explicitly
-    // rather than relying on a thread-local default that a second repository (a second
-    // test, a second pool) could overwrite. This still never lets Exposed open its own
-    // connections — every query runs through the Hikari pool the caller built and
-    // Flyway already migrated.
-    private val db = connectExposed(ds)
 
     // Short ids are unique only among a chat's live requests, and H2 has no partial
     // unique index to enforce that. `SELECT ... FOR UPDATE` cannot do it either: it
