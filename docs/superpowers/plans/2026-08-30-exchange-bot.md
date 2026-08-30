@@ -17,7 +17,7 @@
 - Kotlin `2.4.10`, KSP `2.3.10`, JVM toolchain **21**, Gradle **9.6.1**.
 - Pinned versions: telegram-bot `9.6.0`, ktor `3.5.1`, kotlinx-serialization `1.11.0`, coroutines `1.11.0`, db-scheduler `16.12.0`, h2 `2.4.240`, HikariCP `7.1.0`, slf4j-simple `2.0.18`, kotest `6.2.3`, Tink `1.18.0`, Flyway `11.8.2`.
 - **H2 support ships inside `flyway-core`.** There is no `flyway-database-h2` artifact — do not add one.
-- **H2 runs in PostgreSQL compatibility mode** (`;MODE=PostgreSQL` on every JDBC URL, production and test alike). Schema columns use `TEXT` and `BYTEA` — never a guessed `CHAR(n)` width. The only exception is db-scheduler's canonical table, which keeps the types that library ships.
+- **H2 runs in PostgreSQL compatibility mode** (`;MODE=PostgreSQL` on every JDBC URL, production and test alike). Schema columns use `TEXT` and `BYTEA` — never a guessed `CHAR(n)` width. This extends to db-scheduler's table: H2 2.4.240 rejects the `BLOB` keyword outright in this mode (`Mode.disallowedTypes`), so `task_data` is `BYTEA`. db-scheduler reads and writes that column as `byte[]`, and in this design the column is always empty because both scheduled tasks are parameterless.
 - **No GraalVM native-image.** Deliberately excluded (ADR 0004).
 - Package root: `fxbot`. Root project name: `exchange-bot`.
 - **Vocabulary is binding** (ADR + `CONTEXT.md`): `Side.BID` / `Side.OFFER`, `counterparty`, `notional`, `resting`, `DONE`, `time in force`, `size tolerance`. The words **order**, **book**, **fill**, **execution** must not appear in identifiers, comments, or user strings.
@@ -998,7 +998,7 @@ CREATE INDEX sent_message_ref_user_idx ON sent_message_ref (user_ref);
 CREATE TABLE scheduled_tasks (
     task_name            VARCHAR(255) NOT NULL,
     task_instance        VARCHAR(255) NOT NULL,
-    task_data            BLOB,
+    task_data            BYTEA,   -- BLOB is rejected under MODE=PostgreSQL; see below
     execution_time       TIMESTAMP WITH TIME ZONE NOT NULL,
     picked               BOOLEAN NOT NULL,
     picked_by            VARCHAR(50),
@@ -1470,9 +1470,9 @@ Run: `./gradlew test --tests 'fxbot.RequestRepositoryTest'`
 Expected: PASS, 12 tests.
 
 The "chat migration keeps payloads readable" test asserts `chatId shouldBe -1001L`
-because `resting()` passes the id the caller asked for. `byRefToken` yields `chatId = 0`;
-that is only used for state transitions and authorization, which key on the token
-and the user, never on the chat.
+because `rewriteChatRef` reseals each payload with the new id. Every read path —
+`resting`, `byShortId`, `byRefToken` — takes the chat id out of the sealed payload,
+so a row fetched by token knows which chat it belongs to.
 
 - [ ] **Step 7: Commit**
 
