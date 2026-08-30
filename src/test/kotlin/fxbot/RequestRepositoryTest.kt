@@ -8,6 +8,7 @@ import io.kotest.matchers.shouldBe
 import java.math.BigDecimal
 import java.time.Clock
 import java.time.Instant
+import java.time.ZoneId
 import java.time.ZoneOffset
 
 private val EURRUB = CurrencyPair("EUR", "RUB")
@@ -17,6 +18,18 @@ private fun repo(name: String, clock: Clock = Clock.fixed(T0, ZoneOffset.UTC)): 
     val ds = memDataSource(name)
     migrate(ds)
     return RequestRepository(ds, testCrypto(), clock) to ds
+}
+
+/**
+ * Advances by 1ms on every read, so calls that must be strictly ordered in
+ * time (e.g. two `transition`s) get distinct instants — a fixed clock cannot
+ * discriminate "closed later" from "closed earlier" at all.
+ */
+private class TickingClock(start: Instant) : Clock() {
+    private var current = start
+    override fun getZone(): ZoneId = ZoneOffset.UTC
+    override fun withZone(zone: ZoneId): Clock = this
+    override fun instant(): Instant = current.also { current = current.plusMillis(1) }
 }
 
 class RequestRepositoryTest : StringSpec({
@@ -79,13 +92,17 @@ class RequestRepositoryTest : StringSpec({
         r.byShortId(-200L, "a").shouldBeNull()
     }
 
-    "most recently closed finds the caller's own last closure" {
-        val (r, _) = repo("recent")
+    "most recently closed means closed, not created" {
+        // Closed in REVERSE creation order, so a query ordering by row_id would
+        // return the wrong one and this test would catch it. A ticking clock is
+        // used because the repository's default fixed test clock would stamp
+        // both transitions with the same closed_at and fail to discriminate.
+        val (r, _) = repo("recent", TickingClock(T0))
         val a = r.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7)
         val b = r.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("2"), EURRUB, 7)
-        r.transition(a.refToken, RequestState.OPEN, RequestState.DONE)
-        r.transition(b.refToken, RequestState.OPEN, RequestState.CANCELLED)
-        r.mostRecentlyClosed(-100L, 1L)!!.refToken shouldBe b.refToken
+        r.transition(b.refToken, RequestState.OPEN, RequestState.DONE)
+        r.transition(a.refToken, RequestState.OPEN, RequestState.CANCELLED)
+        r.mostRecentlyClosed(-100L, 1L)!!.refToken shouldBe a.refToken
         r.mostRecentlyClosed(-100L, 999L).shouldBeNull()
     }
 
@@ -99,12 +116,18 @@ class RequestRepositoryTest : StringSpec({
 
     "forgetting removes rows in one chat, or everywhere" {
         val (r, _) = repo("forget")
-        r.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7)
+        val here = r.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7)
         r.create(-200L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7)
-        r.deleteFor(1L, -100L) shouldHaveSize 1
+        r.deleteFor(1L, -100L).single() shouldBe here.refToken
         r.resting(-200L) shouldHaveSize 1
         r.deleteFor(1L, null) shouldHaveSize 1
         r.resting(-200L) shouldHaveSize 0
+    }
+
+    "a fractional amount survives the payload round trip exactly" {
+        val (r, _) = repo("precision")
+        val a = r.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1234.5670"), EURRUB, 7)
+        r.byRefToken(a.refToken)!!.statedAmount shouldBe BigDecimal("1234.5670")
     }
 
     "a chat migration keeps payloads readable" {

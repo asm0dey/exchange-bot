@@ -7,6 +7,7 @@ CREATE TABLE request (
     state       TEXT      NOT NULL,
     created_at  TIMESTAMP NOT NULL,
     expires_at  TIMESTAMP NOT NULL,
+    closed_at   TIMESTAMP,              -- set when the request leaves OPEN
     payload     BYTEA     NOT NULL
 );
 CREATE UNIQUE INDEX request_ref_token_idx ON request (ref_token);
@@ -44,7 +45,7 @@ CREATE INDEX sent_message_ref_token_idx ON sent_message_ref (ref_token);
 CREATE INDEX sent_message_ref_user_idx ON sent_message_ref (user_ref);
 
 -- db-scheduler 16.x canonical schema. task_data stays empty by design (ADR: tasks
--- are parameterless so nothing sensitive lands in this unencrypted BLOB).
+-- are parameterless so nothing sensitive lands in this unencrypted BYTEA).
 CREATE TABLE scheduled_tasks (
     task_name            VARCHAR(255) NOT NULL,
     task_instance        VARCHAR(255) NOT NULL,
