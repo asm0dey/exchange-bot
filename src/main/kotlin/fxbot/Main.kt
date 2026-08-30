@@ -24,7 +24,8 @@ suspend fun main() {
     Registry.rates = RateService(RateClient(HttpClient(CIO)), RateRepository(ds, db = db))
     Registry.service = RequestService(Registry.requests, Registry.settings, Registry.rates)
     Registry.lifecycle = LifecycleService(Registry.requests)
-    Registry.buttons = ButtonService()
+    Registry.messages = MessageLogRepository(ds, crypto, db = db)
+    Registry.buttons = ButtonService(Registry.messages)
 
     val bot = TelegramBot(cfg.botToken) {
         // Without this the parser never breaks on a space: "/sell 1000 EUR" is taken as

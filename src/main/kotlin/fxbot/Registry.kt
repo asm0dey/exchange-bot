@@ -10,5 +10,6 @@ object Registry {
     lateinit var rates: RateService
     lateinit var service: RequestService
     lateinit var lifecycle: LifecycleService
+    lateinit var messages: MessageLogRepository
     lateinit var buttons: ButtonService
 }

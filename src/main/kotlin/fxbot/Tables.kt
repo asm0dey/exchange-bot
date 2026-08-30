@@ -73,6 +73,7 @@ object SentMessages : Table("sent_message") {
     val chatRef = text("chat_ref")
     val messageId = long("message_id")
     val sentAt = timestamp("sent_at")
+    val payload = binary("payload")
     override val primaryKey = PrimaryKey(chatRef, messageId)
 }
 

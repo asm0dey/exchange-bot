@@ -7,6 +7,7 @@ import eu.vendeli.tgbot.types.chat.ChatType
 import eu.vendeli.tgbot.types.component.ParseMode
 import eu.vendeli.tgbot.types.component.ProcessedUpdate
 import eu.vendeli.tgbot.types.component.getChat
+import eu.vendeli.tgbot.types.component.getOrNull
 import eu.vendeli.tgbot.types.component.getUser
 
 private const val PRIVATE_HINT =
@@ -45,10 +46,22 @@ private suspend fun handlePost(verb: Verb, update: ProcessedUpdate, bot: Telegra
         is PostResult.Posted -> {
             val text = renderSuggestions(result.found, result.status)
             val buttons = suggestionButtons(result.request, result.found)
-            message { text }
+            val sent = message { text }
                 .options { parseMode = ParseMode.HTML }
                 .inlineKeyboardMarkup { buttons.forEach { b -> b.label callback b.data; br() } }
-                .send(chat.id, bot)
+                .sendReturning(chat.id, bot)
+                .getOrNull()
+            // The buttons on this message name the poster's own request plus every
+            // counterparty's — record all of them, so a later close on ANY of those
+            // requests knows to strip this message's keyboard too.
+            sent?.messageId?.let { id ->
+                Registry.messages.record(
+                    chat.id,
+                    id,
+                    listOf(result.request.refToken) + result.found.map { it.request.refToken },
+                    listOf(result.request.userId) + result.found.map { it.request.userId },
+                )
+            }
         }
     }
 }
