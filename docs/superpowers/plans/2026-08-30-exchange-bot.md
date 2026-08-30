@@ -1818,7 +1818,8 @@ package fxbot
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import java.sql.Timestamp
+import org.jetbrains.exposed.v1.jdbc.Database
+import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import java.time.Clock
 import javax.sql.DataSource
 
@@ -1838,12 +1839,13 @@ private const val DEFAULT_TIF_DAYS = 7
 
 /**
  * This row's associated data is the chat ref, not a ref token, so a chat
- * migration must re-encrypt it — the one row in the schema that does.
+ * migration must reseal it — the one row in the schema that does.
  */
 class ChatSettingsRepository(
     private val ds: DataSource,
     private val crypto: Crypto,
     private val clock: Clock = Clock.systemUTC(),
+    private val db: Database = connectExposed(ds),
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -1859,59 +1861,52 @@ class ChatSettingsRepository(
         write(chatRef, crypto.seal(json.encodeToString(body), chatRef))
     }
 
-    fun allPairs(): Set<CurrencyPair> = ds.connection.use { c ->
-        c.prepareStatement("SELECT chat_ref, payload FROM chat_settings").use { st ->
-            st.executeQuery().use { rs ->
-                val out = mutableSetOf<CurrencyPair>()
-                while (rs.next()) {
-                    val p = json.decodeFromString<SettingsPayload>(
-                        crypto.open(rs.getBytes("payload"), rs.getString("chat_ref"))
-                    )
-                    out += CurrencyPair(p.base, p.quote)
-                }
-                out
-            }
-        }
+    fun allPairs(): Set<CurrencyPair> = transaction(db) {
+        ChatSettingsTable.selectAll().map { row ->
+            val p = json.decodeFromString<SettingsPayload>(
+                crypto.open(row[ChatSettingsTable.payload], row[ChatSettingsTable.chatRef])
+            )
+            CurrencyPair(p.base, p.quote)
+        }.toSet()
     }
 
     fun rewriteChatRef(oldChatId: Long, newChatId: Long): Boolean {
         val oldRef = crypto.ref(oldChatId.toString())
         val newRef = crypto.ref(newChatId.toString())
-        val payload = read(oldRef) ?: return false
-        write(newRef, crypto.seal(json.encodeToString(payload), newRef))
-        ds.connection.use { c ->
-            c.prepareStatement("DELETE FROM chat_settings WHERE chat_ref = ?").use { st ->
-                st.setString(1, oldRef)
-                st.executeUpdate()
-            }
-        }
-        return true
-    }
-
-    private fun read(chatRef: String): SettingsPayload? = ds.connection.use { c ->
-        c.prepareStatement("SELECT payload FROM chat_settings WHERE chat_ref = ?").use { st ->
-            st.setString(1, chatRef)
-            st.executeQuery().use { rs ->
-                if (!rs.next()) null
-                else json.decodeFromString<SettingsPayload>(crypto.open(rs.getBytes(1), chatRef))
-            }
+        return transaction(db) {
+            val payload = readIn(oldRef) ?: return@transaction false
+            writeIn(newRef, crypto.seal(json.encodeToString(payload), newRef))
+            ChatSettingsTable.deleteWhere { ChatSettingsTable.chatRef eq oldRef }
+            true
         }
     }
 
-    private fun write(chatRef: String, sealed: ByteArray) = ds.connection.use { c ->
-        c.prepareStatement(
-            """
-            MERGE INTO chat_settings (chat_ref, payload, updated_at) KEY (chat_ref) VALUES (?, ?, ?)
-            """.trimIndent()
-        ).use { st ->
-            st.setString(1, chatRef)
-            st.setBytes(2, sealed)
-            st.setTimestamp(3, Timestamp.from(clock.instant()))
-            st.executeUpdate()
+    private fun read(chatRef: String): SettingsPayload? = transaction(db) { readIn(chatRef) }
+
+    private fun readIn(chatRef: String): SettingsPayload? =
+        ChatSettingsTable.selectAll()
+            .where { ChatSettingsTable.chatRef eq chatRef }
+            .singleOrNull()
+            ?.let { json.decodeFromString<SettingsPayload>(crypto.open(it[ChatSettingsTable.payload], chatRef)) }
+
+    private fun write(chatRef: String, sealed: ByteArray) = transaction(db) { writeIn(chatRef, sealed) }
+
+    private fun writeIn(chatRef: String, sealed: ByteArray) {
+        ChatSettingsTable.upsert {
+            it[ChatSettingsTable.chatRef] = chatRef
+            it[payload] = sealed
+            it[updatedAt] = clock.instant()
         }
     }
 }
 ```
+
+**Verify the DSL imports against the 1.5.0 jars rather than trusting this sketch** —
+`selectAll`, `deleteWhere` and especially `upsert` may sit in `org.jetbrains.exposed.v1.jdbc`
+rather than core, and `upsert`'s signature for a composite or single-column key may differ.
+Task 5b's report records the packages it verified; start there. If `upsert` does not exist
+under that name, use the delete-then-insert pair inside the same transaction rather than
+hand-writing a `MERGE` statement — the point of this layer is that no SQL is hand-written.
 
 - [ ] **Step 4: Run the tests**
 
@@ -2073,39 +2068,41 @@ class RateClient(private val http: HttpClient) {
 ```kotlin
 package fxbot
 
+import org.jetbrains.exposed.v1.jdbc.Database
+import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import java.math.BigDecimal
-import java.sql.Timestamp
 import java.time.Instant
 import javax.sql.DataSource
 
 data class CachedRate(val rate: BigDecimal, val fetchedAt: Instant)
 
 /** Public data — the one table with nothing encrypted in it. */
-class RateRepository(private val ds: DataSource) {
-    fun get(base: String, quote: String): CachedRate? = ds.connection.use { c ->
-        c.prepareStatement("SELECT rate, fetched_at FROM fx_rate WHERE base = ? AND quote = ?").use { st ->
-            st.setString(1, base)
-            st.setString(2, quote)
-            st.executeQuery().use { rs ->
-                if (rs.next()) CachedRate(rs.getBigDecimal(1), rs.getTimestamp(2).toInstant()) else null
+class RateRepository(
+    private val ds: DataSource,
+    private val db: Database = connectExposed(ds),
+) {
+    fun get(base: String, quote: String): CachedRate? = transaction(db) {
+        FxRates.selectAll()
+            .where { (FxRates.base eq base) and (FxRates.quote eq quote) }
+            .singleOrNull()
+            ?.let { CachedRate(it[FxRates.rate], it[FxRates.fetchedAt]) }
+    }
+
+    fun put(base: String, quote: String, rate: BigDecimal, at: Instant) {
+        transaction(db) {
+            FxRates.upsert {
+                it[FxRates.base] = base
+                it[FxRates.quote] = quote
+                it[FxRates.rate] = rate
+                it[fetchedAt] = at
             }
         }
     }
-
-    fun put(base: String, quote: String, rate: BigDecimal, at: Instant) = ds.connection.use { c ->
-        c.prepareStatement(
-            "MERGE INTO fx_rate (base, quote, rate, fetched_at) KEY (base, quote) VALUES (?, ?, ?, ?)"
-        ).use { st ->
-            st.setString(1, base)
-            st.setString(2, quote)
-            st.setBigDecimal(3, rate)
-            st.setTimestamp(4, Timestamp.from(at))
-            st.executeUpdate()
-        }
-        Unit
-    }
 }
 ```
+
+Note the constructor now takes the `DataSource` (it previously took one too, but only to
+open connections); `upsert` carries the same verification caveat as Task 6.
 
 `src/main/kotlin/fxbot/RateService.kt`:
 
@@ -3162,6 +3159,17 @@ git commit -m "feat: cancel, done and reopen via commands and buttons"
 - Test: `src/test/kotlin/fxbot/MessageLogRepositoryTest.kt`
 
 **Interfaces:**
+
+> **This task's code sketch predates the Exposed port (Task 5b).** Write it with the Exposed
+> DSL exactly as `RequestRepository` and `ChatSettingsRepository` now are: `transaction(db)`,
+> typed columns from `Tables.kt`, no `prepareStatement`, no SQL strings, no positional
+> binding. The join in `messagesForToken` becomes `SentMessages.innerJoin(SentMessageRefs)`
+> or an explicit `join(...)` with an `onColumn`/`otherColumn` pair — verify which against the
+> 1.5.0 jars. Everything the sketch says about *behaviour* still holds; only the mechanism
+> changes. `SentMessages` also gains its `payload` column in this task's V2 migration, so add
+> it to the `Tables.kt` object here — the drift test will fail until you do, which is the
+> test doing its job.
+
 - Consumes: `Crypto` (2).
 - Produces: `data class TrackedMessage(val chatId: Long, val messageId: Long)`; `class MessageLogRepository(ds, crypto, clock)` with `record(chatId, messageId, refTokens, userIds)`, `messagesForToken(refToken, limit): List<TrackedMessage>`, `messagesForUser(userId, chatId?): List<TrackedMessage>`, `namesOthers(messageId, chatId, userId): Boolean`, `forget(userId, chatId?)`, `prune(before): Int`, `rewriteChatRef(old, new): Int`; `class ButtonService(log)` with `suspend fun stripFor(tokens: List<String>, chatId: Long, bot: TelegramBot)`.
 
