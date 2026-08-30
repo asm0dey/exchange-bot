@@ -18,9 +18,18 @@ import eu.vendeli.tgbot.types.msg.EntityType
  * Command-path counterpart of [respond]'s Ok branch in Callbacks.kt: same HTML parse
  * mode (the text may carry a `mention(...)` link/@name), same Reopen button when a
  * request just closed, same button-cleanup on the messages that suggested it.
+ *
+ * HTML parse mode is applied only to [ActionResult.Ok] text — that's the only branch
+ * that ever embeds a [mention]. `Denied`/`Gone` text can carry raw user input (e.g. a
+ * short id typed by the caller) that was never meant to be parsed as markup: sending
+ * it under `ParseMode.HTML` risks a Telegram entity-parse rejection (silently
+ * swallowed — the reply never arrives) or, worse, an attacker-authored tag rendering
+ * as a live link.
  */
 private suspend fun replyToClose(chatId: Long, bot: TelegramBot, result: ActionResult) {
-    val reply = message { result.text }.options { parseMode = ParseMode.HTML }
+    val reply = message { result.text }.let {
+        if (result is ActionResult.Ok) it.options { parseMode = ParseMode.HTML } else it
+    }
     if (result is ActionResult.Ok && result.closedTokens.isNotEmpty()) {
         reply.inlineKeyboardMarkup { "↩️ Reopen" callback Cb.reopen(result.closedTokens.first()) }
             .send(chatId, bot)

@@ -21,7 +21,9 @@ class LifecycleService(private val requests: RequestRepository) {
 
     fun cancel(chatId: Long, userId: Long, shortId: String): ActionResult {
         val r = requests.byShortId(chatId, shortId)
-            ?: return ActionResult.Gone("I can't find a waiting request called $shortId here.")
+            // shortId is raw user input, never validated — escaped in case this text is
+            // ever sent under an HTML parse mode by some future caller.
+            ?: return ActionResult.Gone("I can't find a waiting request called ${escapeHtml(shortId)} here.")
         return cancelByToken(userId, r.refToken)
     }
 
@@ -101,7 +103,9 @@ class LifecycleService(private val requests: RequestRepository) {
 
     fun doneByShortId(chatId: Long, userId: Long, shortId: String, peerUserId: Long?): ActionResult {
         val mine = requests.byShortId(chatId, shortId)
-            ?: return ActionResult.Gone("I can't find a waiting request called $shortId here.")
+            // shortId is raw user input, never validated — escaped in case this text is
+            // ever sent under an HTML parse mode by some future caller.
+            ?: return ActionResult.Gone("I can't find a waiting request called ${escapeHtml(shortId)} here.")
         if (mine.userId != userId) return ActionResult.Denied("That's not your request.")
         val theirs = peerUserId?.let { peer -> requests.resting(chatId).firstOrNull { it.userId == peer } }
         return done(userId, mine.refToken, theirs?.refToken)

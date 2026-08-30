@@ -33,6 +33,33 @@ every group it shares with you, not just the current one.
 
 Admins: `/pair EUR RUB`, `/tolerance 20`, `/tif 7`.
 
+## Data
+
+The H2 database lives in the `exchange-bot-data` Docker named volume, mounted
+at `/app/data` inside the container — not in a `./data` folder next to the
+source. This is deliberate: the container runs as a non-root user, and a
+named volume gets its ownership seeded from the image on first use, so that
+user can write to it. A bind-mounted host folder doesn't exist until Docker
+creates it, and Docker creates it `root`-owned, which the non-root user can't
+write into.
+
+Find the actual volume name (Compose prefixes it with the project name):
+
+    docker volume ls | grep exchange-bot-data
+
+Inspect the files without stopping the bot:
+
+    docker compose exec bot ls -la /app/data
+
+Back up the volume to a tarball in the current directory:
+
+    docker run --rm -v exchange-bot-data:/data -v "$PWD":/backup alpine \
+      tar czf /backup/exchange-bot-data-backup.tar.gz -C /data .
+
+(replace `exchange-bot-data` with the prefixed name from `docker volume ls`
+if it differs). Restore into a fresh volume the same way, with `tar xzf`
+instead of `tar czf`.
+
 ## Keys
 
 Five secrets live only in the environment — `BOT_TOKEN`, `DB_FILE_KEY`,
