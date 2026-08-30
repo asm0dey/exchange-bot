@@ -610,8 +610,11 @@ import java.text.DecimalFormatSymbols
 import java.util.Locale
 
 private val SYMBOLS = DecimalFormatSymbols(Locale.US)
-private val GROUPED = DecimalFormat("#,##0.##########", SYMBOLS)
-private val TWO_DP = DecimalFormat("#,##0.00", SYMBOLS)
+
+// DecimalFormat is mutable and not thread-safe, and Telegram updates are handled
+// concurrently, so each call gets its own formatter rather than sharing one.
+private fun grouped() = DecimalFormat("#,##0.##########", SYMBOLS).apply { roundingMode = RoundingMode.HALF_UP }
+private fun twoDp() = DecimalFormat("#,##0.00", SYMBOLS).apply { roundingMode = RoundingMode.HALF_UP }
 
 /** Accepts `1000`, `1 000`, `1,000.50`. Rejects anything not a positive plain number. */
 fun parseAmount(raw: String): BigDecimal? {
@@ -623,10 +626,10 @@ fun parseAmount(raw: String): BigDecimal? {
 }
 
 /** Stated amounts: grouped, trailing zeros stripped. */
-fun formatAmount(v: BigDecimal): String = GROUPED.format(v.stripTrailingZeros())
+fun formatAmount(v: BigDecimal): String = grouped().format(v.stripTrailingZeros())
 
 /** Notionals: grouped, always two decimal places. */
-fun formatNotional(v: BigDecimal): String = TWO_DP.format(v.setScale(2, RoundingMode.HALF_UP))
+fun formatNotional(v: BigDecimal): String = twoDp().format(v.setScale(2, RoundingMode.HALF_UP))
 ```
 
 - [ ] **Step 6: Run the tests**
