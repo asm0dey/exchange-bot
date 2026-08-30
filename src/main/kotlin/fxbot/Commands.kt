@@ -100,6 +100,7 @@ suspend fun help(update: ProcessedUpdate, bot: TelegramBot) {
         /done a1 @someone — you two swapped
         /reopen — undo your last /done
         /settings — this chat's currencies and limits
+        /forget — erase your data in this chat (send /forget all to me privately for every chat)
         """.trimIndent()
     }.send(chat.id, bot)
 }

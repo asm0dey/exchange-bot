@@ -12,4 +12,5 @@ object Registry {
     lateinit var lifecycle: LifecycleService
     lateinit var messages: MessageLogRepository
     lateinit var buttons: ButtonService
+    lateinit var forget: ForgetService
 }

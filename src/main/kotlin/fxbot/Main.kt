@@ -26,6 +26,7 @@ suspend fun main() {
     Registry.lifecycle = LifecycleService(Registry.requests)
     Registry.messages = MessageLogRepository(ds, crypto, db = db)
     Registry.buttons = ButtonService(Registry.messages)
+    Registry.forget = ForgetService(Registry.requests, Registry.messages)
 
     val bot = TelegramBot(cfg.botToken) {
         // Without this the parser never breaks on a space: "/sell 1000 EUR" is taken as
@@ -50,6 +51,7 @@ suspend fun main() {
         botCommand("done", "Mark a swap done")
         botCommand("reopen", "Undo your last done")
         botCommand("settings", "This chat's currencies and limits")
+        botCommand("forget", "Erase your data — add 'all' in a private chat for every group")
         botCommand("help", "What I can do")
         // Later tasks add their own entries as their handlers land. The menu must never
         // advertise a command that does nothing when tapped.
