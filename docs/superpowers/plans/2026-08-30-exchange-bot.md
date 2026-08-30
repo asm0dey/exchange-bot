@@ -1831,7 +1831,13 @@ data class ChatSettings(
 )
 
 @Serializable
-private data class SettingsPayload(val base: String, val quote: String, val tolerancePct: Int, val tifDays: Int)
+private data class SettingsPayload(
+    val chatId: Long,          // stored so a MAC-keyset rotation can re-derive chat_ref
+    val base: String,
+    val quote: String,
+    val tolerancePct: Int,
+    val tifDays: Int,
+)
 
 private val DEFAULT_PAIR = CurrencyPair("EUR", "RUB")
 private const val DEFAULT_TOLERANCE = 20
@@ -1857,7 +1863,7 @@ class ChatSettingsRepository(
 
     fun save(s: ChatSettings) {
         val chatRef = crypto.ref(s.chatId.toString())
-        val body = SettingsPayload(s.pair.base, s.pair.quote, s.tolerancePct, s.tifDays)
+        val body = SettingsPayload(s.chatId, s.pair.base, s.pair.quote, s.tolerancePct, s.tifDays)
         write(chatRef, crypto.seal(json.encodeToString(body), chatRef))
     }
 
