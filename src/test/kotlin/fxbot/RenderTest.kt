@@ -43,6 +43,9 @@ class RenderTest : StringSpec({
     "display names are HTML-escaped" {
         mention(null, 42, "A<b>&") shouldContain "A&lt;b&gt;&amp;"
     }
+    "usernames are HTML-escaped" {
+        mention("a<b>&", 42, "Alice") shouldBe "@a&lt;b&gt;&amp;"
+    }
 
     "callback data stays inside Telegram's 64 bytes" {
         val a = "a".repeat(22)
@@ -58,12 +61,11 @@ class RenderTest : StringSpec({
     }
 
     "a suggestion names each counterparty and how to reach them" {
-        val subject = r(Verb.SELL, "1000", "EUR", 1, "bob")
         val found = listOf(
             Counterparty(r(Verb.BUY, "900", "EUR", 2, "alice"), BigDecimal("900"), BigDecimal("0.1")),
             Counterparty(r(Verb.SELL, "95000", "RUB", 3, "carol"), BigDecimal("950.19"), BigDecimal("0.05")),
         )
-        val text = renderSuggestions(subject, found, RateStatus.Fresh(BigDecimal("99.98")))
+        val text = renderSuggestions(found, RateStatus.Fresh(BigDecimal("99.98")))
         text shouldContain "@alice"
         text shouldContain "buy 900 EUR"
         text shouldContain "sell 95,000 RUB"
@@ -72,18 +74,18 @@ class RenderTest : StringSpec({
         text shouldNotContain "Bid"
     }
     "no counterparty means a waitlist line, not an error" {
-        val text = renderSuggestions(r(Verb.SELL, "1000", "EUR", 1, "bob"), emptyList(), RateStatus.Fresh(BigDecimal("99.98")))
+        val text = renderSuggestions(emptyList(), RateStatus.Fresh(BigDecimal("99.98")))
         text shouldContain "waitlist"
     }
     "a stale rate is admitted in the message" {
         val text = renderSuggestions(
-            r(Verb.SELL, "1000", "EUR", 1, "bob"), emptyList(),
+            emptyList(),
             RateStatus.Stale(BigDecimal("95"), Instant.parse("2026-08-12T00:00:00Z")),
         )
         text shouldContain "12 Aug"
     }
     "an unavailable rate says so plainly" {
-        val text = renderSuggestions(r(Verb.SELL, "1000", "EUR", 1, "bob"), emptyList(), RateStatus.Unavailable)
+        val text = renderSuggestions(emptyList(), RateStatus.Unavailable)
         text shouldContain "can't check rates"
     }
 

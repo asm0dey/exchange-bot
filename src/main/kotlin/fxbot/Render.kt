@@ -34,7 +34,7 @@ fun describe(r: Request): String {
     return "$verb ${formatAmount(r.statedAmount)} ${r.statedCurrency}"
 }
 
-fun renderSuggestions(subject: Request, found: List<Counterparty>, status: RateStatus): String {
+fun renderSuggestions(found: List<Counterparty>, status: RateStatus): String {
     val lines = StringBuilder()
     if (found.isEmpty()) {
         lines.append("No one matches yet — you're on the waitlist.")
