@@ -37,6 +37,8 @@ private data class Payload(
 private val SHORT_IDS: List<String> =
     ('a'..'z').map { it.toString() } + ('a'..'z').flatMap { c -> ('0'..'9').map { "$c$it" } }
 
+enum class DoneOutcome { BOTH, ALREADY_CLOSED, PEER_GONE }
+
 class RequestRepository(
     ds: DataSource,
     private val crypto: Crypto,
@@ -205,6 +207,37 @@ class RequestRepository(
             }
         }
         updated
+    }
+
+    /**
+     * Closes both sides in one Exposed transaction, each guarded by its expected
+     * state, so two people pressing Done at the same moment close it exactly once:
+     * the `UPDATE ... WHERE state = 'OPEN'` only ever affects a row still resting,
+     * the same row-level guard [transition] already relies on.
+     */
+    fun markDone(mine: String, theirs: String?): DoneOutcome = transaction(db) {
+        fun close(token: String): Boolean =
+            Requests.update({ (Requests.refToken eq token) and (Requests.state eq RequestState.OPEN.name) }) {
+                it[Requests.state] = RequestState.DONE.name
+                it[Requests.closedAt] = clock.instant()
+            } == 1
+
+        if (!close(mine)) {
+            DoneOutcome.ALREADY_CLOSED
+        } else {
+            val theirsClosed = theirs?.let(::close) ?: true
+            if (theirs != null && !theirsClosed) DoneOutcome.PEER_GONE else DoneOutcome.BOTH
+        }
+    }
+
+    /** Puts a closed request back with a fresh expiry; clears `closed_at`, like every reopen via [transition] does. */
+    fun reopen(refToken: String, tifDays: Int): Boolean = transaction(db) {
+        val expires = clock.instant().plusSeconds(tifDays.toLong() * 86_400)
+        Requests.update({ (Requests.refToken eq refToken) and (Requests.state neq RequestState.OPEN.name) }) {
+            it[Requests.state] = RequestState.OPEN.name
+            it[Requests.expiresAt] = expires
+            it[Requests.closedAt] = null
+        } == 1
     }
 
     /** Every field the domain needs comes out of the sealed payload. */

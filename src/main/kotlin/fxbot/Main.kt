@@ -23,6 +23,8 @@ suspend fun main() {
     Registry.settings = ChatSettingsRepository(ds, crypto, db = db)
     Registry.rates = RateService(RateClient(HttpClient(CIO)), RateRepository(ds, db = db))
     Registry.service = RequestService(Registry.requests, Registry.settings, Registry.rates)
+    Registry.lifecycle = LifecycleService(Registry.requests)
+    Registry.buttons = ButtonService()
 
     val bot = TelegramBot(cfg.botToken) {
         // Without this the parser never breaks on a space: "/sell 1000 EUR" is taken as
@@ -43,6 +45,9 @@ suspend fun main() {
         botCommand("sell", "Hand over currency you have")
         botCommand("buy", "Ask for currency you want to receive")
         botCommand("status", "Who's waiting in this chat")
+        botCommand("cancel", "Withdraw your request")
+        botCommand("done", "Mark a swap done")
+        botCommand("reopen", "Undo your last done")
         botCommand("settings", "This chat's currencies and limits")
         botCommand("help", "What I can do")
         // Later tasks add their own entries as their handlers land. The menu must never

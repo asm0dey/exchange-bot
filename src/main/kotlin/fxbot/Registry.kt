@@ -9,4 +9,6 @@ object Registry {
     lateinit var settings: ChatSettingsRepository
     lateinit var rates: RateService
     lateinit var service: RequestService
+    lateinit var lifecycle: LifecycleService
+    lateinit var buttons: ButtonService
 }

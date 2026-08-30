@@ -17,8 +17,9 @@ private fun ProcessedUpdate.isGroupChat(): Boolean =
     getChat().type == ChatType.Group || getChat().type == ChatType.Supergroup
 
 /** Every handler runs through this: the private-chat reply is bot behaviour, not a
- *  special case of posting. Returns true when the caller should carry on. */
-private suspend fun inGroupOrExplain(update: ProcessedUpdate, bot: TelegramBot): Boolean {
+ *  special case of posting. Returns true when the caller should carry on.
+ *  Internal (not private) so every command file in this package shares one guard. */
+internal suspend fun inGroupOrExplain(update: ProcessedUpdate, bot: TelegramBot): Boolean {
     if (update.isGroupChat()) return true
     message { PRIVATE_HINT }.send(update.getChat().id, bot)
     return false
