@@ -16,14 +16,25 @@ private const val NOT_ADMIN = "Only this chat's admins can change that."
  * `getChatMember` must never read as "probably fine". `throwExOnActionsFailure`
  * defaults to false, so a Telegram-side failure lands here as a null `ChatMember`
  * (via `getOrNull`'s `Response.Failure` -> null), not a thrown exception; the
- * `runCatching` only exists to also fail closed on a genuine transport exception.
+ * `try/catch` only exists to also fail closed on a genuine transport exception.
+ *
+ * Cancellation is not a failure, so it is rethrown before the general catch —
+ * `kotlin.runCatching` would swallow it, same class of bug `RateClient.fetch`
+ * documents and fixes for the identical shape (a cancelled caller must not be
+ * told "denied" and left thinking the check ran to completion).
  *
  * `ChatMember.status` is a real Telegram API string ("creator", "administrator",
  * "member", "restricted", "left", "kicked") derived from the sealed subtype's own
  * `@SerialName` — not a Kotlin enum, so there is no `.name` to read.
  */
 private suspend fun isAdmin(chatId: Long, userId: Long, bot: TelegramBot): Boolean {
-    val member = runCatching { getChatMember(userId).sendReturning(chatId, bot).getOrNull() }.getOrNull()
+    val member = try {
+        getChatMember(userId).sendReturning(chatId, bot).getOrNull()
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        null
+    }
     val status = member?.status ?: return false
     return status == "creator" || status == "administrator"
 }
