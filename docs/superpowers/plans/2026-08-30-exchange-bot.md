@@ -759,7 +759,20 @@ class MatcherTest : StringSpec({
         val resting = listOf("1100", "1010", "900", "1050", "950", "1001").map { req(Verb.BUY, it, "EUR") }
         val found = findCounterparties(subject, resting, RATE, 20)
         found shouldHaveSize 5
-        found.first().request.statedAmount shouldBe BigDecimal("1001")
+        // The whole ordering, and which one got dropped: 900 is the farthest away.
+        found.map { it.request.statedAmount } shouldBe
+            listOf("1001", "1010", "1050", "950", "1100").map { BigDecimal(it) }
+    }
+
+    "a subject that is no longer resting matches nobody" {
+        val subject = req(Verb.SELL, "1000", "EUR", state = RequestState.CANCELLED)
+        findCounterparties(subject, listOf(req(Verb.BUY, "1000", "EUR")), RATE, 20).shouldBeEmpty()
+    }
+
+    "a non-positive rate is treated as no rate at all" {
+        val r = req(Verb.SELL, "95000", "RUB")
+        notional(r, BigDecimal.ZERO) shouldBe null
+        notional(r, BigDecimal("-99.98")) shouldBe null
     }
 
     "without a rate, same-denomination requests still match" {
@@ -834,7 +847,9 @@ private val HUNDRED = BigDecimal(100)
  */
 fun notional(r: Request, rate: BigDecimal?): BigDecimal? = when {
     r.statedCurrency == r.pair.base -> r.statedAmount
-    rate == null -> null
+    // A missing rate and a nonsensical one mean the same thing here: size unknown.
+    // Dividing by zero would throw, and a negative rate would yield a negative size.
+    rate == null || rate.signum() <= 0 -> null
     else -> r.statedAmount.divide(rate, MC)
 }
 
@@ -854,6 +869,7 @@ fun findCounterparties(
     tolerancePct: Int,
     limit: Int = 5,
 ): List<Counterparty> {
+    if (subject.state != RequestState.OPEN) return emptyList()
     val limitFraction = BigDecimal(tolerancePct).divide(HUNDRED, MC)
     return resting.asSequence()
         .filter { it.chatId == subject.chatId }
