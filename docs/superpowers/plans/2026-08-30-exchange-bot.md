@@ -2615,12 +2615,17 @@ suspend fun sell(update: ProcessedUpdate, bot: TelegramBot) = handlePost(Verb.SE
 @CommandHandler(["/buy"])
 suspend fun buy(update: ProcessedUpdate, bot: TelegramBot) = handlePost(Verb.BUY, update, bot)
 
+/** Every handler runs through this: the private-chat reply is bot behaviour, not a
+ *  special case of posting. Returns true when the caller should carry on. */
+private suspend fun inGroupOrExplain(update: ProcessedUpdate, bot: TelegramBot): Boolean {
+    if (update.isGroupChat()) return true
+    message { PRIVATE_HINT }.send(update.getChat().id, bot)
+    return false
+}
+
 private suspend fun handlePost(verb: Verb, update: ProcessedUpdate, bot: TelegramBot) {
     val chat = update.getChat()
-    if (!update.isGroupChat()) {
-        message { PRIVATE_HINT }.send(chat.id, bot)
-        return
-    }
+    if (!inGroupOrExplain(update, bot)) return
     val user = update.getUser()
     val args = update.text.trim().split(Regex("\\s+")).drop(1)
     if (args.size < 2) {
@@ -2655,8 +2660,7 @@ suspend fun settings(update: ProcessedUpdate, bot: TelegramBot) {
     val s = Registry.settings.get(chat.id)
     message {
         "This chat swaps ${s.pair}. Amounts match within ${s.tolerancePct}%, " +
-            "and a request waits ${s.tifDays} days before it lapses.\n" +
-            "Admins can change these with /pair, /tolerance and /tif."
+            "and a request waits ${s.tifDays} days before it lapses."
     }.send(chat.id, bot)
 }
 
@@ -2707,6 +2711,11 @@ suspend fun main() {
     Registry.service = RequestService(Registry.requests, Registry.settings, Registry.rates)
 
     val bot = TelegramBot(cfg.botToken) {
+        // Without this the parser never breaks on a space: "/sell 1000 EUR" is taken as
+        // the whole command name, matches nothing in the registry, and the update is
+        // dropped silently. The framework's native style is "/sell?a=1000&c=EUR", which
+        // is not what this bot documents.
+        commandParsing { restrictSpacesInCommands = true }
         updatesListener { updatesPollingTimeout = 30 }
         httpClient {
             requestTimeoutMillis = 45_000L
@@ -2717,14 +2726,13 @@ suspend fun main() {
     }
 
     setMyCommands {
-        botCommand("sell", "Offer currency you're handing over")
+        botCommand("sell", "Hand over currency you have")
         botCommand("buy", "Ask for currency you want to receive")
         botCommand("status", "Who's waiting in this chat")
-        botCommand("cancel", "Withdraw one of your requests")
-        botCommand("done", "Mark a swap as completed")
-        botCommand("reopen", "Undo your last /done")
-        botCommand("forget", "Erase what I store about you here")
         botCommand("settings", "This chat's currencies and limits")
+        botCommand("help", "What I can do")
+        // Later tasks add their own entries as their handlers land. The menu must never
+        // advertise a command that does nothing when tapped.
     }.send(bot)
 
     println("exchange-bot: listening")
@@ -3992,7 +4000,7 @@ suspend fun tif(update: ProcessedUpdate, bot: TelegramBot) = adminOnly(update, b
 }
 ```
 
-Add `lateinit var admin: AdminService` to `Registry`, wire it in `Main.kt`, and add the three commands to `setMyCommands`.
+Add `lateinit var admin: AdminService` to `Registry`, wire it in `Main.kt`, and add `botCommand` entries for `pair`, `tolerance` and `tif` to `setMyCommands`. Also append the sentence about admins changing these settings to `/settings`' reply — Task 9 deliberately left it out, because until now those commands did not exist.
 
 - [ ] **Step 4: Build, test, commit**
 
