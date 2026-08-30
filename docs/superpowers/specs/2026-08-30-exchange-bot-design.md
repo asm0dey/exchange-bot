@@ -338,7 +338,7 @@ There is no code path that silently opens an unencrypted database.
 ### Layer 1 — H2 file cipher
 
 ```
-jdbc:h2:file:./data/exchange;CIPHER=AES
+jdbc:h2:file:./data/exchange;CIPHER=AES;MODE=PostgreSQL
 Hikari password = "$DB_FILE_KEY $DB_USER_PW"   (H2 syntax: file pw, space, user pw)
 ```
 
@@ -385,14 +385,14 @@ has one JVM process and no second language.
 ```
 request(
   row_id      BIGINT IDENTITY PK
-  ref_token   CHAR(22)   UNIQUE NOT NULL  -- 128-bit random, base64url, never shown
-  chat_ref    CHAR(44)   NOT NULL         -- Tink MAC(chat_id), searchable
-  user_ref    CHAR(44)   NOT NULL         -- Tink MAC(user_id), searchable
-  short_id    VARCHAR(4) NOT NULL         -- plaintext, meaningless without its chat
-  state       VARCHAR(16) NOT NULL        -- plaintext, not sensitive
+  ref_token   TEXT UNIQUE NOT NULL       -- 128-bit random, base64url, never shown
+  chat_ref    TEXT NOT NULL               -- Tink MAC(chat_id), searchable
+  user_ref    TEXT NOT NULL               -- Tink MAC(user_id), searchable
+  short_id    TEXT NOT NULL               -- plaintext, meaningless without its chat
+  state       TEXT NOT NULL               -- plaintext, not sensitive
   created_at  TIMESTAMP  NOT NULL         -- plaintext, sweep needs it
   expires_at  TIMESTAMP  NOT NULL         -- plaintext, sweep needs it
-  payload     VARBINARY  NOT NULL         -- Tink AEAD
+  payload     BYTEA NOT NULL              -- Tink AEAD
 )
 indexes: (chat_ref, state), (user_ref), unique(ref_token)
 
