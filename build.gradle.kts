@@ -34,3 +34,10 @@ kotlin { jvmToolchain(21) }
 application { mainClass.set("fxbot.MainKt") }
 
 tasks.test { useJUnitPlatform() }
+
+tasks.register<JavaExec>("keygen") {
+    group = "application"
+    description = "Print a fresh pair of Tink keysets for .env"
+    mainClass.set("fxbot.KeygenMainKt")
+    classpath = sourceSets["main"].runtimeClasspath
+}

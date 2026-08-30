@@ -1,0 +1,11 @@
+.git
+.gradle
+.idea
+.kotlin
+build
+data
+.env
+*.mv.db
+*.trace.db
+.beans
+.superpowers
