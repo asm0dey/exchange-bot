@@ -31,9 +31,28 @@ dependencies {
 
 kotlin { jvmToolchain(21) }
 
-application { mainClass.set("fxbot.MainKt") }
+application {
+    mainClass.set("fxbot.MainKt")
+    // Exposed's InstantColumnType round-trips every timestamp through the JVM default
+    // zone, so a host on a DST-observing zone can read an instant back an hour off and
+    // shift a request's expiry. Pinning the zone removes the variable rather than
+    // handling it. The Dockerfile sets TZ=UTC for the container; this covers
+    // `gradlew run` and the installDist launcher too.
+    applicationDefaultJvmArgs = listOf("-Duser.timezone=UTC")
+}
 
-tasks.test { useJUnitPlatform() }
+tasks.test {
+    useJUnitPlatform()
+    // Same zone pin as the application block, for the test JVM, so the suite is
+    // deterministic regardless of the developer's machine zone. user.timezone is read
+    // once at JVM startup (TimeZone.getDefault() caches it), and Gradle's Test task
+    // always forks a fresh worker JVM whose launch command line is built from this
+    // config — verified by dumping the forked process command line, which showed
+    // systemProperty(...) reaching that command line as a "-Duser.timezone=UTC" JVM
+    // argument (not a runtime System.setProperty applied to an already-running JVM).
+    // See docs/runtime-notes.md for the verification transcript.
+    systemProperty("user.timezone", "UTC")
+}
 
 tasks.register<JavaExec>("keygen") {
     group = "application"
