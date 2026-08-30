@@ -201,7 +201,7 @@ configure a pair the bot will never be able to price.
 /sell <amount> <ccy>     open a request: giving <amount> of <ccy>
 /buy  <amount> <ccy>     same, stated from the wanting end
 /cancel <id>             own request -> CANCELLED
-/done <id> @peer         both requests -> FULFILLED, announced publicly
+/done <id> @who          both requests -> FULFILLED, announced publicly
 /reopen                  revive your most recently closed request, fresh TTL
 /status [mine]           open requests in this chat
 /settings                read-only, anyone
@@ -231,9 +231,9 @@ Rejections, each a single line naming the fix: unknown currency, currency not
 in the chat's pair, non-positive amount, unparseable amount, unknown id, id
 belonging to someone else.
 
-### Peer resolution
+### Counterpart resolution
 
-`/done` resolves its peer from Telegram message entities, never from
+`/done` resolves its counterpart from Telegram message entities, never from
 display-name text, so a typo cannot close the wrong person's request. Accepted
 forms, in order:
 
@@ -241,11 +241,12 @@ forms, in order:
    request in this chat** — which is the only population `/done` can validly
    name, so no user directory table is needed
 2. a `text_mention` entity, which carries a `user_id` directly and is how a
-   peer without a `@username` is named
-3. `/done <id>` sent as a reply to the peer's message
+   counterpart without a `@username` is named
+3. `/done <id>` sent as a reply to the counterpart's message
 
 Anything else is rejected with a line explaining those three forms. A named
-peer with no open request closes only the caller's own request, and says so.
+counterpart with no open request closes only the caller's own request, and
+says so.
 
 ## Replies and Buttons
 
