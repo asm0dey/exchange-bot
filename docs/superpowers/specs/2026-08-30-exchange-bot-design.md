@@ -462,8 +462,12 @@ command from silently reaching into other groups.
 
 Both then clean up the bot's own messages that named the user, best-effort:
 
-- Messages where that person was one of several named: **edited** to redact
-  their line, preserving everyone else's names and working buttons.
+- Messages where that person was one of several named: **edited**, replacing the
+  body with a neutral placeholder and keeping the buttons. The other names in the
+  text do not survive — the bot never stored the rendered text, so there is
+  nothing to rebuild a partial message from. Editing is still the right call here
+  because it works on messages far older than 48 hours, which deletion cannot
+  touch.
 - Messages entirely about them: **deleted** where possible.
 
 **Verified Bot API limits (2026-08-30):** `deleteMessage` — *"A message can
