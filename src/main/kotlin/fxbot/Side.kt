@@ -29,3 +29,14 @@ fun parseCurrency(raw: String): String? {
     if (code.length != 3) return null
     return runCatching { Currency.getInstance(code).currencyCode }.getOrNull()
 }
+
+/** Offer gives the base currency; Bid gives the quote. */
+fun Side.giveCurrency(pair: CurrencyPair): String =
+    if (this == Side.OFFER) pair.base else pair.quote
+
+/**
+ * The verb the author used, recovered from what they gave and what they quoted.
+ * Quoting the currency you hand over is "sell"; quoting the other one is "buy".
+ */
+fun verbFor(side: Side, statedCurrency: String, pair: CurrencyPair): Verb =
+    if (statedCurrency == side.giveCurrency(pair)) Verb.SELL else Verb.BUY
