@@ -65,4 +65,37 @@ class TasksTest : StringSpec({
         // reason RateServiceTest compares by value, not by `shouldBe`.
         rateRepo.get("EUR", "RUB")!!.rate.shouldBeEqualIgnoringScale(BigDecimal("99.98"))
     }
+    "startScheduler registers both tasks with no task_data" {
+        // db-scheduler's task_data is an unencrypted BYTEA — nothing chat- or
+        // pair-identifying may ever land in it. `Tasks.recurring(name, schedule)`
+        // (no dataClass argument) structurally can't carry data today, but this
+        // pins that down against a future switch to a data-carrying overload:
+        // `Scheduler.start()` runs `executeOnStartup()` synchronously, so both
+        // rows already exist by the time `startScheduler` returns.
+        val ds = memDataSource("scheduled")
+        migrate(ds)
+        val crypto = testCrypto()
+        val clock = Clock.fixed(T0, ZoneOffset.UTC)
+        val hk = Housekeeping(
+            RequestRepository(ds, crypto, clock),
+            ChatSettingsRepository(ds, crypto, clock),
+            RateService(
+                RateClient(HttpClient(MockEngine { respond(BODY, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json")) })),
+                RateRepository(ds), clock,
+            ),
+            MessageLogRepository(ds, crypto, clock),
+            clock,
+        )
+        startScheduler(ds, hk)
+
+        val taskData = ds.connection.use { conn ->
+            conn.createStatement().executeQuery("SELECT task_name, task_data FROM scheduled_tasks").use { rs ->
+                buildMap {
+                    while (rs.next()) put(rs.getString("task_name"), rs.getBytes("task_data"))
+                }
+            }
+        }
+        taskData.keys shouldBe setOf("sweep", "refresh-rates")
+        taskData.values.all { it == null } shouldBe true
+    }
 })

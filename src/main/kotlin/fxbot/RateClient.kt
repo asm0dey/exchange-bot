@@ -30,6 +30,12 @@ class RateClient(private val http: HttpClient) {
      * A feed failure is a null, not an exception — degradation is the design. But
      * cancellation is not a failure: catching it here would let a cancelled refresh
      * keep running, so it is rethrown before anything else is caught.
+     *
+     * ktor implements a request timeout by cancelling the call's job, so a slow feed
+     * arrives here as a CancellationException wrapping HttpRequestTimeoutException —
+     * that is an unreachable feed, not our own caller giving up, so it degrades to
+     * null like any other feed failure. A CancellationException with any other cause
+     * (or none) is a real cancellation and still propagates.
      */
     suspend fun fetch(base: String): Map<String, BigDecimal>? =
         try {
@@ -38,7 +44,7 @@ class RateClient(private val http: HttpClient) {
             if (parsed.result != "success") null
             else parsed.rates.mapValues { (_, v) -> BigDecimal(v.jsonPrimitive.content) }
         } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
+            if (e.cause is io.ktor.client.plugins.HttpRequestTimeoutException) null else throw e
         } catch (e: Exception) {
             null
         }

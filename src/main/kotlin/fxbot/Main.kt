@@ -4,10 +4,12 @@ import eu.vendeli.tgbot.TelegramBot
 import eu.vendeli.tgbot.api.botactions.setMyCommands
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlin.time.Duration.Companion.seconds
 
-suspend fun main() {
+suspend fun main(): Unit = coroutineScope {
     val cfg = loadConfig(System::getenv)
     val crypto = Crypto(cfg.dataKeyset, cfg.indexKeyset)
     val ds = createDataSource(cfg)
@@ -30,7 +32,10 @@ suspend fun main() {
 
     val housekeeping = Housekeeping(Registry.requests, Registry.settings, Registry.rates, Registry.messages)
     startScheduler(ds, housekeeping)
-    housekeeping.refreshRates()   // don't wait a day for the first rate
+    // Warm the rate cache without waiting a day for the scheduler's first run — but never
+    // gate startup on it. A slow feed must not stop the bot from listening, and ktor
+    // delivers a request timeout as a CancellationException, which RateClient rethrows.
+    launch { runCatching { housekeeping.refreshRates() } }
 
     val bot = TelegramBot(cfg.botToken) {
         // Without this the parser never breaks on a space: "/sell 1000 EUR" is taken as
