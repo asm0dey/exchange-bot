@@ -14,4 +14,5 @@ object Registry {
     lateinit var buttons: ButtonService
     lateinit var forget: ForgetService
     lateinit var admin: AdminService
+    lateinit var migration: ChatMigrationService
 }
