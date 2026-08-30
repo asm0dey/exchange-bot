@@ -957,6 +957,7 @@ CREATE TABLE request (
     state       TEXT      NOT NULL,
     created_at  TIMESTAMP NOT NULL,
     expires_at  TIMESTAMP NOT NULL,
+    closed_at   TIMESTAMP,              -- set when the request leaves OPEN
     payload     BYTEA     NOT NULL
 );
 CREATE UNIQUE INDEX request_ref_token_idx ON request (ref_token);
@@ -993,8 +994,9 @@ CREATE TABLE sent_message_ref (
 CREATE INDEX sent_message_ref_token_idx ON sent_message_ref (ref_token);
 CREATE INDEX sent_message_ref_user_idx ON sent_message_ref (user_ref);
 
--- db-scheduler 16.x canonical schema. task_data stays empty by design (ADR: tasks
--- are parameterless so nothing sensitive lands in this unencrypted BLOB).
+-- db-scheduler 16.x canonical schema, with BLOB spelled BYTEA because H2 rejects the
+-- BLOB keyword under MODE=PostgreSQL. task_data stays empty by design: both tasks are
+-- parameterless, so nothing sensitive lands in this unencrypted column.
 CREATE TABLE scheduled_tasks (
     task_name            VARCHAR(255) NOT NULL,
     task_instance        VARCHAR(255) NOT NULL,
@@ -1121,14 +1123,23 @@ class RequestRepositoryTest : StringSpec({
         r.byShortId(-200L, "a").shouldBeNull()
     }
 
-    "most recently closed finds the caller's own last closure" {
+    "most recently closed means closed, not created" {
+        // Closed in REVERSE creation order, so a query ordering by row_id would
+        // return the wrong one and this test would catch it.
         val (r, _) = repo("recent")
         val a = r.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7)
         val b = r.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("2"), EURRUB, 7)
-        r.transition(a.refToken, RequestState.OPEN, RequestState.DONE)
-        r.transition(b.refToken, RequestState.OPEN, RequestState.CANCELLED)
-        r.mostRecentlyClosed(-100L, 1L)!!.refToken shouldBe b.refToken
+        r.transition(b.refToken, RequestState.OPEN, RequestState.DONE)
+        Thread.sleep(2)   // distinct closed_at stamps
+        r.transition(a.refToken, RequestState.OPEN, RequestState.CANCELLED)
+        r.mostRecentlyClosed(-100L, 1L)!!.refToken shouldBe a.refToken
         r.mostRecentlyClosed(-100L, 999L).shouldBeNull()
+    }
+
+    "a fractional amount survives the payload round trip exactly" {
+        val (r, _) = repo("precision")
+        val a = r.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1234.5670"), EURRUB, 7)
+        r.byRefToken(a.refToken)!!.statedAmount shouldBe BigDecimal("1234.5670")
     }
 
     "expiry sweeps only what is due" {
@@ -1141,9 +1152,9 @@ class RequestRepositoryTest : StringSpec({
 
     "forgetting removes rows in one chat, or everywhere" {
         val (r, _) = repo("forget")
-        r.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7)
+        val here = r.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7)
         r.create(-200L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7)
-        r.deleteFor(1L, -100L) shouldHaveSize 1
+        r.deleteFor(1L, -100L).single() shouldBe here.refToken
         r.resting(-200L) shouldHaveSize 1
         r.deleteFor(1L, null) shouldHaveSize 1
         r.resting(-200L) shouldHaveSize 0
@@ -1202,13 +1213,17 @@ import javax.sql.DataSource
  * H2 with its file cipher on. The password is the H2 two-part form:
  * file password, a space, then the user password.
  */
-fun createDataSource(cfg: Config): HikariDataSource =
-    HikariDataSource(HikariConfig().apply {
+fun createDataSource(cfg: Config): HikariDataSource {
+    // H2 splits the two-part password on the FIRST space, so a space inside the file
+    // key would silently truncate it and shift the remainder into the user password.
+    require(' ' !in cfg.dbFileKey) { "DB_FILE_KEY must not contain a space" }
+    return HikariDataSource(HikariConfig().apply {
         jdbcUrl = "jdbc:h2:file:${cfg.dbPath};CIPHER=AES;MODE=PostgreSQL"
         username = "sa"
         password = "${cfg.dbFileKey} ${cfg.dbUserPw}"
         maximumPoolSize = 4
     })
+}
 
 /** H2 support ships inside flyway-core; no database module is needed. */
 fun migrate(ds: DataSource) {
@@ -1256,6 +1271,16 @@ class RequestRepository(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
+    // Short ids are unique only among a chat's live requests, and H2 has no partial
+    // unique index to enforce that. `SELECT ... FOR UPDATE` cannot do it either: it
+    // locks the rows it returns, so a chat with nothing resting locks nothing and two
+    // concurrent creates both pick "a". This lock is the guard, and it holds because
+    // the bot is a single process (ADR 0004).
+    // ponytail: one global lock, not per-chat — allocation is microseconds at chat
+    // scale. Move to a per-chat lock if a busy deployment ever shows contention, and
+    // to a database-level guard if the bot is ever run as more than one instance.
+    private val allocationLock = ReentrantLock()
+
     fun create(
         chatId: Long,
         userId: Long,
@@ -1265,7 +1290,8 @@ class RequestRepository(
         statedAmount: BigDecimal,
         pair: CurrencyPair,
         tifDays: Int,
-    ): Request = ds.connection.use { c ->
+    ): Request = allocationLock.withLock {
+      ds.connection.use { c ->
         c.autoCommit = false
         try {
             val chatRef = crypto.ref(chatId.toString())
@@ -1302,17 +1328,16 @@ class RequestRepository(
             )
         } catch (e: Exception) {
             c.rollback(); throw e
+        } finally {
+            c.autoCommit = true   // the pool hands this connection out again
         }
+      }
     }
 
-    /**
-     * Short ids are unique only among a chat's live requests, so they can stay
-     * short. H2 has no partial unique index, so the guard is this allocation
-     * running inside the insert transaction.
-     */
+    /** The caller holds [allocationLock]; see its comment for why that is the guard. */
     private fun allocateShortId(c: Connection, chatRef: String): String {
         val taken = mutableSetOf<String>()
-        c.prepareStatement("SELECT short_id FROM request WHERE chat_ref = ? AND state = 'OPEN' FOR UPDATE").use { st ->
+        c.prepareStatement("SELECT short_id FROM request WHERE chat_ref = ? AND state = 'OPEN'").use { st ->
             st.setString(1, chatRef)
             st.executeQuery().use { rs -> while (rs.next()) taken += rs.getString(1) }
         }
@@ -1321,7 +1346,7 @@ class RequestRepository(
     }
 
     fun resting(chatId: Long): List<Request> = query(
-        "SELECT * FROM request WHERE chat_ref = ? AND state = 'OPEN' ORDER BY expires_at"
+        "SELECT * FROM request WHERE chat_ref = ? AND state = 'OPEN' ORDER BY expires_at, row_id"
     ) { st -> st.setString(1, crypto.ref(chatId.toString())) }
 
     fun byRefToken(token: String): Request? =
@@ -1338,20 +1363,26 @@ class RequestRepository(
         """
         SELECT * FROM request
         WHERE chat_ref = ? AND user_ref = ? AND state <> 'OPEN'
-        ORDER BY row_id DESC LIMIT 1
+        ORDER BY closed_at DESC, row_id DESC LIMIT 1
         """.trimIndent()
     ) { st ->
         st.setString(1, crypto.ref(chatId.toString()))
         st.setString(2, crypto.ref(userId.toString()))
     }
 
-    /** Guarded by the expected state, so a double press closes exactly once. */
+    /**
+     * Guarded by the expected state, so a double press closes exactly once.
+     * Stamps `closed_at` so "most recently closed" means what it says.
+     */
     fun transition(refToken: String, from: RequestState, to: RequestState): Boolean =
         ds.connection.use { c ->
-            c.prepareStatement("UPDATE request SET state = ? WHERE ref_token = ? AND state = ?").use { st ->
+            c.prepareStatement(
+                "UPDATE request SET state = ?, closed_at = ? WHERE ref_token = ? AND state = ?"
+            ).use { st ->
                 st.setString(1, to.name)
-                st.setString(2, refToken)
-                st.setString(3, from.name)
+                st.setTimestamp(2, if (to == RequestState.OPEN) null else Timestamp.from(clock.instant()))
+                st.setString(3, refToken)
+                st.setString(4, from.name)
                 st.executeUpdate() == 1
             }
         }
@@ -1363,23 +1394,36 @@ class RequestRepository(
         }
     }
 
-    /** Returns the ref tokens removed, so message cleanup knows what to strip. */
+    /**
+     * Returns the ref tokens removed, so message cleanup knows what to strip.
+     * Read and delete share one transaction: a row inserted between them would
+     * otherwise be erased without its token ever reaching the cleanup step, leaving
+     * a live message pointing at data someone just asked to have erased.
+     */
     fun deleteFor(userId: Long, chatId: Long?): List<String> = ds.connection.use { c ->
         val userRef = crypto.ref(userId.toString())
         val chatRef = chatId?.let { crypto.ref(it.toString()) }
         val where = if (chatRef == null) "user_ref = ?" else "user_ref = ? AND chat_ref = ?"
-        val tokens = mutableListOf<String>()
-        c.prepareStatement("SELECT ref_token FROM request WHERE $where").use { st ->
-            st.setString(1, userRef)
-            chatRef?.let { st.setString(2, it) }
-            st.executeQuery().use { rs -> while (rs.next()) tokens += rs.getString(1) }
+        c.autoCommit = false
+        try {
+            val tokens = mutableListOf<String>()
+            c.prepareStatement("SELECT ref_token FROM request WHERE $where").use { st ->
+                st.setString(1, userRef)
+                chatRef?.let { st.setString(2, it) }
+                st.executeQuery().use { rs -> while (rs.next()) tokens += rs.getString(1) }
+            }
+            c.prepareStatement("DELETE FROM request WHERE $where").use { st ->
+                st.setString(1, userRef)
+                chatRef?.let { st.setString(2, it) }
+                st.executeUpdate()
+            }
+            c.commit()
+            tokens
+        } catch (e: Exception) {
+            c.rollback(); throw e
+        } finally {
+            c.autoCommit = true
         }
-        c.prepareStatement("DELETE FROM request WHERE $where").use { st ->
-            st.setString(1, userRef)
-            chatRef?.let { st.setString(2, it) }
-            st.executeUpdate()
-        }
-        tokens
     }
 
     /**
@@ -1387,13 +1431,20 @@ class RequestRepository(
      * column and inside the sealed payload, so each row is resealed. The AAD is
      * the ref token and does not change, so the tokens stay valid throughout.
      */
-    fun rewriteChatRef(oldChatId: Long, newChatId: Long): Int {
+    fun rewriteChatRef(oldChatId: Long, newChatId: Long): Int = ds.connection.use { c ->
         val oldRef = crypto.ref(oldChatId.toString())
         val newRef = crypto.ref(newChatId.toString())
-        val rows = query("SELECT * FROM request WHERE chat_ref = ?") { st -> st.setString(1, oldRef) }
-        ds.connection.use { c ->
-            c.autoCommit = false
-            try {
+        c.autoCommit = false
+        try {
+            // Read and reseal on the SAME connection inside one transaction: a request
+            // created in the old chat between the two would otherwise be stranded under
+            // a chat ref that no longer resolves.
+            val rows = mutableListOf<Request>()
+            c.prepareStatement("SELECT * FROM request WHERE chat_ref = ?").use { st ->
+                st.setString(1, oldRef)
+                st.executeQuery().use { rs -> while (rs.next()) rows += hydrate(rs) }
+            }
+            var updated = 0
                 for (r in rows) {
                     val resealed = crypto.seal(
                         json.encodeToString(
@@ -1408,15 +1459,16 @@ class RequestRepository(
                         st.setString(1, newRef)
                         st.setBytes(2, resealed)
                         st.setString(3, r.refToken)
-                        st.executeUpdate()
+                        updated += st.executeUpdate()
                     }
                 }
-                c.commit()
-            } catch (e: Exception) {
-                c.rollback(); throw e
-            }
+            c.commit()
+            updated
+        } catch (e: Exception) {
+            c.rollback(); throw e
+        } finally {
+            c.autoCommit = true
         }
-        return rows.size
     }
 
     private fun query(sql: String, bind: (java.sql.PreparedStatement) -> Unit): List<Request> =
