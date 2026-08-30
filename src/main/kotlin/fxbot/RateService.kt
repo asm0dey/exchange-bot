@@ -64,15 +64,15 @@ class RateService(
     fun status(pair: CurrencyPair): RateStatus {
         val cached = repo.get(pair.base, pair.quote)
         if (cached == null) {
-            logger.info("rate status: base=${pair.base} outcome=unavailable")
+            logger.debug("rate status: base=${pair.base} outcome=unavailable")
             return RateStatus.Unavailable
         }
         val age = Duration.between(cached.fetchedAt, clock.instant())
         return if (age > STALE_AFTER) {
-            logger.info("rate status: base=${pair.base} outcome=degraded_to_cache")
+            logger.debug("rate status: base=${pair.base} outcome=degraded_to_cache")
             RateStatus.Stale(cached.rate, cached.fetchedAt)
         } else {
-            logger.info("rate status: base=${pair.base} outcome=fresh")
+            logger.debug("rate status: base=${pair.base} outcome=fresh")
             RateStatus.Fresh(cached.rate)
         }
     }

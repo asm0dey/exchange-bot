@@ -31,10 +31,28 @@ dependencies {
 
 kotlin {
     // Build on the same JDK vendor the container runs: the production runtime is
-    // BellSoft Liberica (hardened distroless), so compiling on a different vendor's
-    // 25 would mean the bytecode is produced by a JDK nobody actually ships. Without
-    // this pin, the foojay resolver hands back whatever vendor its discovery API
-    // lists first for "25" (in practice, often Azul Zulu).
+    // BellSoft Liberica (hardened distroless). Without this pin, the foojay resolver
+    // hands back whatever vendor its discovery API lists first for "25" (in practice,
+    // often Azul Zulu).
+    //
+    // This pin matches the `java.vendor` string ("BellSoft") only, not the specific
+    // distribution. Gradle's JvmVendorSpec has no finer knob than vendor (+
+    // JvmImplementation for HotSpot/J9) — there is no supported way to also require
+    // the plain Liberica JDK distribution over a same-vendor variant such as
+    // Liberica NIK (its GraalVM Native Image Kit build, which sets a distinguishing
+    // `java.vendor.version` like `Liberica-NIK-25.0.4-1` that Gradle's toolchain
+    // matching does not look at). Confirmed on a dev machine with several
+    // `BELLSOFT`-vendor JDK 25 installs registered (plain Liberica, Liberica NIK,
+    // Liberica DCEVM): `./gradlew compileKotlin --info` showed the resolved
+    // toolchain landing on the NIK build, not plain Liberica, even though both
+    // satisfy this vendor pin equally.
+    //
+    // So this pin does not guarantee "the same JDK the container ships" bit-for-bit;
+    // it only guarantees a BellSoft-vendor JDK 25 locally, which is enough to catch a
+    // different vendor's bytecode/behavior quirks in day-to-day dev builds. The
+    // container image build is the authority for what actually ships: `Dockerfile`
+    // pulls a specific `bellsoft/hardened-liberica-runtime-container` tag, which is
+    // the plain Liberica JRE, not NIK.
     jvmToolchain {
         languageVersion.set(JavaLanguageVersion.of(25))
         vendor.set(JvmVendorSpec.BELLSOFT)

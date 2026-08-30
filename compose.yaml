@@ -7,8 +7,9 @@ services:
       - exchange-bot-data:/app/data
 
 # Named volume, not a bind mount: Docker seeds a named volume's ownership from
-# the image on first use, so the non-root uid 10001 the Dockerfile creates can
-# write to it. A bind mount to a host path that doesn't already exist is
+# the image on first use, so the non-root uid 10001 the base image ships (as
+# "appuser"; the Dockerfile just runs USER 10001:10001, it does not create the
+# user) can write to it. A bind mount to a host path that doesn't already exist is
 # created by Docker as root:root 0755, which that non-root user can't write
 # into — the H2 database file would never get created. See README for how to
 # inspect or back up this volume.

@@ -222,3 +222,174 @@ that *did* newly appear on the first post-migration run — vendeli's routing-ta
 dump — is exactly the "framework chatter reappeared" regression this check exists to
 catch, and is what led to adding the `eu.vendeli.tgbot.utils.common` suppression
 rule above.
+
+## Post-publish review: the `eu.vendeli.tgbot.interfaces.action` escape
+
+A pre-publish review found the ERROR line from `makeSilentRequest`/`makeRequestReturning`
+(declared in `eu.vendeli.tgbot.utils.internal.BotRequestExtensions.kt`) still reaching real
+output — `[ERROR] eu.vendeli.tgbot.interfaces.action.TgAction: Request - ... received failure
+response: ...` — despite `level@eu.vendeli.tgbot.utils.internal = off` already being in the
+shipped config. This is a regression versus the pre-tinylog `simplelogger.properties`, which
+(by luck of matching an SLF4J logger *name*, `eu.vendeli.tgbot.TelegramBot`, that both call
+sites happen to register their logger under) did suppress it.
+
+### The corrected rule
+
+Both logging functions are declared `internal suspend inline fun`. Reading
+`BotRequestExtensions.kt` and `TgAction.kt` from the `telegram-bot-jvm-9.6.0-sources.jar`
+shows exactly one call site for each in the whole library: `TgAction.doRequest`/
+`doRequestReturning` (package `eu.vendeli.tgbot.interfaces.action`), both plain (non-inline)
+member functions. Because the callee is `inline`, its body — including the `logger.error(...)`
+call — compiles directly into the caller's bytecode at the one real call site, not into a
+separate frame for the declaring file. Extracting the real `telegram-bot-jvm-9.6.0.jar` and
+grepping compiled `.class` files with `strings` for the log literal confirms this: it appears
+in `TgAction.class` (the real caller — specifically inside the synthetic
+`doRequest$suspendImpl`/`doRequestReturning$suspendImpl` static methods `javap -p` shows on
+that class) *and* in `BotRequestExtensionsKt.class` plus a nested lambda class (the declaring
+copy every `inline` function keeps around so it's still a valid standalone method — dead at
+runtime for every real call site, since real callers get the inlined copy instead, but
+textually and by `strings` indistinguishable from a live one). A `strings`-only scan of the
+declaring package therefore "confirms" a suppression that isn't real; only checking where the
+call *runs* (the caller, for an inline function) does.
+
+Fix: add `level@eu.vendeli.tgbot.interfaces.action = off` alongside the existing four rules.
+`eu.vendeli.tgbot.utils.internal` stays suppressed too — it's not wrong, just insufficient
+for this one call; it still covers `BotUtilsKt.setupSessionManager`'s non-inline DEBUG
+"Initializing session manager" line, which does run in that package.
+
+### General rule, applied to every entry in `tinylog.properties`
+
+For a **non-inline** function, `level@<key>` matches the package it's textually declared in —
+that's where the call executes. For an **inline** function, it matches the **caller's**
+package instead, because that's where the JVM stack trace — which is what
+`TinylogLoggingProvider.isLoggable`/`getLevel(callerClassName)` actually walks — reports the
+frame. A hand-written stand-in/probe class built in the *declaring* package proves nothing
+about an inline function, because it never reproduces the inline-into-caller compilation step;
+it only proves tinylog's own package-matching works, which was never in question. This is
+exactly how the `eu.vendeli.tgbot.utils.internal` rule passed every check in the original
+verification pass (a probe class shaped like the declaring file, in the declaring package) and
+still missed the real leak.
+
+### Re-audit of every remaining rule (not just the one that broke)
+
+Re-checked all five `level@` rules the same way — find every real call site in the
+`9.6.0-sources.jar`, note whether the logging function is `inline`, and confirm via the
+compiled `.class` files which class the log literal actually lives in:
+
+- **`eu.vendeli.tgbot.core.interceptors`** — `DefaultInvokeInterceptor` logs directly (not
+  inline, `internal object` in this package: matches). `DefaultValidationInterceptor` and
+  `DefaultSetupInterceptor` both call the library's `internal suspend inline
+  TgUpdateHandler.checkIsLimited` (declared in `eu.vendeli.tgbot.utils.common.BotUtils.kt`) —
+  both call sites are themselves in `eu.vendeli.tgbot.core.interceptors`, so the inlined body
+  lands back in this same already-suppressed package. Confirmed: `strings` on the compiled jar
+  finds the "exceeded the request limit" literal in `DefaultValidationInterceptor.class` and
+  `DefaultSetupInterceptor.class` (the real runtime callers) as well as in the declaring
+  `BotUtilsKt.class` (the same dead-at-runtime declaring copy pattern as above). Rule holds.
+- **`eu.vendeli.tgbot.utils.common`** — `BotUtils.jvm.kt`'s `loadContext` is `actual fun`, not
+  inline, and is a top-level (JVM-file) function in this package; its compiled class
+  `BotUtils_jvmKt` is in `eu.vendeli.tgbot.utils.common`. Rule holds.
+- **`eu.vendeli.tgbot.implementations`** — `DefaultSession` (private class in
+  `DefaultSessionManager.kt`) has plain, non-inline `suspend` member functions; its compiled
+  class `DefaultSession.class` is in `eu.vendeli.tgbot.implementations`. `strings` finds the
+  "delete batch for chat" literal only there. Rule holds.
+- **`eu.vendeli.tgbot.interfaces.action`** — see above (the fix).
+
+Also swept the whole `9.6.0-sources.jar` (every `.error(`/`.warn(`/`.info(`/`.debug(`/`.trace(`
+call reachable from a `logger`/`log` receiver) to confirm no other log call site exists outside
+what's enumerated here and in the "What was wrong with the old mitigation" section above, and
+outside the `TgUpdateHandler.parse(String)` calls covered in the next section. One call was
+already known and intentionally left alone: `WizardActivity`'s DEBUG class-name line, on a path
+this bot never reaches (no KSP-generated wizard step) — unchanged by this pass.
+
+### `TgUpdateHandler.parse(String)` — enumerated, not suppressed
+
+`TgUpdateHandler.kt`'s `parse(String)` (a plain member function of `TgUpdateHandler`, package
+`eu.vendeli.tgbot.core` — **not** `.core.interceptors`, so none of the rules above touch it)
+has four log calls not previously enumerated in this document:
+
+- `logger.trace { "Trying to parse update from string - $update" }` — the raw update string.
+- `logger.debug { "Successfully parsed update to $it" }` — the parsed object, via its
+  `toString()`.
+- `logger.error("error during the update parsing process.", it)` — logs the exception, but not
+  its `.message` as a string (an `error(message, throwable)` overload logs the throwable's
+  stack trace via the writer's own formatting, which is a separate exposure surface from this
+  file's `.message`-string rule; noted here rather than silently assumed safe).
+- the loop's own `logger.trace { offset }` equivalent at the top of `runPollingLoop`
+  (`"Running listener with offset - $lastUpdateId"`) is not from `parse`, doesn't carry
+  identifying data (a monotonic offset, not tied to a chat/user), and was already visible
+  under the old config too — listed here only for completeness, not as a new finding.
+
+Three of these four (all but the offset line) carry raw or parsed update JSON — the same class
+of payload this file's top comment says never to log. `parse(String)` is reachable only from
+`parseAndHandle`/`parse`, which are the **webhook**-response entry points (a caller hands the
+library a raw JSON string it received directly, outside the polling loop). This bot never calls
+either — `Main.kt` uses `bot.handleUpdates(...)`, the long-polling path, exclusively; there is
+no webhook server anywhere in this codebase. So today these four lines are unreachable dead
+code, by the same standard already applied to `eu.vendeli.tgbot.implementations` above (that
+package's `DefaultSession` leak is also dead code today, suppressed anyway "in case that ever
+changes without a re-audit"). The difference here: `parse`'s package, `eu.vendeli.tgbot.core`,
+is broad — it also contains `TgUpdateHandler`'s own legitimate, already-reviewed
+`logger.info`/`logger.warn` lines ("Starting long-polling listener.", "Recoverable poll
+error: ...") that this file deliberately leaves visible for operational value (see "Not
+verified" above). Suppressing the whole package defensively, the way `.implementations` was,
+would silence those too. Recorded here instead: if this bot ever adds a webhook entry point,
+`parse`'s four log calls must be re-reviewed (and most likely the two payload-carrying ones
+suppressed by class, not package) before that entry point ships.
+
+### Command-surface DEBUG events need `level@fxbot`, not `level@fxbot.commands`
+
+`logCommand(command, outcome)` (declared in `Commands.kt`, `internal`, called from
+`LifecycleCommands.kt`, `AdminCommands.kt`, `Callbacks.kt`) is a plain top-level function, not
+inline. Its compiled class is `CommandsKt`, in package `fxbot` — not `fxbot.commands` (there is
+no such package in this codebase; every file here is directly under `fxbot`). tinylog's
+package-key matching is the real calling class's package, same rule as above, so an operator
+wanting these DEBUG lines must set `level@fxbot = debug` (or root `level = debug`) —
+`level@fxbot.commands = debug` matches nothing and silently enables nothing. This is the same
+class of mistake as the `interfaces.action` escape, just in the opposite direction (a rule
+meant to *enable* logging that instead does nothing) — recorded here so nobody reaches for a
+plausible-looking-but-wrong key when operating this bot.
+
+### End-to-end verification
+
+Static/bytecode analysis (above) is necessary but was explicitly not trusted alone, per the
+same standard this file already holds itself to. Verified live, in the real container:
+
+1. **Negative control** — temporarily removed the `eu.vendeli.tgbot.interfaces.action` rule,
+   rebuilt the production image (`docker build .`, distroless BellSoft Liberica runtime, same
+   `Dockerfile` this project ships), and ran it (`docker run`, real `ENTRYPOINT`, no shell) with
+   a syntactically-valid but rejected `BOT_TOKEN` and freshly generated valid `DATA_KEYSET`/
+   `INDEX_KEYSET` (`./gradlew keygen`) so the process gets past `Crypto` construction and all
+   the way to a real network call against `https://api.telegram.org`. Real output:
+   ```
+   [ERROR] eu.vendeli.tgbot.interfaces.action.TgAction: Request - TextContent[application/json]
+     "{"commands":[{"command":"sell"" received failure response: {"ok":false,"error_code":401,"description":"Unauthorized"}
+   ```
+   — reproducing the exact leak line from the original finding, from `setMyCommands.send(bot)`
+   in `Main.kt` failing against the real Telegram API. Confirms the bug is real, not
+   hypothetical, and confirms this test setup actually exercises the leak.
+2. **Fixed build** — restored the `interfaces.action` rule, rebuilt the same image
+   (content-identical: same resulting image digest as the very first, pre-regression build),
+   ran it the same way (fresh container, same rejected token, same real network path). Zero
+   occurrences of `received failure response` or `eu.vendeli.tgbot.interfaces.action` in the
+   container's stdout/stderr across multiple runs. Because `throwExOnActionsFailure` is false
+   (this bot's default `TelegramBot { }` config never sets it), a failed `sendReturning` inside
+   the long-polling loop doesn't throw and isn't classified/logged by `TgUpdateHandler`'s own
+   `classify()` — it just returns quietly and the loop immediately retries, so a rejected token
+   in this bot's actual runtime shape produces a tight, silent retry loop against Telegram
+   rather than one clean failure. That is a real, high volume of live failed requests to
+   confirm against, not a single sample: `/proc/<pid>/net/tcp` inside the container's network
+   namespace showed 100+ connection-table entries to Telegram's IP accumulating over a 20-40s
+   window in every fixed-build run, and none of them produced the leak line. (Separately: this
+   silent-retry-forever-on-a-rejected-token shape means `Main.kt`'s
+   `MAX_CONSECUTIVE_FAILURES`/give-up-and-exit path is never reached for this specific failure
+   mode, since it depends on `handleUpdates()` throwing — out of scope for a logging fix, flagged
+   here as an operational observation, not fixed.)
+3. **Full test suite** — 158/158 tests still pass (`./gradlew test --rerun`) under the fixed
+   config, unchanged from the pre-fix baseline.
+
+`java.net.preferIPv4Stack=true` was added to the verification runs' JVM args (not to the
+shipped `Dockerfile`/image) purely to avoid an unrelated IPv6-route stall specific to this
+sandbox's Docker networking (DNS returns both an A and AAAA record for `api.telegram.org`; the
+AAAA route isn't reachable in this environment and the JVM doesn't fail over to the A record as
+fast as `curl`'s Happy-Eyeballs does) — it does not change which code path runs or what gets
+logged, only how quickly the (still real, still over the network) connection attempt lands.

@@ -59,9 +59,12 @@ Find the actual volume name (Compose prefixes it with the project name):
 
     docker volume ls | grep exchange-bot-data
 
-Inspect the files without stopping the bot:
+Inspect the files without stopping the bot. The runtime image is distroless —
+no shell, no `ls` inside the `bot` container — so use a throwaway `alpine`
+container against the named volume instead, the same pattern as the backup
+recipe below:
 
-    docker compose exec bot ls -la /app/data
+    docker run --rm -v exchange-bot-data:/data alpine ls -la /data
 
 Back up the volume to a tarball in the current directory:
 
