@@ -96,7 +96,9 @@ class MatcherTest : StringSpec({
         val resting = listOf("1100", "1010", "900", "1050", "950", "1001").map { req(Verb.BUY, it, "EUR") }
         val found = findCounterparties(subject, resting, RATE, 20)
         found shouldHaveSize 5
-        found.first().request.statedAmount shouldBe BigDecimal("1001")
+        // The whole ordering, and which one got dropped: 900 is the farthest away.
+        found.map { it.request.statedAmount } shouldBe
+            listOf("1001", "1010", "1050", "950", "1100").map { BigDecimal(it) }
     }
 
     "without a rate, same-denomination requests still match" {
@@ -106,5 +108,16 @@ class MatcherTest : StringSpec({
     "without a rate, cross-denomination requests do not match" {
         val subject = req(Verb.SELL, "1000", "EUR")
         findCounterparties(subject, listOf(req(Verb.SELL, "95000", "RUB")), null, 20).shouldBeEmpty()
+    }
+
+    "a subject that is no longer resting matches nobody" {
+        val subject = req(Verb.SELL, "1000", "EUR", state = RequestState.CANCELLED)
+        findCounterparties(subject, listOf(req(Verb.BUY, "1000", "EUR")), RATE, 20).shouldBeEmpty()
+    }
+
+    "a non-positive rate is treated as no rate at all" {
+        val r = req(Verb.SELL, "95000", "RUB")
+        notional(r, BigDecimal.ZERO) shouldBe null
+        notional(r, BigDecimal("-99.98")) shouldBe null
     }
 })

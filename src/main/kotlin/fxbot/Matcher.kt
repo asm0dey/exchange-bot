@@ -12,7 +12,9 @@ private val HUNDRED = BigDecimal(100)
  */
 fun notional(r: Request, rate: BigDecimal?): BigDecimal? = when {
     r.statedCurrency == r.pair.base -> r.statedAmount
-    rate == null -> null
+    // A missing rate and a nonsensical one mean the same thing here: size unknown.
+    // Dividing by zero would throw, and a negative rate would yield a negative size.
+    rate == null || rate.signum() <= 0 -> null
     else -> r.statedAmount.divide(rate, MC)
 }
 
@@ -32,6 +34,7 @@ fun findCounterparties(
     tolerancePct: Int,
     limit: Int = 5,
 ): List<Counterparty> {
+    if (subject.state != RequestState.OPEN) return emptyList()
     val limitFraction = BigDecimal(tolerancePct).divide(HUNDRED, MC)
     return resting.asSequence()
         .filter { it.chatId == subject.chatId }
