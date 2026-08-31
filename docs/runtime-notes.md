@@ -140,9 +140,9 @@ Verified this actually took effect, not just declared: re-ran
 toolchain paths used —
 
 - `compileKotlin`: `[KOTLIN] Kotlin compilation 'jdkHome' argument:
-  /home/finkel/.sdkman/candidates/java/25.0.4.fx-nik`
+  ~/.sdkman/candidates/java/25.0.4.fx-nik`
 - the forked `Gradle Test Executor 1` process command line:
-  `/home/finkel/.sdkman/candidates/java/25.0.4.fx-nik/bin/java ... -Duser.timezone=UTC ...`
+  `~/.sdkman/candidates/java/25.0.4.fx-nik/bin/java ... -Duser.timezone=UTC ...`
 
 — both resolving to a locally-installed **BellSoft Liberica JDK 25 (25.0.4+10-LTS)**,
 not the Temurin/Zulu builds also present on the machine. Separately, inside an
