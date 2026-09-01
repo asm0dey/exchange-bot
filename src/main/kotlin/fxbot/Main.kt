@@ -3,6 +3,8 @@ package fxbot
 import eu.vendeli.tgbot.TelegramBot
 import eu.vendeli.tgbot.api.botactions.getMe
 import eu.vendeli.tgbot.api.botactions.setMyCommands
+import eu.vendeli.tgbot.types.bot.BotCommandScope
+import eu.vendeli.tgbot.utils.builders.BotCommandsBuilder
 import eu.vendeli.tgbot.types.component.UpdateType
 import eu.vendeli.tgbot.types.component.isSuccess
 import io.ktor.client.HttpClient
@@ -87,7 +89,15 @@ suspend fun main(): Unit = coroutineScope {
         TokenValidation.Valid -> {}
     }
 
-    setMyCommands {
+    // Telegram resolves a group's command menu narrowest-scope-first — chat_member,
+    // chat_administrators, chat, all_chat_administrators, all_group_chats — and only falls
+    // through to the default scope when every narrower one is unset. Registering the same
+    // list for the group scope too means the group menu doesn't ride on that fallback:
+    // anything that ever writes a narrower group-scope list (BotFather, another deploy, a
+    // stray API call) silently empties the menu in groups while DMs keep working, which is
+    // exactly the symptom this bot hit. languageCode is passed positionally as null
+    // ("applies to every language") so the scope argument lands in the right slot.
+    val commands: BotCommandsBuilder.() -> Unit = {
         botCommand("sell", "Hand over currency you have")
         botCommand("buy", "Ask for currency you want to receive")
         botCommand("status", "Who's waiting in this chat")
@@ -100,7 +110,9 @@ suspend fun main(): Unit = coroutineScope {
         botCommand("tif", "Admins: how many days a request waits")
         botCommand("forget", "Erase your data — add 'all' in a private chat for every group")
         botCommand("help", "What I can do")
-    }.send(bot)
+    }
+    setMyCommands(null, BotCommandScope.Default, commands).send(bot)
+    setMyCommands(null, BotCommandScope.AllGroupChats, commands).send(bot)
 
     logger.info("exchange-bot: listening")
 
