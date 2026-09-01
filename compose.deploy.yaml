@@ -9,7 +9,7 @@
 # and a rollback is editing one digit.
 services:
   bot:
-    image: ghcr.io/asm0dey/exchange-bot:1
+    image: ghcr.io/asm0dey/exchange-bot:2
     restart: unless-stopped
     env_file: .env
     # .env carries DB_PATH=./data/exchange (a relative path that only lands in the
