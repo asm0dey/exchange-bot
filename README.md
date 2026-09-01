@@ -83,8 +83,15 @@ Versions are plain integers — 1, 2, 3. Tagging `v<N>` on `main` runs
 - a self-contained jar on the [GitHub Release](https://github.com/asm0dey/exchange-bot/releases)
 - an image at `ghcr.io/asm0dey/exchange-bot:<N>` (also tagged `latest`)
 
-To run a released image instead of building locally, replace `build: .` in
-`compose.yaml` with `image: ghcr.io/asm0dey/exchange-bot:1`.
+`compose.deploy.yaml` runs a released image instead of building from source —
+that is the file to copy to a server, alongside `.env`:
+
+    docker login ghcr.io      # only while the GHCR package is private
+    docker compose -f compose.deploy.yaml up -d
+
+The image tag there is a pinned integer, not `latest`: upgrading is a one-digit
+edit plus `up -d`, and so is rolling back. `compose.yaml` stays the local
+build-from-source file.
 
 The jar is runnable on its own but does *not* carry the container's timezone
 pin, so pass it yourself — Exposed round-trips timestamps through the JVM

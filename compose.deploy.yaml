@@ -1,0 +1,37 @@
+# Deploy compose: runs a published release image, never builds. Use compose.yaml
+# for local development (it builds from source); use this one on the server.
+#
+#   docker login ghcr.io          # only if the package is still private
+#   docker compose -f compose.deploy.yaml up -d
+#
+# Upgrading is a tag bump here plus `up -d` — the image tag is a pinned integer,
+# not `latest`, so a redeploy can't silently move you to a version you didn't pick
+# and a rollback is editing one digit.
+services:
+  bot:
+    image: ghcr.io/asm0dey/exchange-bot:1
+    restart: unless-stopped
+    env_file: .env
+    # .env carries DB_PATH=./data/exchange (a relative path that only lands in the
+    # right place because WORKDIR is /app), and env_file overrides the image's own
+    # ENV. Pin the absolute path here — `environment` wins over `env_file` — so the
+    # database can't wander if that line is ever edited or the workdir changes.
+    environment:
+      DB_PATH: /app/data/exchange
+    volumes:
+      - exchange-bot-data:/app/data
+    # ponytail: default json-file logging is unbounded and this process runs
+    # forever. Two 10MB files is enough to see what happened; ship to a real log
+    # collector if you ever need more than that.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+# Same named volume as compose.yaml, for the same reason: Docker seeds a named
+# volume's ownership from the image on first use, so the image's non-root uid
+# 10001 can write the H2 database into it. A bind mount to a not-yet-existing
+# host path is created root-owned and the database file never gets created.
+volumes:
+  exchange-bot-data:
