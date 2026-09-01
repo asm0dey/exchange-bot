@@ -75,6 +75,23 @@ Back up the volume to a tarball in the current directory:
 if it differs). Restore into a fresh volume the same way, with `tar xzf`
 instead of `tar czf`.
 
+## Releases
+
+Versions are plain integers — 1, 2, 3. Tagging `v<N>` on `main` runs
+`.github/workflows/release.yml`, which publishes two artifacts for that number:
+
+- a self-contained jar on the [GitHub Release](https://github.com/asm0dey/exchange-bot/releases)
+- an image at `ghcr.io/asm0dey/exchange-bot:<N>` (also tagged `latest`)
+
+To run a released image instead of building locally, replace `build: .` in
+`compose.yaml` with `image: ghcr.io/asm0dey/exchange-bot:1`.
+
+The jar is runnable on its own but does *not* carry the container's timezone
+pin, so pass it yourself — Exposed round-trips timestamps through the JVM
+default zone, and a DST-observing host shifts request expiries without it:
+
+    java -Duser.timezone=UTC -jar exchange-bot-1.jar
+
 ## Keys
 
 Five secrets live only in the environment — `BOT_TOKEN`, `DB_FILE_KEY`,

@@ -2,8 +2,14 @@ plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
+    alias(libs.plugins.shadow)
     application
 }
+
+// Releases are integers: tag v1, v2, ... and the tag IS the version. CI exports
+// VERSION (the tag minus its "v"), so cutting a release never edits this file.
+// "0" is the local/dev value — an unreleased build shouldn't claim a release number.
+version = providers.environmentVariable("VERSION").getOrElse("0")
 
 repositories { mavenCentral() }
 
@@ -87,4 +93,12 @@ tasks.register<JavaExec>("keygen") {
     description = "Print a fresh pair of Tink keysets for .env"
     mainClass.set("fxbot.KeygenMainKt")
     classpath = sourceSets["main"].runtimeClasspath
+}
+
+tasks.shadowJar {
+    // build/libs/exchange-bot-<version>.jar, not "-all" — this is the release artifact.
+    archiveClassifier.set("")
+    // tinylog, flyway and the JDBC drivers all ship META-INF/services entries; without
+    // merging, the last jar in wins and the rest silently disappear.
+    mergeServiceFiles()
 }

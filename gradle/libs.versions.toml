@@ -13,6 +13,7 @@ kotest = "6.2.3"
 tink = "1.18.0"
 flyway = "11.8.2"
 exposed = "1.5.0"
+shadow = "9.6.1"
 
 [libraries]
 telegram-bot = { module = "eu.vendeli:telegram-bot", version.ref = "telegrambot" }
@@ -38,3 +39,4 @@ exposed-jdbc = { module = "org.jetbrains.exposed:exposed-jdbc", version.ref = "e
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+shadow = { id = "com.gradleup.shadow", version.ref = "shadow" }
