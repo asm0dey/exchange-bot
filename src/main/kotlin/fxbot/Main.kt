@@ -89,14 +89,14 @@ suspend fun main(): Unit = coroutineScope {
         TokenValidation.Valid -> {}
     }
 
-    // Telegram resolves a group's command menu narrowest-scope-first — chat_member,
-    // chat_administrators, chat, all_chat_administrators, all_group_chats — and only falls
-    // through to the default scope when every narrower one is unset. Registering the same
-    // list for the group scope too means the group menu doesn't ride on that fallback:
-    // anything that ever writes a narrower group-scope list (BotFather, another deploy, a
-    // stray API call) silently empties the menu in groups while DMs keep working, which is
-    // exactly the symptom this bot hit. languageCode is passed positionally as null
-    // ("applies to every language") so the scope argument lands in the right slot.
+    // Groups do NOT inherit the default scope's command menu, whatever the documented
+    // narrowest-scope-first fallback implies. Verified against the live bot: getMyCommands
+    // showed the full list on the default scope and an empty result for every narrower
+    // scope (all_group_chats, all_chat_administrators, and the group's own chat scope), yet
+    // the group showed no suggestions while DMs did. Writing the identical list to
+    // all_group_chats made them appear immediately. So register both scopes explicitly.
+    // languageCode is passed positionally as null ("applies to every language") so the
+    // scope argument lands in the right slot.
     val commands: BotCommandsBuilder.() -> Unit = {
         botCommand("sell", "Hand over currency you have")
         botCommand("buy", "Ask for currency you want to receive")
