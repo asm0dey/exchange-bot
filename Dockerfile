@@ -39,7 +39,7 @@ RUN mkdir -p /data-seed && chown 10001:10001 /data-seed
 # classes rather than the JVM building one from scratch on first launch), for
 # faster cold-start — the bot restarts on every deploy and after upgrades, so
 # JVM startup time is not a one-off cost.
-FROM bellsoft/hardened-liberica-runtime-container:jre-25-cds-distroless-glibc
+FROM bellsoft/hardened-liberica-runtime-container:jre-25.0.4_9-cds-distroless-glibc
 WORKDIR /app
 
 # lib/ is the app's code: root-owned, read-only to the running user (least
