@@ -2,7 +2,7 @@
 kotlin = "2.4.10"
 ksp = "2.3.10"
 telegrambot = "9.6.0"
-ktor = "3.5.1"
+ktor = "3.5.2"
 serialization = "1.11.0"
 coroutines = "1.11.0"
 dbscheduler = "16.12.0"
