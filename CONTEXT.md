@@ -21,6 +21,28 @@ other. It is an expression of interest — formally an *indication of interest* 
 never a binding instruction.
 _Avoid_: order, ad, listing, position, quote
 
+**Interest**:
+One person's stated willingness, given to the bot once. A request typed in a
+chat is an interest with a single showing; an interest stated to the bot
+privately is shown in several places at once and may also be worked on a
+no-names basis.
+_Avoid_: parent request, master request, order
+
+**Showing**:
+The interest as it exists in one chat — a request in its own right, with its own
+short id, matched at that chat's size tolerance.
+_Avoid_: copy, clone, duplicate, mirror
+
+**No-names basis**:
+Said of an interest worked with no chat behind it. Side and stated amount are
+disclosed to a possible counterparty; identity is not, until a name give-up.
+_Avoid_: pool, book, market, venue, dark pool
+
+**Name give-up**:
+Identities passing between two counterparties once both have agreed to it.
+Nothing before it names anyone, and either side may decline by never agreeing.
+_Avoid_: reveal, introduction, connect, match
+
 **Side**:
 Which way round a request runs. Exactly two values, always relative to the
 pair's base currency.
@@ -35,8 +57,9 @@ The side that **receives** the base currency and gives the quote currency.
 _Avoid_: buy side
 
 **Counterparty**:
-Someone in the same chat whose request is on the opposite side and close enough
-in notional. Being a counterparty carries no obligation and reserves nothing.
+Someone whose request is on the opposite side and leaves each of them a residual
+they accept — in the same chat, or on a no-names basis. Being a counterparty
+carries no obligation and reserves nothing.
 _Avoid_: counterpart, peer, match, partner
 
 **Suggestion**:
@@ -83,9 +106,17 @@ at the current reference rate. A working figure for comparison only, never
 shown as a price.
 _Avoid_: normalized amount, converted amount, value, volume
 
+**Residual**:
+What is left of one person's size when their counterparty is smaller. Expressed
+in their own stated currency and always relative to their own size, so the
+smaller of two counterparties has none.
+_Avoid_: remainder, leftover, unfilled, balance
+
 **Size tolerance**:
-How far apart two notionals may be and still make the requests counterparties,
-as a percentage of the larger. A chat-level setting.
+How large a residual someone accepts, as a percentage of their own size. Each
+side judges its own, so a smaller counterparty is a counterparty. A chat sets
+one for its showings; a person sets their own for no-names working, and it
+never overrides a chat's.
 _Avoid_: tolerance band, spread, threshold, margin, slippage
 
 **Reference rate**:
