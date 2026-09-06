@@ -1,0 +1,258 @@
+package fxbot
+
+import io.kotest.core.spec.style.StringSpec
+import io.kotest.matchers.collections.shouldBeEmpty
+import io.kotest.matchers.collections.shouldContainExactlyInAnyOrder
+import io.kotest.matchers.collections.shouldHaveSize
+import io.kotest.matchers.shouldBe
+import io.kotest.matchers.string.shouldContain
+import io.kotest.matchers.types.shouldBeInstanceOf
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.respond
+import io.ktor.client.engine.mock.respondError
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.headersOf
+import java.math.BigDecimal
+import java.time.Clock
+import java.time.Instant
+import java.time.ZoneOffset
+
+private val T0 = Instant.parse("2026-09-06T12:00:00Z")
+private val EURRUB = CurrencyPair("EUR", "RUB")
+
+/** Everything an InterestService needs, plus the repositories a test wants to look at. */
+private class InterestFixture(
+    name: String,
+    feedBody: String? = """{"result":"success","base_code":"EUR","rates":{"RUB":99.98}}""",
+    val membership: MembershipProbe = MembershipProbe { _, _ -> true },
+) {
+    // `DB_CLOSE_DELAY=-1` keeps an in-memory database alive for the whole JVM, so two
+    // test classes asking for the same name share one — and this fixture's crypto keys
+    // are fresh per instance, so a shared database fails to open the other's payloads.
+    // The prefix keeps every name in this file to itself.
+    val ds = memDataSource("interest_$name").also { migrate(it) }
+    val crypto = testCrypto()
+    val clock: Clock = Clock.fixed(T0, ZoneOffset.UTC)
+    val requests = RequestRepository(ds, crypto, clock)
+    val chats = ChatSettingsRepository(ds, crypto, clock)
+    val people = PersonSettingsRepository(ds, crypto, clock)
+    val giveUps = NameGiveUpRepository(ds, crypto, clock)
+    val pending = PendingAnnouncementRepository(ds, crypto, clock)
+    val rateRepo = RateRepository(ds)
+    var feedCalls = 0
+    val client = RateClient(HttpClient(MockEngine {
+        feedCalls++
+        if (feedBody == null) respondError(HttpStatusCode.ServiceUnavailable)
+        else respond(feedBody, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
+    }))
+    val rates = RateService(client, rateRepo, clock)
+    val svc = InterestService(requests, chats, people, rates, client, giveUps, pending, membership)
+
+    fun withRate() = apply { rateRepo.put("EUR", "RUB", BigDecimal("99.98"), T0) }
+    fun chat(id: Long, pair: CurrencyPair = EURRUB, tolerance: Int = 20, tif: Int = 7, fanOut: Boolean = true) =
+        apply { chats.save(ChatSettings(id, pair, tolerance, tif, fanOut)) }
+}
+
+class InterestServiceTest : StringSpec({
+    "the pair is canonical whichever way round it is stated" {
+        canonicalPair("RUB", "EUR") shouldBe EURRUB
+        canonicalPair("EUR", "RUB") shouldBe EURRUB
+    }
+
+    "the two ways of saying the same thing land on the same pair and the same side" {
+        // "sell 10 EUR for RUB" and "buy 10 RUB for EUR" both hand over EUR to receive
+        // RUB. The canonical pair is what puts them in the same space; sideFor then
+        // agrees they are the SAME side, so they are not counterparties. (They are the
+        // same side but NOT the same size: 10 EUR against 10 RUB. Anyone opposite them
+        // therefore meets them at very different sizes, which is a tolerance question
+        // and is covered by its own tests below.)
+        val f = InterestFixture("sameside").withRate()
+        val a = f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
+        val b = f.svc.state(2L, "ann", Verb.BUY, "10", "RUB", "EUR")
+        a.shouldBeInstanceOf<InterestResult.Stated>()
+        b.shouldBeInstanceOf<InterestResult.Stated>()
+        a.interest.pair shouldBe EURRUB
+        b.interest.pair shouldBe EURRUB
+        b.interest.side shouldBe a.interest.side
+        b.found.shouldBeEmpty()
+    }
+
+    "an interest rests on a no-names basis and in every fitting chat" {
+        val f = InterestFixture("fanout").withRate()
+            .chat(-100L, EURRUB)
+            .chat(-200L, CurrencyPair("RUB", "EUR"))          // the same two currencies, other way round
+            .chat(-300L, CurrencyPair("USD", "GBP"))          // a different pair
+            .chat(-400L, EURRUB, fanOut = false)              // fan-out turned off
+        val r = f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
+        r.shouldBeInstanceOf<InterestResult.Stated>()
+        r.interest.chatId shouldBe NO_NAMES_CHAT_ID
+        r.showings.map { it.chatId }.toSet() shouldBe setOf(-100L, -200L)
+        r.showings.map { it.interestToken }.toSet() shouldBe setOf(r.interest.interestToken)
+    }
+
+    "a showing takes its own chat's pair orientation, so its side is right there" {
+        val f = InterestFixture("orientation").withRate().chat(-200L, CurrencyPair("RUB", "EUR"))
+        val r = f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
+        r.shouldBeInstanceOf<InterestResult.Stated>()
+        val showing = r.showings.single()
+        showing.pair shouldBe CurrencyPair("RUB", "EUR")
+        // Handing over EUR is handing over the QUOTE of RUB/EUR, so in that chat this is a Bid.
+        showing.side shouldBe Side.BID
+        showing.statedCurrency shouldBe "EUR"
+        showing.statedAmount shouldBe BigDecimal("10")
+    }
+
+    "a chat the person is not in is dropped" {
+        val f = InterestFixture("notmember", membership = MembershipProbe { chatId, _ -> chatId == -100L })
+            .withRate().chat(-100L).chat(-200L)
+        val r = f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
+        r.shouldBeInstanceOf<InterestResult.Stated>()
+        r.showings.map { it.chatId } shouldBe listOf(-100L)
+    }
+
+    "every showing rests immediately, and every chat is owed an announcement" {
+        val f = InterestFixture("restfirst").withRate().chat(-100L).chat(-200L)
+        f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
+        f.requests.resting(-100L) shouldHaveSize 1
+        f.requests.resting(-200L) shouldHaveSize 1
+        f.pending.allFor(1L) shouldHaveSize 2
+    }
+
+    "the two surfaces never meet" {
+        val f = InterestFixture("surfaces").withRate().chat(-100L)
+        // Someone who has only ever typed in a chat is invisible to the no-names side.
+        f.requests.create(-100L, 9L, "chatonly", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7)
+        val r = f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
+        r.shouldBeInstanceOf<InterestResult.Stated>()
+        r.found.shouldBeEmpty()
+    }
+
+    "each side of a no-names pairing is judged at its own tolerance" {
+        val f = InterestFixture("owntolerance").withRate()
+        f.people.save(PersonSettings(1L, 50))
+        f.svc.state(1L, "bob", Verb.SELL, "4", "EUR", "RUB")
+        val r = f.svc.state(2L, "ann", Verb.BUY, "2", "EUR", "RUB")
+        r.shouldBeInstanceOf<InterestResult.Stated>()
+        r.found shouldHaveSize 1 // ann has nothing left over; bob's 50% leftover is within his own 50
+
+        val g = InterestFixture("owntolerance2").withRate()
+        g.people.save(PersonSettings(1L, 20))
+        g.svc.state(1L, "bob", Verb.SELL, "4", "EUR", "RUB")
+        val s = g.svc.state(2L, "ann", Verb.BUY, "2", "EUR", "RUB")
+        s.shouldBeInstanceOf<InterestResult.Stated>()
+        s.found.shouldBeEmpty() // bob's own 20 excludes it, so they are not counterparties
+    }
+
+    "a pairing is suppressed while a live showing already pairs the two in some chat" {
+        val f = InterestFixture("suppressed").withRate().chat(-100L, EURRUB, tolerance = 20)
+        f.svc.state(1L, "bob", Verb.SELL, "1000", "EUR", "RUB")
+        val r = f.svc.state(2L, "ann", Verb.BUY, "1000", "EUR", "RUB")
+        r.shouldBeInstanceOf<InterestResult.Stated>()
+        r.found.shouldBeEmpty() // they can already see each other by name in -100
+
+        // Close bob's showing in that chat only; the anonymous route comes back.
+        val bobsShowing = f.requests.resting(-100L).single { it.userId == 1L }
+        f.requests.transition(bobsShowing.refToken, RequestState.OPEN, RequestState.EXPIRED)
+        f.svc.counterparties(r.interest) shouldHaveSize 1
+    }
+
+    "sharing a chat is not enough — the showings there must actually pair" {
+        // Sizes that meet on a no-names basis at 100 but not at the chat's 5.
+        val f = InterestFixture("sharechatnopair").withRate().chat(-100L, EURRUB, tolerance = 5)
+        f.people.save(PersonSettings(1L, 100))
+        f.people.save(PersonSettings(2L, 100))
+        f.svc.state(1L, "bob", Verb.SELL, "1000", "EUR", "RUB")
+        val r = f.svc.state(2L, "ann", Verb.BUY, "500", "EUR", "RUB")
+        r.shouldBeInstanceOf<InterestResult.Stated>()
+        r.found shouldHaveSize 1
+    }
+
+    "a declined pairing is suppressed for both" {
+        val f = InterestFixture("declined").withRate()
+        val a = f.svc.state(1L, "bob", Verb.SELL, "1000", "EUR", "RUB") as InterestResult.Stated
+        val b = f.svc.state(2L, "ann", Verb.BUY, "1000", "EUR", "RUB") as InterestResult.Stated
+        b.found shouldHaveSize 1
+        f.giveUps.record(b.interest.refToken, a.interest.refToken, 2L, Stance.DECLINED)
+        f.svc.counterparties(b.interest).shouldBeEmpty()
+        f.svc.counterparties(a.interest).shouldBeEmpty()
+    }
+
+    "everyone who gains a counterparty is named so they can be pinged" {
+        val f = InterestFixture("appeared").withRate()
+        f.svc.state(1L, "bob", Verb.SELL, "1000", "EUR", "RUB")
+        val r = f.svc.state(2L, "ann", Verb.BUY, "1000", "EUR", "RUB") as InterestResult.Stated
+        r.appeared.map { it.userId } shouldBe listOf(1L)
+        r.appeared.single().refToken shouldBe f.requests.resting(NO_NAMES_CHAT_ID).single { it.userId == 1L }.refToken
+    }
+
+    "a sixth resting interest is refused, naming the cap and how to make room" {
+        // A chat is configured so each interest is two rows but still one interest —
+        // five interests here are ten resting requests, and it is the interests that count.
+        val f = InterestFixture("cap").withRate().chat(-100L)
+        repeat(5) { f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB") }
+        f.requests.resting(-100L) shouldHaveSize 5
+        val r = f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
+        r.shouldBeInstanceOf<InterestResult.Rejected>()
+        r.reason shouldContain "5"
+        r.reason shouldContain "/cancel"
+        f.requests.countOpenInterests(1L) shouldBe 5
+    }
+
+    "the cap counts only what is resting" {
+        val f = InterestFixture("capfree").withRate().chat(-100L)
+        repeat(5) { f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB") }
+        val token = f.requests.resting(NO_NAMES_CHAT_ID).first { it.userId == 1L }.interestToken!!
+        f.requests.closeInterest(token, RequestState.CANCELLED)
+        f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB").shouldBeInstanceOf<InterestResult.Stated>()
+    }
+
+    "a pair no chat uses is priced once, live, before it is accepted" {
+        val f = InterestFixture("pricelive") // no cached rate, no chats
+        val r = f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
+        r.shouldBeInstanceOf<InterestResult.Stated>()
+        f.feedCalls shouldBe 1
+    }
+    "a pair the feed answers without is refused" {
+        val f = InterestFixture("pricemissing", feedBody = """{"result":"success","base_code":"EUR","rates":{"USD":1.1}}""")
+        val r = f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
+        r.shouldBeInstanceOf<InterestResult.Rejected>()
+        r.reason shouldContain "EUR/RUB"
+        f.feedCalls shouldBe 1
+        f.requests.resting(NO_NAMES_CHAT_ID).shouldBeEmpty()
+    }
+    "a pair is accepted when the feed cannot be reached at all" {
+        // Refusing a legitimate pair during an outage is the harder failure to explain.
+        val f = InterestFixture("priceoutage", feedBody = null)
+        f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB").shouldBeInstanceOf<InterestResult.Stated>()
+        f.feedCalls shouldBe 1
+    }
+    "a pair some chat already uses costs no call at all" {
+        val f = InterestFixture("pricechat", feedBody = null).chat(-100L, EURRUB)
+        f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB").shouldBeInstanceOf<InterestResult.Stated>()
+        f.feedCalls shouldBe 0
+    }
+    "a cached rate costs no call either" {
+        val f = InterestFixture("pricecached", feedBody = null).withRate()
+        f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB").shouldBeInstanceOf<InterestResult.Stated>()
+        f.feedCalls shouldBe 0
+    }
+
+    "an unreadable amount, an unknown code, and the same code twice are all refused" {
+        val f = InterestFixture("badinput").withRate()
+        (f.svc.state(1L, "bob", Verb.SELL, "lots", "EUR", "RUB") as InterestResult.Rejected).reason shouldContain "amount"
+        (f.svc.state(1L, "bob", Verb.SELL, "10", "XYZ", "RUB") as InterestResult.Rejected).reason shouldContain "XYZ"
+        (f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "EUR") as InterestResult.Rejected).reason shouldContain "two different"
+    }
+
+    "status lists each interest once, with where it still rests" {
+        val f = InterestFixture("standings").withRate().chat(-100L).chat(-200L)
+        f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
+        val lapsed = f.requests.resting(-200L).single()
+        f.requests.transition(lapsed.refToken, RequestState.OPEN, RequestState.EXPIRED)
+        val standings = f.svc.standings(1L)
+        standings shouldHaveSize 1
+        standings.single().chatIds shouldContainExactlyInAnyOrder listOf(-100L)
+    }
+})
