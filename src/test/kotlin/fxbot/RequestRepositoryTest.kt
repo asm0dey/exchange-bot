@@ -21,6 +21,15 @@ private fun repo(name: String, clock: Clock = Clock.fixed(T0, ZoneOffset.UTC)): 
 }
 
 /**
+ * A second repository over an ALREADY-BUILT DataSource, with its own clock. `create`
+ * derives `expiresAt` from its repository's clock, so a single repository can't create
+ * at T0 and later observe expiry at T0+8d — this gives a query-side repository a clock
+ * of its own while [repo]'s repository (and its clock) still does the creating.
+ */
+private fun repoAt(ds: javax.sql.DataSource, at: Instant): RequestRepository =
+    RequestRepository(ds, testCrypto(), Clock.fixed(at, ZoneOffset.UTC))
+
+/**
  * Advances by 1ms on every read, so calls that must be strictly ordered in
  * time (e.g. two `transition`s) get distinct instants — a fixed clock cannot
  * discriminate "closed later" from "closed earlier" at all.
@@ -108,9 +117,9 @@ class RequestRepositoryTest : StringSpec({
 
     "expiry sweeps only what is due" {
         val (r, _) = repo("expiry")
-        r.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7)
-        r.expireDue(T0.plusSeconds(6 * 86_400)) shouldBe 0
-        r.expireDue(T0.plusSeconds(8 * 86_400)) shouldBe 1
+        val a = r.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7)
+        r.expireDue(T0.plusSeconds(6 * 86_400)) shouldBe emptyList()
+        r.expireDue(T0.plusSeconds(8 * 86_400)) shouldBe listOf(a.refToken)
         r.resting(-100L) shouldHaveSize 0
     }
 
@@ -119,7 +128,7 @@ class RequestRepositoryTest : StringSpec({
         val a = r.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7)
         val b = r.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("2"), EURRUB, 7)
         r.transition(a.refToken, RequestState.OPEN, RequestState.CANCELLED)
-        r.expireDue(T0.plusSeconds(8 * 86_400)) shouldBe 1
+        r.expireDue(T0.plusSeconds(8 * 86_400)) shouldBe listOf(b.refToken)
         // b expired after a was cancelled, so b is the more recent closure.
         r.mostRecentlyClosed(-100L, 1L)!!.refToken shouldBe b.refToken
     }
@@ -168,5 +177,90 @@ class RequestRepositoryTest : StringSpec({
         r.transition(a.refToken, RequestState.OPEN, RequestState.CANCELLED)
         r.resting(-100L).shouldHaveSize(0)
         r.byRefToken(a.refToken).shouldNotBeNull()
+    }
+
+    "rows born of one interest share its token, and siblings finds them all" {
+        val (r, _) = repo("siblings")
+        val tok = "int-1"
+        val noNames = r.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
+        r.create(-100L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
+        r.create(-200L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
+        r.create(-300L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7) // a different interest
+        r.siblings(tok) shouldHaveSize 3
+        r.byRefToken(noNames.refToken)!!.interestToken shouldBe tok
+    }
+
+    "a request typed in a chat has no interest token" {
+        val (r, _) = repo("lonetoken")
+        val a = r.create(-100L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7)
+        r.byRefToken(a.refToken)!!.interestToken shouldBe null
+    }
+
+    "closing an interest closes every open row on its token, in one go" {
+        val (r, _) = repo("closeinterest")
+        val tok = "int-2"
+        val a = r.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
+        val b = r.create(-100L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
+        val closed = r.closeInterest(tok, RequestState.CANCELLED)
+        closed.toSet() shouldBe setOf(a.refToken, b.refToken)
+        r.byRefToken(a.refToken)!!.state shouldBe RequestState.CANCELLED
+        r.byRefToken(b.refToken)!!.state shouldBe RequestState.CANCELLED
+    }
+
+    "closing an interest leaves an already-closed sibling alone and does not report it" {
+        val (r, _) = repo("closeidempotent")
+        val tok = "int-3"
+        val a = r.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
+        val b = r.create(-100L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
+        r.transition(b.refToken, RequestState.OPEN, RequestState.EXPIRED)
+        r.closeInterest(tok, RequestState.DONE) shouldBe listOf(a.refToken)
+        r.byRefToken(b.refToken)!!.state shouldBe RequestState.EXPIRED
+    }
+
+    "reopening an interest revives only the siblings closed the same way" {
+        val (r, _) = repo("reopeninterest")
+        val tok = "int-4"
+        val a = r.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
+        val b = r.create(-100L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
+        val c = r.create(-200L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
+        r.transition(c.refToken, RequestState.OPEN, RequestState.EXPIRED) // one chat's housekeeping, not a decision
+        r.closeInterest(tok, RequestState.DONE)
+        r.reopenInterest(tok, RequestState.DONE, tifFor = { 7 }).toSet() shouldBe setOf(a.refToken, b.refToken)
+        r.byRefToken(a.refToken)!!.state shouldBe RequestState.OPEN
+        r.byRefToken(b.refToken)!!.state shouldBe RequestState.OPEN
+        r.byRefToken(c.refToken)!!.state shouldBe RequestState.EXPIRED
+    }
+
+    "the cap counts a person's resting no-names interests, not their showings" {
+        val (r, _) = repo("countinterests")
+        r.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
+        r.create(-100L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
+        r.create(-200L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
+        r.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i2")
+        r.create(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i3")
+        r.create(-100L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7) // typed in a chat: uncapped
+        r.countOpenInterests(1L) shouldBe 2
+    }
+
+    "a cancelled interest stops counting against the cap" {
+        val (r, _) = repo("countafterclose")
+        r.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
+        r.closeInterest("i1", RequestState.CANCELLED)
+        r.countOpenInterests(1L) shouldBe 0
+    }
+
+    "the pairs resting on a no-names basis can be enumerated for the rate refresh" {
+        val (r, _) = repo("nonamespairs")
+        r.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
+        r.create(NO_NAMES_CHAT_ID, 2L, "ann", Side.OFFER, "CHF", BigDecimal("10"), CurrencyPair("CHF", "JPY"), 7, "i2")
+        r.create(-100L, 3L, "cat", Side.OFFER, "USD", BigDecimal("10"), CurrencyPair("USD", "GBP"), 7)
+        r.noNamesPairs() shouldBe setOf(EURRUB, CurrencyPair("CHF", "JPY"))
+    }
+
+    "the sweep reports which requests lapsed, so their messages can be edited" {
+        val (r, ds) = repo("sweeptokens")
+        val a = r.create(-100L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7)
+        val later = repoAt(ds, T0.plusSeconds(8 * 86_400))
+        later.expireDue(T0.plusSeconds(8 * 86_400)) shouldBe listOf(a.refToken)
     }
 })

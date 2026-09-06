@@ -24,8 +24,8 @@ class Housekeeping(
     fun sweep(): Int {
         val expired = requests.expireDue(clock.instant())
         val pruned = log.prune(clock.instant().minus(RETENTION))
-        logger.info("sweep: expired=$expired pruned=$pruned")
-        return expired
+        logger.info("sweep: expired=${expired.size} pruned=$pruned")
+        return expired.size
     }
 
     suspend fun refreshRates() = rates.refresh(settings.allPairs())

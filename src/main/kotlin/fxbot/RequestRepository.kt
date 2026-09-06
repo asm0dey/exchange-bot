@@ -72,6 +72,7 @@ class RequestRepository(
         statedAmount: BigDecimal,
         pair: CurrencyPair,
         tifDays: Int,
+        interestToken: String? = null,
     ): Request = allocationLock.withLock {
         transaction(db) {
             val chatRef = crypto.ref(chatId.toString())
@@ -92,12 +93,14 @@ class RequestRepository(
                 it[Requests.createdAt] = now
                 it[Requests.expiresAt] = expires
                 it[Requests.payload] = crypto.seal(json.encodeToString(payload), refToken)
+                it[Requests.interestToken] = interestToken
             }
             Request(
                 refToken = refToken, chatId = chatId, userId = userId,
                 username = username, shortId = shortId, side = side,
                 statedCurrency = statedCurrency, statedAmount = statedAmount, pair = pair,
                 state = RequestState.OPEN, createdAt = now, expiresAt = expires,
+                interestToken = interestToken,
             )
         }
     }
@@ -158,12 +161,108 @@ class RequestRepository(
         } == 1
     }
 
-    /** Stamps `closed_at` like every other close, so recency ordering sees expiries. */
-    fun expireDue(now: Instant): Int = transaction(db) {
+    /**
+     * Lapses what is past its time in force and returns the ref tokens, so the messages
+     * that carried them can be edited. Stamps `closed_at` like every other close, so
+     * recency ordering sees expiries. One chat's housekeeping only: an interest's other
+     * showings live on, and a chat with `/tif 1` drops out on day one without shortening
+     * anything else.
+     */
+    fun expireDue(now: Instant): List<String> = transaction(db) {
+        val due = Requests.selectAll()
+            .where { (Requests.state eq RequestState.OPEN.name) and (Requests.expiresAt less now) }
+            .map { it[Requests.refToken] }
         Requests.update({ (Requests.state eq RequestState.OPEN.name) and (Requests.expiresAt less now) }) {
             it[Requests.state] = RequestState.EXPIRED.name
             it[Requests.closedAt] = now
         }
+        due
+    }
+
+    /** Every row born of the same interest, whatever state each is in. */
+    fun siblings(interestToken: String): List<Request> = transaction(db) {
+        Requests.selectAll()
+            .where { Requests.interestToken eq interestToken }
+            .orderBy(Requests.rowId to SortOrder.ASC)
+            .map { hydrate(it) }
+    }
+
+    /**
+     * Done and cancel are decisions about the whole interest, so they close every OPEN
+     * row sharing its token in one transaction, with the same terminal state. Expiry is
+     * NOT this: a time in force running out is one chat's housekeeping policy, and
+     * [expireDue] closes only the showing that lapsed.
+     *
+     * Returns the ref tokens actually closed — an already-closed sibling is left exactly
+     * as it is and is not reported, so message cleanup does not restate somebody else's
+     * outcome.
+     */
+    fun closeInterest(interestToken: String, to: RequestState): List<String> = transaction(db) {
+        val open = Requests.selectAll()
+            .where { (Requests.interestToken eq interestToken) and (Requests.state eq RequestState.OPEN.name) }
+            .map { it[Requests.refToken] }
+        val now = clock.instant()
+        Requests.update({
+            (Requests.interestToken eq interestToken) and (Requests.state eq RequestState.OPEN.name)
+        }) {
+            it[Requests.state] = to.name
+            it[Requests.closedAt] = now
+        }
+        open
+    }
+
+    /**
+     * Revives the siblings a done or a cancel closed, each with a fresh expiry from its
+     * own chat's time in force ([tifFor] answers for a chat id; the no-names row uses the
+     * 7-day default its caller passes). A sibling that merely LAPSED is left closed —
+     * reopen undoes a decision, and an expiry was never one.
+     */
+    fun reopenInterest(interestToken: String, from: RequestState, tifFor: (Long) -> Int): List<String> =
+        transaction(db) {
+            val rows = Requests.selectAll()
+                .where { (Requests.interestToken eq interestToken) and (Requests.state eq from.name) }
+                .map { hydrate(it) }
+            val now = clock.instant()
+            for (r in rows) {
+                Requests.update({ Requests.refToken eq r.refToken }) {
+                    it[Requests.state] = RequestState.OPEN.name
+                    it[Requests.expiresAt] = now.plusSeconds(tifFor(r.chatId).toLong() * 86_400)
+                    it[Requests.closedAt] = null
+                }
+            }
+            rows.map { it.refToken }
+        }
+
+    /**
+     * How many interests this person has resting on a no-names basis — the figure the
+     * five-interest cap is judged against. Counts interests, not showings: one statement
+     * shown in four chats is one. Requests typed in a chat carry no token and are uncapped.
+     */
+    fun countOpenInterests(userId: Long): Int = transaction(db) {
+        Requests.selectAll()
+            .where {
+                (Requests.chatRef eq crypto.ref(NO_NAMES_CHAT_ID.toString())) and
+                    (Requests.userRef eq crypto.ref(userId.toString())) and
+                    (Requests.state eq RequestState.OPEN.name)
+            }
+            .mapNotNull { it[Requests.interestToken] }
+            .distinct()
+            .size
+    }
+
+    /**
+     * The pairs resting on a no-names basis. `Housekeeping.refreshRates` enumerates chat
+     * pairs from `chat_settings`; without this, a pair no chat uses would never get a
+     * reference rate and could never be compared across denominations.
+     */
+    fun noNamesPairs(): Set<CurrencyPair> = transaction(db) {
+        Requests.selectAll()
+            .where {
+                (Requests.chatRef eq crypto.ref(NO_NAMES_CHAT_ID.toString())) and
+                    (Requests.state eq RequestState.OPEN.name)
+            }
+            .map { hydrate(it).pair }
+            .toSet()
     }
 
     /** Returns the ref tokens removed, so message cleanup knows what to strip. */
@@ -257,6 +356,7 @@ class RequestRepository(
             state = RequestState.valueOf(row[Requests.state]),
             createdAt = row[Requests.createdAt],
             expiresAt = row[Requests.expiresAt],
+            interestToken = row[Requests.interestToken],
         )
     }
 }

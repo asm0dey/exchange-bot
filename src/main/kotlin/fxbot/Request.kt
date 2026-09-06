@@ -10,6 +10,12 @@ enum class RequestState {
 }
 
 /**
+ * The chat id a no-names request carries. Telegram never issues 0, and `Matcher`
+ * already filters on `chatId ==`, so the two surfaces cannot meet by accident.
+ */
+const val NO_NAMES_CHAT_ID = 0L
+
+/**
  * Someone's stated willingness to exchange. Amounts are held exactly as typed;
  * the notional is derived when requests are compared (ADR 0003).
  */
@@ -26,4 +32,6 @@ data class Request(
     val state: RequestState,
     val createdAt: Instant,
     val expiresAt: Instant,
+    /** The sibling link: every row born of one interest carries the same value. Null for a request typed in a chat. */
+    val interestToken: String? = null,
 )
