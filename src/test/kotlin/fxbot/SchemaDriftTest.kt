@@ -10,7 +10,10 @@ class SchemaDriftTest : StringSpec({
         migrate(ds)
         val db = connectExposed(ds)
         transaction(db) {
-            val tables = arrayOf(Requests, ChatSettingsTable, FxRates, SentMessages, SentMessageRefs)
+            val tables = arrayOf(
+                Requests, ChatSettingsTable, FxRates, SentMessages, SentMessageRefs,
+                PersonSettingsTable, NameGiveUps, PendingAnnouncements,
+            )
             // One-directional: this lists the statements Exposed would run to bring the
             // database up to what Tables.kt declares, so it catches a column renamed or
             // invented in Tables.kt that V1__initial.sql doesn't have (this is exactly
