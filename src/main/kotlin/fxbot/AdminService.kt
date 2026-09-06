@@ -30,4 +30,23 @@ class AdminService(
         settings.save(settings.get(chatId).copy(tifDays = days))
         return "Requests now wait $days day(s) before they lapse."
     }
+
+    /**
+     * Off means no showing is created in this chat at all — not merely a suppressed
+     * announcement. A silent-but-matchable showing is exactly what an admin turning this
+     * off would object to. Showings created while it was on live out their time in force.
+     */
+    fun setFanOut(chatId: Long, raw: String): String {
+        val on = when (raw.trim().lowercase()) {
+            "on" -> true
+            "off" -> false
+            else -> return "Tell me on or off, like /fanout on"
+        }
+        settings.save(settings.get(chatId).copy(fanOut = on))
+        return if (on) {
+            "I will show interests here that people have stated to me privately."
+        } else {
+            "I won't show interests here that people have stated to me privately. Anything already waiting stays until it lapses."
+        }
+    }
 }

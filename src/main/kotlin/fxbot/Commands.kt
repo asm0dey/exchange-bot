@@ -98,9 +98,11 @@ suspend fun settings(update: ProcessedUpdate, bot: TelegramBot) {
     val s = Registry.settings.get(chat.id)
     logCommand("settings", "shown")
     message {
-        "This chat swaps ${s.pair}. Amounts match within ${s.tolerancePct}%, " +
-            "and a request waits ${s.tifDays} days before it lapses. " +
-            "Admins can change this with /pair, /tolerance and /tif."
+        "This chat swaps ${s.pair}. A counterparty matches when what they'd leave you is within " +
+            "${s.tolerancePct}% of your own amount, and a request waits ${s.tifDays} days before it lapses. " +
+            (if (s.fanOut) "I also show interests people state to me privately here. "
+             else "I don't show interests people state to me privately here. ") +
+            "Admins can change this with /pair, /tolerance, /tif and /fanout."
     }.send(chat.id, bot)
 }
 
@@ -115,6 +117,7 @@ private val HELP_TEXT = """
     /pair EUR RUB — admins: change what this chat swaps
     /tolerance 20 — admins: how close amounts must be to match
     /tif 7 — admins: how many days a request waits before it lapses
+    /fanout on — admins: whether I show interests stated to me privately here
     /forget — erase your data in this chat (send /forget all to me privately for every chat)
 """.trimIndent()
 

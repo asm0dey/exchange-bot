@@ -91,4 +91,25 @@ class ChatSettingsRepositoryTest : StringSpec({
         s.tifDays shouldBe 3
         r.allPairs() shouldBe setOf(CurrencyPair("CHF", "JPY"))
     }
+    "fan-out is on unless an admin turned it off" {
+        settingsRepo("fanoutdefault").get(-100L).fanOut shouldBe true
+    }
+    "a row written before the flag existed still reads as fan-out on" {
+        val r = settingsRepo("fanoutlegacy")
+        r.save(ChatSettings(-100L, CurrencyPair("EUR", "RUB"), 20, 7)) // the four-argument form
+        r.get(-100L).fanOut shouldBe true
+    }
+    "fan-out round-trips when it is turned off" {
+        val r = settingsRepo("fanoutoff")
+        r.save(ChatSettings(-100L, CurrencyPair("EUR", "RUB"), 20, 7, fanOut = false))
+        r.get(-100L).fanOut shouldBe false
+    }
+    "every chat can be enumerated, with its own id, for the fan-out search" {
+        val r = settingsRepo("allchats")
+        r.save(ChatSettings(-100L, CurrencyPair("EUR", "RUB"), 20, 7))
+        r.save(ChatSettings(-200L, CurrencyPair("USD", "GBP"), 5, 30, fanOut = false))
+        r.allChats().map { it.chatId }.toSet() shouldBe setOf(-100L, -200L)
+        r.allChats().single { it.chatId == -200L }.fanOut shouldBe false
+        r.allChats().single { it.chatId == -200L }.pair shouldBe CurrencyPair("USD", "GBP")
+    }
 })

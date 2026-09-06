@@ -108,6 +108,7 @@ suspend fun main(): Unit = coroutineScope {
         botCommand("pair", "Admins: change what this chat swaps")
         botCommand("tolerance", "Admins: how close amounts must be to match")
         botCommand("tif", "Admins: how many days a request waits")
+        botCommand("fanout", "Admins: show privately stated interests here")
         botCommand("forget", "Erase your data — add 'all' in a private chat for every group")
         botCommand("help", "What I can do")
     }

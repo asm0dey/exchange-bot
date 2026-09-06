@@ -81,3 +81,8 @@ suspend fun tolerance(update: ProcessedUpdate, bot: TelegramBot) = adminOnly("to
 suspend fun tif(update: ProcessedUpdate, bot: TelegramBot) = adminOnly("tif", update, bot) { args ->
     Registry.admin.setTif(update.getChat().id, args.firstOrNull().orEmpty())
 }
+
+@CommandHandler(["/fanout"])
+suspend fun fanout(update: ProcessedUpdate, bot: TelegramBot) = adminOnly("fanout", update, bot) { args ->
+    Registry.admin.setFanOut(update.getChat().id, args.firstOrNull().orEmpty())
+}
