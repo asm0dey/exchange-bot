@@ -19,10 +19,9 @@ class AdminService(
     }
 
     fun setTolerance(chatId: Long, raw: String): String {
-        val pct = raw.toIntOrNull()
-        if (pct == null || pct !in 1..100) return "Give me a percentage between 1 and 100, like /tolerance 20"
+        val pct = parseTolerancePct(raw) ?: return TOLERANCE_HELP
         settings.save(settings.get(chatId).copy(tolerancePct = pct))
-        return "Amounts now match when they're within $pct% of each other."
+        return toleranceSetReply(pct)
     }
 
     fun setTif(chatId: Long, raw: String): String {
