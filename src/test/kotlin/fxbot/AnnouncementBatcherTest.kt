@@ -1,5 +1,6 @@
 package fxbot
 
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldHaveSize
@@ -11,13 +12,16 @@ import io.ktor.client.engine.mock.respondError
 import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.math.BigDecimal
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneOffset
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 
 private val T0 = Instant.parse("2026-09-06T12:00:00Z")
 private val EURRUB = CurrencyPair("EUR", "RUB")
@@ -29,7 +33,13 @@ private val EURRUB = CurrencyPair("EUR", "RUB")
  * The repositories that stamp rows run on T0 while the batcher's own clock runs at [at],
  * which is what lets a test age a pending row without aging anything else.
  */
-private class BatchFixture(name: String, at: Instant = T0, val window: Duration = Duration.ofSeconds(60)) {
+private class BatchFixture(
+    name: String,
+    at: Instant = T0,
+    val window: Duration = Duration.ofSeconds(60),
+    /** How long a send takes, so two flushes can be made to genuinely overlap. */
+    val sinkDelayMs: Long = 0,
+) {
     val ds = memDataSource("batch_$name").also { migrate(it) }
     val crypto = testCrypto()
     val clock: Clock = Clock.fixed(at, ZoneOffset.UTC)
@@ -47,7 +57,17 @@ private class BatchFixture(name: String, at: Instant = T0, val window: Duration 
     // Written from a window coroutine on Dispatchers.Default and read from the test thread.
     val announcements = CopyOnWriteArrayList<Announcement>()
     val pings = CopyOnWriteArrayList<Ping>()
-    val sink = AnnouncementSink { a, p -> announcements += a; pings += p }
+    /** Counted before the send is allowed to fail, so a test can see an attempt it never saw the result of. */
+    val sinkCalls = AtomicInteger()
+    @Volatile
+    var sinkFails = false
+    val sink = AnnouncementSink { a, p ->
+        sinkCalls.incrementAndGet()
+        delay(sinkDelayMs)
+        check(!sinkFails) { "the send failed" }
+        announcements += a
+        pings += p
+    }
     val batcher = build()
 
     fun chat(id: Long) = apply { chats.save(ChatSettings(id, EURRUB, 20, 7)) }
@@ -72,14 +92,19 @@ private class BatchFixture(name: String, at: Instant = T0, val window: Duration 
         )
     }
 
-    /** Waits for the window to fire, and answers how long that took from [since]. */
-    suspend fun awaitAnnouncements(since: Long, timeoutMs: Long = 10_000): Long {
+    suspend fun awaitUntil(what: String, timeoutMs: Long = 10_000, cond: () -> Boolean) {
         val started = System.nanoTime()
         while ((System.nanoTime() - started) / 1_000_000 < timeoutMs) {
-            if (announcements.isNotEmpty()) return (System.nanoTime() - since) / 1_000_000
+            if (cond()) return
             delay(5)
         }
-        error("the window never fired within ${timeoutMs}ms")
+        error("$what did not happen within ${timeoutMs}ms")
+    }
+
+    /** Waits for the window to fire, and answers how long that took from [since]. */
+    suspend fun awaitAnnouncements(since: Long): Long {
+        awaitUntil("the announcement window") { announcements.isNotEmpty() }
+        return (System.nanoTime() - since) / 1_000_000
     }
 }
 
@@ -216,5 +241,73 @@ class AnnouncementBatcherTest : StringSpec({
             f.announcements.count { it.chatId == chatId && it.text.contains("on @ann's behalf") } shouldBe 1
         }
         f.pending.all().shouldBeEmpty()
+    }
+
+    "two flushes racing on one person still send one message" {
+        // A send that takes its time is what makes the overlap real rather than theoretical:
+        // both flushes are inside `flush` before either has finished with the row.
+        val f = BatchFixture("racing", sinkDelayMs = 200).chat(-100L)
+        f.interests.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
+        coroutineScope {
+            launch(Dispatchers.Default) { f.batcher.flush(1L) }
+            launch(Dispatchers.Default) { f.batcher.flush(1L) }
+        }
+        f.sinkCalls.get() shouldBe 1
+        f.announcements shouldHaveSize 1
+        f.pending.all().shouldBeEmpty()
+    }
+
+    "a send that fails leaves the chat still owed its announcement" {
+        val f = BatchFixture("sinkfails").chat(-100L)
+        f.sinkFails = true
+        f.interests.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
+        shouldThrow<IllegalStateException> { f.batcher.flush(1L) }
+        f.announcements.shouldBeEmpty()
+        f.pending.all() shouldHaveSize 1
+        // Owed, so the next attempt re-renders it and it goes out exactly once.
+        f.sinkFails = false
+        f.batcher.flush(1L)
+        f.announcements shouldHaveSize 1
+        f.pending.all().shouldBeEmpty()
+    }
+
+    "one failing send does not stop the batcher announcing ever again" {
+        val f = BatchFixture("sinksurvives", window = Duration.ofMillis(200)).chat(-100L)
+        f.sinkFails = true
+        f.interests.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
+        f.batcher.enqueueAnnouncement(1L)
+        f.awaitUntil("the first window firing and failing") { f.sinkCalls.get() >= 1 }
+        f.announcements.shouldBeEmpty()
+        // A later window must still fire: an exception escaping the first one would have
+        // cancelled the scope every window is launched into.
+        f.sinkFails = false
+        f.interests.state(2L, "ann", Verb.BUY, "10", "EUR", "RUB")
+        f.batcher.enqueueAnnouncement(2L)
+        f.awaitAnnouncements(System.nanoTime())
+        f.announcements.map { it.chatId }.toSet() shouldBe setOf(-100L)
+    }
+
+    "the ping window is keyed by the recipient, not by whoever caused it" {
+        // Two different people turn up for the same recipient inside one window, each
+        // against a different interest of his, and he hears about it once.
+        val f = BatchFixture("pingwindow", window = Duration.ofMillis(400))
+        f.interests.state(1L, "bob", Verb.SELL, "1000", "EUR", "RUB")
+        f.interests.state(1L, "bob", Verb.SELL, "5000", "GBP", "USD")
+        val a = f.interests.state(2L, "ann", Verb.BUY, "1000", "EUR", "RUB") as InterestResult.Stated
+        f.batcher.enqueueAppeared(a.appeared)
+        delay(150)
+        val c = f.interests.state(3L, "cat", Verb.BUY, "5000", "GBP", "USD") as InterestResult.Stated
+        f.batcher.enqueueAppeared(c.appeared)
+        f.awaitUntil("the ping window") { f.pings.isNotEmpty() }
+        // A second window would have fired 150ms after the first; give it every chance to.
+        delay(500)
+        f.pings shouldHaveSize 1
+        f.pings.single().userId shouldBe 1L
+        val text = f.pings.single().text
+        text shouldContain "sell 1,000 EUR"
+        text shouldContain "sell 5,000 GBP"
+        Regex("someone wants to buy").findAll(text).count() shouldBe 2
+        text.contains("ann") shouldBe false
+        text.contains("cat") shouldBe false
     }
 })
