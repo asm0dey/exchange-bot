@@ -18,6 +18,7 @@ import java.math.BigDecimal
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
+import java.time.temporal.ChronoUnit
 
 private val T0 = Instant.parse("2026-09-06T12:00:00Z")
 private val EURRUB = CurrencyPair("EUR", "RUB")
@@ -117,7 +118,36 @@ class InterestServiceTest : StringSpec({
         f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
         f.requests.resting(-100L) shouldHaveSize 1
         f.requests.resting(-200L) shouldHaveSize 1
-        f.pending.allFor(1L) shouldHaveSize 2
+        // Two rows is not the point — one per chat is. Two queued against the same chat
+        // would count the same and leave the other chat silent.
+        val owed = f.pending.allFor(1L)
+        owed shouldHaveSize 2
+        owed.count { f.pending.isFor(it, -100L) } shouldBe 1
+        owed.count { f.pending.isFor(it, -200L) } shouldBe 1
+    }
+
+    "the no-names row and each showing take their time in force from different places" {
+        // Every other fixture chat uses 7, which is also NO_NAMES_TIF_DAYS, so nothing
+        // else here can tell the two sources apart. This chat uses 3.
+        val f = InterestFixture("tif").withRate().chat(-100L, tif = 3)
+        val r = f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
+        r.shouldBeInstanceOf<InterestResult.Stated>()
+        r.interest.expiresAt shouldBe T0.plus(NO_NAMES_TIF_DAYS.toLong(), ChronoUnit.DAYS)
+        r.showings.single().expiresAt shouldBe T0.plus(3L, ChronoUnit.DAYS)
+    }
+
+    "a chat whose membership cannot be checked is dropped, and the interest still rests" {
+        // The interest row already exists by the time fan-out runs, so a probe that throws
+        // must cost one chat's showing, never the whole statement.
+        val f = InterestFixture("probethrows", membership = MembershipProbe { chatId, _ ->
+            if (chatId == -200L) error("telegram said no") else true
+        }).withRate().chat(-100L).chat(-200L)
+        val r = f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
+        r.shouldBeInstanceOf<InterestResult.Stated>()
+        r.showings.map { it.chatId } shouldBe listOf(-100L)
+        f.requests.resting(-200L).shouldBeEmpty()
+        // And exactly one slot of the cap was spent, so a retry is not needed.
+        f.requests.countOpenInterests(1L) shouldBe 1
     }
 
     "the two surfaces never meet" {
@@ -156,6 +186,23 @@ class InterestServiceTest : StringSpec({
         val bobsShowing = f.requests.resting(-100L).single { it.userId == 1L }
         f.requests.transition(bobsShowing.refToken, RequestState.OPEN, RequestState.EXPIRED)
         f.svc.counterparties(r.interest) shouldHaveSize 1
+    }
+
+    "a chat repaired while showings rest is still priced on the showings' own pair" {
+        // The two showings are 1000 EUR against 100000 RUB — the same size at EUR/RUB,
+        // so the chat already pairs them and the anonymous route is suppressed.
+        val f = InterestFixture("repaired").withRate().chat(-100L, EURRUB, tolerance = 20)
+        f.svc.state(1L, "bob", Verb.SELL, "1000", "EUR", "RUB")
+        val r = f.svc.state(2L, "ann", Verb.SELL, "100000", "RUB", "EUR")
+        r.shouldBeInstanceOf<InterestResult.Stated>()
+        r.found.shouldBeEmpty()
+
+        // An admin repairs the chat. The showings still carry EUR/RUB; only the chat has
+        // moved. Pricing them at the chat's NEW pair would read ann's 100000 RUB as
+        // 90909 EUR and break a pairing that has not changed at all.
+        f.rateRepo.put("EUR", "USD", BigDecimal("1.1"), T0)
+        f.chats.save(ChatSettings(-100L, CurrencyPair("EUR", "USD"), 20, 7, true))
+        f.svc.counterparties(r.interest).shouldBeEmpty()
     }
 
     "sharing a chat is not enough — the showings there must actually pair" {

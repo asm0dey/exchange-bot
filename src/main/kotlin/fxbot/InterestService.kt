@@ -3,6 +3,15 @@ package fxbot
 /**
  * Whether a person is in a chat, asked at fan-out time and never written down. The
  * Telegram layer answers with `getChatMember`; a test answers with a lambda.
+ *
+ * An implementation that THROWS is read as "not a member": [InterestService] catches per
+ * chat, so a bot removed from a group, or one transient network error, costs that chat's
+ * showing and nothing else. It must not cost the whole statement — by the time fan-out
+ * runs the interest is already resting, and an exception out of `state` would leave a
+ * half-built interest behind while telling the person it failed, so their retry burns
+ * another slot against the cap. A dropped showing is recoverable (restate, or the chat
+ * picks the interest up on a later statement); a resting interest nobody was told about
+ * is not.
  */
 fun interface MembershipProbe {
     suspend fun isMember(chatId: Long, userId: Long): Boolean
@@ -150,18 +159,31 @@ class InterestService(
      * refusing a legitimate pair during an outage is the harder failure to explain.
      */
     private suspend fun canBePriced(pair: CurrencyPair): Boolean {
-        val known = chats.allPairs().any { setOf(it.base, it.quote) == setOf(pair.base, pair.quote) }
+        // [pair] is canonical, so canonicalising a chat's pair is the orientation-blind test.
+        val known = chats.allPairs().any { canonicalPair(it.base, it.quote) == pair }
         if (known) return true
         if (rates.status(pair).rate != null) return true
         val fetched = rateClient.fetch(pair.base) ?: return true
         return fetched[pair.quote] != null
     }
 
+    /** The chats a statement on [pair] — which is canonical — should be shown in. */
     private suspend fun fanOutChats(userId: Long, pair: CurrencyPair): List<ChatSettings> =
         chats.allChats()
             .filter { it.fanOut }
-            .filter { setOf(it.pair.base, it.pair.quote) == setOf(pair.base, pair.quote) }
-            .filter { membership.isMember(it.chatId, userId) }
+            .filter { canonicalPair(it.pair.base, it.pair.quote) == pair }
+            .filter { isMember(it.chatId, userId) }
+
+    /** See [MembershipProbe]: a probe that fails answers "no" for that one chat. */
+    private suspend fun isMember(chatId: Long, userId: Long): Boolean =
+        try {
+            membership.isMember(chatId, userId)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // Our own caller giving up, not the probe failing. Never swallowed.
+            throw e
+        } catch (e: Exception) {
+            false
+        }
 
     /**
      * Whether a live showing already pairs these two people in some chat — in which case
@@ -176,8 +198,13 @@ class InterestService(
         val theirs = liveShowings(b).associateBy { it.chatId }
         return mine.any { showing ->
             val peer = theirs[showing.chatId] ?: return@any false
+            // The showings' own pair, not `chat.pair`: an admin who repairs a chat while
+            // these rest leaves the two disagreeing, and a rate for the wrong pair would
+            // convert the sizes wrongly and flip the decision. `findCounterparties` has
+            // already established the two showings agree on a pair. The TOLERANCE is the
+            // chat's current one on purpose — that is the number the chat matches at now.
             val chat = chats.get(showing.chatId)
-            findCounterparties(showing, listOf(peer), rates.status(chat.pair).rate, chat.tolerancePct).isNotEmpty()
+            findCounterparties(showing, listOf(peer), rates.status(showing.pair).rate, chat.tolerancePct).isNotEmpty()
         }
     }
 
