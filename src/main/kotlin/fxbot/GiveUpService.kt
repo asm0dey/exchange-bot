@@ -15,7 +15,11 @@ sealed interface GiveUpResult {
     /**
      * The presser's consent is recorded; the other side must now be asked. Carries both
      * requests — [mine] the presser's, [theirs] the peer's own — so a caller can describe
-     * either side of the pairing without a second lookup.
+     * either side of the pairing without a second lookup. Both are stripped of their
+     * `username` (see [Request.copy] at the call site): the recipient of the message this
+     * builds has not consented yet, so the identifying value this whole service exists to
+     * protect must not ride along on the request itself just because the idiomatic way to
+     * render a [Request] elsewhere in this codebase happens to print it.
      */
     data class Asked(
         val peerUserId: Long,
@@ -45,6 +49,10 @@ private const val NOT_YOURS = "That isn't your interest."
 
 private const val YOU_DECLINED = "You already said no to this one, so I won't offer it to you again."
 
+private const val YOUR_REQUEST_GONE = "Your own request isn't waiting anymore, so there's nothing to offer from it."
+
+private const val SELF_PAIRING = "You can't pass your own name to yourself."
+
 /**
  * Identities pass only by mutual give-up (ADR 0007). Consent is persisted, never carried
  * in a button: the presser is re-derived from `callback_query.from.id` by the caller, and
@@ -67,23 +75,37 @@ class GiveUpService(
         names.handleFor(a.userId)?.username != null || names.handleFor(b.userId)?.username != null
 
     suspend fun offer(userId: Long, myToken: String, peerToken: String): GiveUpResult {
+        // A row keyed (token, token) would satisfy bothOffered() on a single press,
+        // disclosing the presser to themselves. Nobody else is exposed, but it is a
+        // nonsense result, so it is refused before either token is even looked up.
+        if (myToken == peerToken) return GiveUpResult.Refused(SELF_PAIRING)
         val mine = requests.byRefToken(myToken) ?: return GiveUpResult.Refused(PEER_GONE)
         if (mine.userId != userId) return GiveUpResult.Refused(NOT_YOURS)
         val theirs = requests.byRefToken(peerToken) ?: return GiveUpResult.Refused(PEER_GONE)
-        if (mine.state != RequestState.OPEN || theirs.state != RequestState.OPEN) {
-            return GiveUpResult.Refused(PEER_GONE)
-        }
         // A pairing the presser themselves declined gets its own wording — it is not
-        // "gone", it is the presser's own earlier choice. This must be checked before the
-        // symmetric declined() check below, which would otherwise answer true for either
-        // direction and mask which side actually declined.
+        // "gone", it is the presser's own earlier choice — and that fact takes priority
+        // over the OPEN-state check below: telling a decliner that the PEER'S request has
+        // since closed both misstates what happened (their own "no" is the operative fact)
+        // and hands them a fresh, unnecessary fact about the peer's current state. This
+        // must also run before the symmetric declined() check further down, which would
+        // otherwise answer true for either direction and mask which side actually declined.
         if (giveUps.stanceOf(myToken, peerToken) == Stance.DECLINED) return GiveUpResult.Refused(YOU_DECLINED)
+        // Each state checked against its own wording: closing is something that happens
+        // to ONE side's request, and the message should name whichever side it was.
+        if (mine.state != RequestState.OPEN) return GiveUpResult.Refused(YOUR_REQUEST_GONE)
+        if (theirs.state != RequestState.OPEN) return GiveUpResult.Refused(PEER_GONE)
         if (giveUps.declined(myToken, peerToken)) return GiveUpResult.Refused(PEER_GONE)
         if (!introducible(mine, theirs)) return GiveUpResult.Refused(NO_ROUTE)
 
         giveUps.record(myToken, peerToken, userId, Stance.OFFERED)
         if (!giveUps.bothOffered(myToken, peerToken)) {
-            return GiveUpResult.Asked(theirs.userId, peerToken, myToken, mine, theirs)
+            // Name-stripped: the peer has not consented yet, so nothing that renders
+            // `mine` or `theirs` the ordinary way (mentionOf + describe) may print an
+            // @username here.
+            return GiveUpResult.Asked(
+                theirs.userId, peerToken, myToken,
+                mine.copy(username = null), theirs.copy(username = null),
+            )
         }
         // Looked up again, right now: a give-up happens days after the interest was
         // stated, so what passes is current, and forgetting has nothing extra to erase.

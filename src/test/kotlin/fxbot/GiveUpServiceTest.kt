@@ -19,6 +19,10 @@ private class GiveUpFixture(name: String, private val handles: Map<Long, Handle>
 
     fun rest(userId: Long, side: Side) =
         requests.create(NO_NAMES_CHAT_ID, userId, null, side, "EUR", BigDecimal("1000"), EURRUB, 7, "i$userId")
+
+    /** Like [rest], but with the stored `username` populated — private interests carry one (InterestService). */
+    fun restNamed(userId: Long, side: Side, username: String) =
+        requests.create(NO_NAMES_CHAT_ID, userId, username, side, "EUR", BigDecimal("1000"), EURRUB, 7, "i$userId")
 }
 
 private fun handled(vararg pairs: Pair<Long, Handle>) = pairs.toMap()
@@ -39,6 +43,32 @@ class GiveUpServiceTest : StringSpec({
         r.theirs.refToken shouldBe b.refToken
         f.giveUps.stanceOf(a.refToken, b.refToken) shouldBe Stance.OFFERED
         f.giveUps.bothOffered(a.refToken, b.refToken) shouldBe false
+    }
+
+    "Asked never carries either side's stored username" {
+        // Both requests carry a real, stored username (as a private interest's do —
+        // InterestService populates it). Asked's recipient (the peer, who has not
+        // consented) must not be able to read it off `mine` or `theirs` via the
+        // ordinary mentionOf(r)/describe(r) idiom used everywhere else in this codebase.
+        val f = GiveUpFixture("askedstripped", handled(1L to Handle("bob", "Bob"), 2L to Handle("ann", "Ann")))
+        val a = f.restNamed(1L, Side.OFFER, "bob")
+        val b = f.restNamed(2L, Side.BID, "ann")
+        val r = f.svc.offer(1L, a.refToken, b.refToken)
+        r.shouldBeInstanceOf<GiveUpResult.Asked>()
+        r.mine.username shouldBe null
+        r.theirs.username shouldBe null
+        // Everything else about the request is left alone — only the name is stripped.
+        r.mine.refToken shouldBe a.refToken
+        r.theirs.refToken shouldBe b.refToken
+    }
+
+    "a self-pairing offer is refused before any lookup, and writes nothing" {
+        val f = GiveUpFixture("selfpair", handled(1L to Handle("bob", "Bob")))
+        val a = f.rest(1L, Side.OFFER)
+        val r = f.svc.offer(1L, a.refToken, a.refToken)
+        r.shouldBeInstanceOf<GiveUpResult.Refused>()
+        f.giveUps.stanceOf(a.refToken, a.refToken) shouldBe null
+        f.lookups shouldBe 0
     }
 
     "both offers disclose each side's handle to the other, once" {
@@ -195,6 +225,37 @@ class GiveUpServiceTest : StringSpec({
         r.text shouldNotContain "@ann"
         // The guard fired before any write: the earlier consent is exactly as it was.
         f.giveUps.stanceOf(a.refToken, b.refToken) shouldBe Stance.OFFERED
+    }
+
+    "declining, then the peer's request closing, still reports the decliner's own choice" {
+        // Priority: YOU_DECLINED must win over the OPEN-state check even when the PEER'S
+        // request has since closed — telling the decliner "that one is no longer waiting"
+        // both misstates what happened (their own "no" is why they get nothing further)
+        // and hands them a fresh fact about the peer they no longer need.
+        val f = GiveUpFixture("declinedthenpeergone", handled(1L to Handle("bob", "Bob"), 2L to Handle("ann", "Ann")))
+        val a = f.rest(1L, Side.OFFER)
+        val b = f.rest(2L, Side.BID)
+        f.svc.decline(1L, a.refToken, b.refToken)
+        f.requests.closeInterest("i2", RequestState.CANCELLED)
+        val r = f.svc.offer(1L, a.refToken, b.refToken)
+        r.shouldBeInstanceOf<GiveUpResult.Refused>()
+        r.text shouldNotContain "no longer waiting"
+        r.text shouldNotContain "Ann"
+    }
+
+    "an offer whose OWN request has closed names what happened to it, not the peer" {
+        val f = GiveUpFixture("minegone", handled(1L to Handle("bob", "Bob"), 2L to Handle("ann", "Ann")))
+        val a = f.rest(1L, Side.OFFER)
+        val b = f.rest(2L, Side.BID)
+        f.requests.closeInterest("i1", RequestState.CANCELLED)
+        val r = f.svc.offer(1L, a.refToken, b.refToken)
+        r.shouldBeInstanceOf<GiveUpResult.Refused>()
+        // Distinct from PEER_GONE's wording ("that one ... nobody left to introduce you
+        // to") — the request that closed was the PRESSER'S OWN, and the message must say
+        // so rather than reusing the peer-shaped sentence for the wrong person.
+        r.text shouldNotContain "nobody left to introduce you to"
+        r.text shouldNotContain "Ann"
+        r.text shouldNotContain "@ann"
     }
 
     "a decline dies with the requests" {
