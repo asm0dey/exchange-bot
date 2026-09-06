@@ -1,4 +1,4 @@
-FROM gradle:9.6.1-jdk25 AS build
+FROM gradle:9.7.1-jdk25 AS build
 WORKDIR /src
 
 # Build scripts and wrapper only, so a source-only change (below) doesn't bust the
