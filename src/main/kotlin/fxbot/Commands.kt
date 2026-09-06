@@ -74,6 +74,8 @@ private suspend fun handlePost(verb: Verb, update: ProcessedUpdate, bot: Telegra
                     id,
                     listOf(result.request.refToken) + result.found.map { it.request.refToken },
                     listOf(result.request.userId) + result.found.map { it.request.userId },
+                    text,
+                    buttons,
                 )
             }
         }

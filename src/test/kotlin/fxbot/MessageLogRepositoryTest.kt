@@ -3,6 +3,11 @@ package fxbot
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import org.jetbrains.exposed.v1.jdbc.batchInsert
+import org.jetbrains.exposed.v1.jdbc.transactions.transaction
+import org.jetbrains.exposed.v1.jdbc.upsert
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
@@ -14,6 +19,12 @@ private fun log(name: String, clock: Clock = Clock.fixed(T0, ZoneOffset.UTC)): M
     migrate(ds)
     return MessageLogRepository(ds, testCrypto(), clock)
 }
+
+/** The shape `sent_message.payload` had before V3 — deliberately missing `text`/`buttons`,
+ *  so a test serialising this class (rather than the current `MessagePayload`) proves what
+ *  a pre-V3 row actually decodes as, instead of a round-trip that can't tell the difference. */
+@Serializable
+private data class PreV3Payload(val chatId: Long)
 
 class MessageLogRepositoryTest : StringSpec({
     "finds the messages carrying a request's buttons, newest first" {
@@ -64,5 +75,69 @@ class MessageLogRepositoryTest : StringSpec({
         l.record(-100L, 10L, listOf("tokA"), listOf(1L))
         l.rewriteChatRef(-100L, -1001L) shouldBe 1
         l.messagesForToken("tokA", 10).first().chatId shouldBe -1001L
+    }
+    "a message's own text and keyboard are remembered, so a later edit can rebuild them" {
+        val l = log("remembers")
+        val buttons = listOf(Button("✅ Done with ann", "done?a=tokA&b=tokB"), Button("✖️ Cancel my request", "cancel?t=tokA"))
+        l.record(-100L, 10L, listOf("tokA", "tokB"), listOf(1L, 2L), "2 people match: ...", buttons)
+        val m = l.logged(-100L, 10L)!!
+        m.chatId shouldBe -100L
+        m.text shouldBe "2 people match: ..."
+        m.buttons shouldBe buttons
+        m.refTokens.toSet() shouldBe setOf("tokA", "tokB")
+    }
+    "a message recorded without its text reads back as having none, not as empty" {
+        val l = log("notext")
+        l.record(-100L, 10L, listOf("tokA"), listOf(1L))
+        val m = l.logged(-100L, 10L)!!
+        m.text shouldBe null
+        m.buttons shouldBe emptyList()
+    }
+    "an unknown message is not logged" {
+        log("unknownmsg").logged(-100L, 99L) shouldBe null
+    }
+    "re-recording the same message replaces its text and keyboard" {
+        val l = log("rerecord")
+        l.record(-100L, 10L, listOf("tokA"), listOf(1L), "first", listOf(Button("a", "cancel?t=tokA")))
+        l.record(-100L, 10L, listOf("tokA"), listOf(1L), "second", emptyList())
+        val m = l.logged(-100L, 10L)!!
+        m.text shouldBe "second"
+        m.buttons shouldBe emptyList()
+    }
+    "a row written before V3 reads back with no text and no buttons, not a payload that fails to decode" {
+        val crypto = testCrypto()
+        val ds = memDataSource("prev3row")
+        migrate(ds)
+        val db = connectExposed(ds)
+        val json = Json { ignoreUnknownKeys = true }
+        transaction(db) {
+            val chatRef = crypto.ref((-100L).toString())
+            SentMessages.upsert {
+                it[SentMessages.chatRef] = chatRef
+                it[SentMessages.messageId] = 10L
+                it[sentAt] = T0
+                it[payload] = crypto.seal(json.encodeToString(PreV3Payload(-100L)), "$chatRef:10")
+            }
+            SentMessageRefs.batchInsert(listOf(0), shouldReturnGeneratedValues = false) {
+                this[SentMessageRefs.chatRef] = chatRef
+                this[SentMessageRefs.messageId] = 10L
+                this[SentMessageRefs.refToken] = "tokA"
+                this[SentMessageRefs.userRef] = crypto.ref("1")
+            }
+        }
+        val l = MessageLogRepository(ds, crypto, db = db)
+        val m = l.logged(-100L, 10L)!!
+        m.text shouldBe null
+        m.buttons shouldBe emptyList()
+        m.refTokens shouldBe listOf("tokA")
+    }
+    "a chat migration reseals the message's text and keyboard, not just its chat id" {
+        val l = log("migratefull")
+        val buttons = listOf(Button("✅ Done", "done?a=tokA&b=tokB"))
+        l.record(-100L, 10L, listOf("tokA"), listOf(1L), "some text", buttons)
+        l.rewriteChatRef(-100L, -1001L) shouldBe 1
+        val m = l.logged(-1001L, 10L)!!
+        m.text shouldBe "some text"
+        m.buttons shouldBe buttons
     }
 })

@@ -23,8 +23,27 @@ import javax.sql.DataSource
 
 data class TrackedMessage(val chatId: Long, val messageId: Long)
 
+/** What one message said and offered. Both are nullable/empty for rows written before V3. */
+data class LoggedMessage(
+    val chatId: Long,
+    val messageId: Long,
+    val text: String?,
+    val buttons: List<Button>,
+    val refTokens: List<String>,
+)
+
 @Serializable
-private data class MessagePayload(val chatId: Long)
+private data class StoredButton(val label: String, val data: String)
+
+@Serializable
+private data class MessagePayload(
+    val chatId: Long,
+    // Added in V3, inside the sealed payload rather than a new column. Nullable so a row
+    // written before V3 falls back to the strip-only path instead of being rewritten to
+    // an empty message.
+    val text: String? = null,
+    val buttons: List<StoredButton> = emptyList(),
+)
 
 /**
  * What the bot said, and about whom — the record that lets forgetting (Task 12)
@@ -58,17 +77,34 @@ class MessageLogRepository(
         },
     )
 
-    /** Records one sent message and every ref token (and person) its buttons named. */
-    fun record(chatId: Long, messageId: Long, refTokens: List<String>, userIds: List<Long>) {
+    /**
+     * Records one sent message, every ref token (and person) it names, and — since V3 —
+     * what it actually said and offered, so closing ONE of the requests a batched message
+     * carries can rewrite that message instead of stripping the whole keyboard.
+     */
+    fun record(
+        chatId: Long,
+        messageId: Long,
+        refTokens: List<String>,
+        userIds: List<Long>,
+        text: String? = null,
+        buttons: List<Button> = emptyList(),
+    ) {
         require(refTokens.size == userIds.size) { "refTokens and userIds must pair up 1:1" }
         transaction(db) {
             val chatRef = crypto.ref(chatId.toString())
             val aad = "$chatRef:$messageId"
+            val body = MessagePayload(chatId, text, buttons.map { StoredButton(it.label, it.data) })
             SentMessages.upsert {
                 it[SentMessages.chatRef] = chatRef
                 it[SentMessages.messageId] = messageId
                 it[sentAt] = clock.instant()
-                it[payload] = crypto.seal(json.encodeToString(MessagePayload(chatId)), aad)
+                it[payload] = crypto.seal(json.encodeToString(body), aad)
+            }
+            // Re-recording a message replaces what it names, rather than accumulating
+            // duplicate refs alongside the old ones.
+            SentMessageRefs.deleteWhere {
+                (SentMessageRefs.chatRef eq chatRef) and (SentMessageRefs.messageId eq messageId)
             }
             SentMessageRefs.batchInsert(refTokens.indices, shouldReturnGeneratedValues = false) { i ->
                 this[SentMessageRefs.chatRef] = chatRef
@@ -77,6 +113,20 @@ class MessageLogRepository(
                 this[SentMessageRefs.userRef] = crypto.ref(userIds[i].toString())
             }
         }
+    }
+
+    /** Everything needed to rewrite one message: its stored text, its keyboard, and what it names. */
+    fun logged(chatId: Long, messageId: Long): LoggedMessage? = transaction(db) {
+        val chatRef = crypto.ref(chatId.toString())
+        val row = SentMessages.selectAll()
+            .where { (SentMessages.chatRef eq chatRef) and (SentMessages.messageId eq messageId) }
+            .singleOrNull() ?: return@transaction null
+        val p = json.decodeFromString<MessagePayload>(crypto.open(row[SentMessages.payload], "$chatRef:$messageId"))
+        val tokens = SentMessageRefs.selectAll()
+            .where { (SentMessageRefs.chatRef eq chatRef) and (SentMessageRefs.messageId eq messageId) }
+            .map { it[SentMessageRefs.refToken] }
+            .distinct()
+        LoggedMessage(p.chatId, messageId, p.text, p.buttons.map { Button(it.label, it.data) }, tokens)
     }
 
     /** Every message whose buttons named [refToken], newest first, capped at [limit]. */
@@ -156,7 +206,16 @@ class MessageLogRepository(
             .map { it[SentMessages.messageId] }
         var updated = 0
         for (messageId in messageIds) {
-            val resealed = crypto.seal(json.encodeToString(MessagePayload(newChatId)), "$newRef:$messageId")
+            val old = SentMessages.selectAll()
+                .where { (SentMessages.chatRef eq oldRef) and (SentMessages.messageId eq messageId) }
+                .single()
+            val decoded = json.decodeFromString<MessagePayload>(
+                crypto.open(old[SentMessages.payload], "$oldRef:$messageId"),
+            )
+            val resealed = crypto.seal(
+                json.encodeToString(decoded.copy(chatId = newChatId)),
+                "$newRef:$messageId",
+            )
             updated += SentMessages.update({
                 (SentMessages.chatRef eq oldRef) and (SentMessages.messageId eq messageId)
             }) {
