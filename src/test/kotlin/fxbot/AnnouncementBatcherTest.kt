@@ -1,0 +1,220 @@
+package fxbot
+
+import io.kotest.core.spec.style.StringSpec
+import io.kotest.matchers.collections.shouldBeEmpty
+import io.kotest.matchers.collections.shouldHaveSize
+import io.kotest.matchers.shouldBe
+import io.kotest.matchers.string.shouldContain
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.respondError
+import io.ktor.http.HttpStatusCode
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import java.math.BigDecimal
+import java.time.Clock
+import java.time.Duration
+import java.time.Instant
+import java.time.ZoneOffset
+import java.util.concurrent.CopyOnWriteArrayList
+
+private val T0 = Instant.parse("2026-09-06T12:00:00Z")
+private val EURRUB = CurrencyPair("EUR", "RUB")
+
+/**
+ * Everything a batcher needs. `DB_CLOSE_DELAY=-1` keeps an in-memory database alive for
+ * the whole JVM, so the prefix keeps every name in this file to itself.
+ *
+ * The repositories that stamp rows run on T0 while the batcher's own clock runs at [at],
+ * which is what lets a test age a pending row without aging anything else.
+ */
+private class BatchFixture(name: String, at: Instant = T0, val window: Duration = Duration.ofSeconds(60)) {
+    val ds = memDataSource("batch_$name").also { migrate(it) }
+    val crypto = testCrypto()
+    val clock: Clock = Clock.fixed(at, ZoneOffset.UTC)
+    val stamped: Clock = Clock.fixed(T0, ZoneOffset.UTC)
+    val requests = RequestRepository(ds, crypto, stamped)
+    val chats = ChatSettingsRepository(ds, crypto, clock)
+    val people = PersonSettingsRepository(ds, crypto, clock)
+    val giveUps = NameGiveUpRepository(ds, crypto, clock)
+    val pending = PendingAnnouncementRepository(ds, crypto, stamped)
+    val rateRepo = RateRepository(ds).also { it.put("EUR", "RUB", BigDecimal("99.98"), T0) }
+    val client = RateClient(HttpClient(MockEngine { respondError(HttpStatusCode.ServiceUnavailable) }))
+    val rates = RateService(client, rateRepo, clock)
+    val interests = InterestService(requests, chats, people, rates, client, giveUps, pending, MembershipProbe { _, _ -> true })
+
+    // Written from a window coroutine on Dispatchers.Default and read from the test thread.
+    val announcements = CopyOnWriteArrayList<Announcement>()
+    val pings = CopyOnWriteArrayList<Ping>()
+    val sink = AnnouncementSink { a, p -> announcements += a; pings += p }
+    val batcher = build()
+
+    fun chat(id: Long) = apply { chats.save(ChatSettings(id, EURRUB, 20, 7)) }
+
+    /**
+     * A second batcher over the same database and the same keys, built from its own
+     * repository instances: nothing this process held in memory survives into it. This is
+     * what a restart looks like from the announcement's point of view.
+     */
+    fun build(): AnnouncementBatcher {
+        val requests = RequestRepository(ds, crypto, stamped)
+        val chats = ChatSettingsRepository(ds, crypto, clock)
+        val people = PersonSettingsRepository(ds, crypto, clock)
+        val giveUps = NameGiveUpRepository(ds, crypto, clock)
+        val pending = PendingAnnouncementRepository(ds, crypto, stamped)
+        val rates = RateService(client, RateRepository(ds), clock)
+        val interests =
+            InterestService(requests, chats, people, rates, client, giveUps, pending, MembershipProbe { _, _ -> true })
+        return AnnouncementBatcher(
+            requests, chats, pending, interests, rates, sink,
+            CoroutineScope(Dispatchers.Default), clock, window,
+        )
+    }
+
+    /** Waits for the window to fire, and answers how long that took from [since]. */
+    suspend fun awaitAnnouncements(since: Long, timeoutMs: Long = 10_000): Long {
+        val started = System.nanoTime()
+        while ((System.nanoTime() - started) / 1_000_000 < timeoutMs) {
+            if (announcements.isNotEmpty()) return (System.nanoTime() - since) / 1_000_000
+            delay(5)
+        }
+        error("the window never fired within ${timeoutMs}ms")
+    }
+}
+
+class AnnouncementBatcherTest : StringSpec({
+    "everything stated inside one window is one message per chat" {
+        val f = BatchFixture("onepermessage").chat(-100L).chat(-200L)
+        f.interests.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
+        f.interests.state(1L, "bob", Verb.SELL, "20", "EUR", "RUB")
+        f.batcher.flush(1L)
+        f.announcements shouldHaveSize 2
+        f.announcements.map { it.chatId }.toSet() shouldBe setOf(-100L, -200L)
+        // Each message carries every interest it covers, and every ref token it names.
+        f.announcements.first().text shouldContain "10"
+        f.announcements.first().text shouldContain "20"
+        f.announcements.first().refTokens shouldHaveSize 2
+    }
+
+    "the message says the bot is showing these on someone's behalf" {
+        val f = BatchFixture("onbehalf").chat(-100L)
+        f.interests.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
+        f.batcher.flush(1L)
+        f.announcements.single().text shouldContain "on @bob's behalf"
+    }
+
+    "a flush empties the queue, so a second flush says nothing" {
+        val f = BatchFixture("flushempties").chat(-100L)
+        f.interests.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
+        f.batcher.flush(1L)
+        f.announcements.clear()
+        f.batcher.flush(1L)
+        f.announcements.shouldBeEmpty()
+        f.pending.all().shouldBeEmpty()
+    }
+
+    "statements inside the window are held, and then go out together" {
+        val f = BatchFixture("holds", window = Duration.ofMillis(400)).chat(-100L)
+        f.interests.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
+        val opened = System.nanoTime()
+        f.batcher.enqueueAnnouncement(1L)
+        delay(100)
+        f.interests.state(1L, "bob", Verb.SELL, "20", "EUR", "RUB")
+        f.batcher.enqueueAnnouncement(1L)
+        delay(100)
+        // Still well inside the window: neither statement has been sent on its own.
+        f.announcements.shouldBeEmpty()
+        f.awaitAnnouncements(opened)
+        f.announcements shouldHaveSize 1
+        f.announcements.single().refTokens shouldHaveSize 2
+    }
+
+    "the window is a tumbling one: a second statement joins the batch without extending it" {
+        val f = BatchFixture("tumbling", window = Duration.ofMillis(400)).chat(-100L)
+        f.interests.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
+        val opened = System.nanoTime()
+        f.batcher.enqueueAnnouncement(1L)
+        delay(250)
+        f.interests.state(1L, "bob", Verb.SELL, "20", "EUR", "RUB")
+        f.batcher.enqueueAnnouncement(1L) // must NOT push the deadline out
+        val elapsedMs = f.awaitAnnouncements(opened)
+        // A window that slid would have been reset at 250ms and could not fire before 650ms.
+        (elapsedMs < 650) shouldBe true
+        f.announcements shouldHaveSize 1
+        f.announcements.single().refTokens shouldHaveSize 2
+    }
+
+    "one recipient gets one ping however many counterparties appeared at once" {
+        val f = BatchFixture("onepingeach")
+        f.interests.state(1L, "bob", Verb.SELL, "1000", "EUR", "RUB")
+        val a = f.interests.state(2L, "ann", Verb.BUY, "1000", "EUR", "RUB") as InterestResult.Stated
+        val c = f.interests.state(3L, "cat", Verb.BUY, "1000", "EUR", "RUB") as InterestResult.Stated
+        f.batcher.enqueueAppeared(a.appeared)
+        f.batcher.enqueueAppeared(c.appeared)
+        f.batcher.flushAppeared(1L)
+        f.pings shouldHaveSize 1
+        f.pings.single().userId shouldBe 1L
+        // One message, and both of them are in it.
+        val text = f.pings.single().text
+        text shouldContain "sell 1,000 EUR"
+        Regex("buy 1,000 EUR").findAll(text).count() shouldBe 2
+        f.pings.single().buttons shouldHaveSize 4
+        // Side and stated amount only — never a handle, a name, a user id, or a chat.
+        text.contains("ann") shouldBe false
+        text.contains("cat") shouldBe false
+    }
+
+    "an announcement is re-rendered from live state, not replayed" {
+        val f = BatchFixture("rerender").chat(-100L)
+        val r = f.interests.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB") as InterestResult.Stated
+        // A counterparty turns up in that chat between the statement and the flush.
+        f.requests.create(-100L, 2L, "ann", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7)
+        f.batcher.flush(1L)
+        f.announcements.single().text shouldContain "@ann"
+        f.announcements.single().refTokens shouldHaveSize 2
+        r.found.shouldBeEmpty() // nothing was known at statement time
+    }
+
+    "an announcement whose showings have all closed is dropped" {
+        val f = BatchFixture("dropclosed").chat(-100L)
+        val r = f.interests.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB") as InterestResult.Stated
+        f.requests.closeInterest(r.interest.interestToken!!, RequestState.CANCELLED)
+        f.batcher.flush(1L)
+        f.announcements.shouldBeEmpty()
+        f.pending.all().shouldBeEmpty()
+    }
+
+    "an announcement older than an hour is dropped, and the showing keeps working silently" {
+        val f = BatchFixture("dropstale", at = T0.plusSeconds(3_601)).chat(-100L)
+        f.interests.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
+        f.batcher.flushAllOnStartup()
+        f.announcements.shouldBeEmpty()
+        f.pending.all().shouldBeEmpty()
+        f.requests.resting(-100L) shouldHaveSize 1
+    }
+
+    "an announcement exactly an hour old is still sent" {
+        val f = BatchFixture("keepatcutoff", at = T0.plusSeconds(3_600)).chat(-100L)
+        f.interests.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
+        f.batcher.flushAllOnStartup()
+        f.announcements shouldHaveSize 1
+        f.pending.all().shouldBeEmpty()
+    }
+
+    "a restart inside the window still tells every chat" {
+        val f = BatchFixture("restart").chat(-100L).chat(-200L)
+        f.interests.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
+        f.interests.state(2L, "ann", Verb.BUY, "10", "EUR", "RUB")
+        // A batcher that has never seen either statement, exactly as one would be after a restart.
+        f.build().flushAllOnStartup()
+        f.announcements shouldHaveSize 4 // two people, two chats each
+        f.announcements.map { it.chatId }.toSet() shouldBe setOf(-100L, -200L)
+        // One message per chat PER PERSON: neither person's message is attributed to the other.
+        for (chatId in listOf(-100L, -200L)) {
+            f.announcements.count { it.chatId == chatId && it.text.contains("on @bob's behalf") } shouldBe 1
+            f.announcements.count { it.chatId == chatId && it.text.contains("on @ann's behalf") } shouldBe 1
+        }
+        f.pending.all().shouldBeEmpty()
+    }
+})
