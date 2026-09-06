@@ -53,7 +53,9 @@ class PersonSettingsRepositoryTest : StringSpec({
     "forgetting drops the row" {
         val (r, _) = people("persondelete")
         r.save(PersonSettings(7L, 5))
+        r.save(PersonSettings(9L, 15))
         r.delete(7L)
         r.get(7L).tolerancePct shouldBe 20
+        r.get(9L).tolerancePct shouldBe 15
     }
 })
