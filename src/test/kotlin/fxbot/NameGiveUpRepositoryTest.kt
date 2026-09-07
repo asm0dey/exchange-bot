@@ -48,12 +48,47 @@ class NameGiveUpRepositoryTest : StringSpec({
         val b = requests.create(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i2")
         g.record(a.refToken, b.refToken, 1L, Stance.OFFERED)
         g.record("gone-1", "gone-2", 3L, Stance.OFFERED) // neither request exists at all
-        g.dropClosed() shouldBe 1
+        // Nobody is named: the row whose own request is gone has nobody left to tell.
+        g.dropClosed() shouldBe emptyList<Long>()
         g.stanceOf(a.refToken, b.refToken) shouldBe Stance.OFFERED
 
         requests.closeInterest("i2", RequestState.DONE)
-        g.dropClosed() shouldBe 1
+        // The peer's showing closed while the offerer's own is still resting, so the
+        // offerer is named — read out of their OWN request's sealed payload, since
+        // `user_ref` is a one-way MAC and cannot be reversed.
+        g.dropClosed() shouldBe listOf(1L)
         g.stanceOf(a.refToken, b.refToken) shouldBe null
+    }
+    "when the offerer's own showing closed too there is nobody to tell" {
+        val (g, requests) = giveUps("dropclosedsilent")
+        val a = requests.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
+        val b = requests.create(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i2")
+        g.record(a.refToken, b.refToken, 1L, Stance.OFFERED)
+        requests.closeInterest("i1", RequestState.CANCELLED)
+        requests.closeInterest("i2", RequestState.DONE)
+        g.dropClosed() shouldBe emptyList<Long>()
+        g.stanceOf(a.refToken, b.refToken) shouldBe null
+    }
+    "a decline that dies with its requests tells nobody" {
+        val (g, requests) = giveUps("dropclosedeclined")
+        val a = requests.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
+        val b = requests.create(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i2")
+        g.record(a.refToken, b.refToken, 1L, Stance.DECLINED)
+        requests.closeInterest("i2", RequestState.DONE)
+        // Their own "no" is what ended it; there is nothing they are still waiting on.
+        g.dropClosed() shouldBe emptyList<Long>()
+        g.stanceOf(a.refToken, b.refToken) shouldBe null
+    }
+    "one person is told once however many of their agreements died at the same time" {
+        val (g, requests) = giveUps("dropcloseddedupe")
+        val a = requests.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
+        val b = requests.create(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i2")
+        val c = requests.create(NO_NAMES_CHAT_ID, 3L, "cat", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i3")
+        g.record(a.refToken, b.refToken, 1L, Stance.OFFERED)
+        g.record(a.refToken, c.refToken, 1L, Stance.OFFERED)
+        requests.closeInterest("i2", RequestState.DONE)
+        requests.closeInterest("i3", RequestState.DONE)
+        g.dropClosed() shouldBe listOf(1L)
     }
     "forgetting drops the rows the person wrote" {
         val (g, _) = giveUps("giveupforget")

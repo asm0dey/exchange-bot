@@ -83,11 +83,17 @@ private class CommandFixture(name: String) {
     val crypto = testCrypto()
     val requests = RequestRepository(ds, crypto)
     val log = MessageLogRepository(ds, crypto)
+    val people = PersonSettingsRepository(ds, crypto)
+    val giveUps = NameGiveUpRepository(ds, crypto)
+    val pending = PendingAnnouncementRepository(ds, crypto)
 
     init {
         Registry.requests = requests
         Registry.messages = log
-        Registry.forget = ForgetService(requests, log)
+        Registry.people = people
+        Registry.giveUps = giveUps
+        Registry.pending = pending
+        Registry.forget = ForgetService(requests, log, people, giveUps, pending)
     }
 }
 
@@ -129,15 +135,79 @@ class ForgetCommandTest : StringSpec({
         sent.last().body shouldContain "Erased 1"
     }
 
-    "plain /forget from a private chat is refused by the ordinary group-only guard" {
-        val f = CommandFixture("cmd-private-plain")
-        f.requests.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7)
+    "plain /forget in a private chat erases the no-names side and everything personal" {
+        val f = CommandFixture("privforget")
+        f.requests.create(NO_NAMES_CHAT_ID, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
+        f.requests.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
+        f.people.save(PersonSettings(1L, 40))
+        f.giveUps.record("tokA", "tokB", 1L, Stance.OFFERED)
+        f.pending.add(-100L, "i1", 1L)
+        // Somebody else's rows, in the same tables, which a truncation would take with it.
+        f.people.save(PersonSettings(2L, 40))
+        f.giveUps.record("tokC", "tokD", 2L, Stance.OFFERED)
+        f.pending.add(-100L, "i2", 2L)
         val sent = mutableListOf<Sent>()
         forget(updateFor(555L, ChatType.Private, "/forget"), recordingBot(sent))
 
-        f.requests.resting(-100L) shouldHaveSize 1 // untouched: inGroupOrExplain rejected before any plan ran
-        sent shouldHaveSize 1
-        sent.single().body shouldContain "group chat"
+        f.requests.resting(NO_NAMES_CHAT_ID) shouldHaveSize 0
+        f.people.get(1L).tolerancePct shouldBe 20
+        f.giveUps.stanceOf("tokA", "tokB") shouldBe null
+        f.pending.allFor(1L) shouldHaveSize 0
+        // A showing in a group is a record in that group; plain private /forget does not reach it.
+        f.requests.resting(-100L) shouldHaveSize 1
+        // Everything belonging to the other person survives.
+        f.people.get(2L).tolerancePct shouldBe 40
+        f.giveUps.stanceOf("tokC", "tokD") shouldBe Stance.OFFERED
+        f.pending.allFor(2L) shouldHaveSize 1
+    }
+    "plain /forget in a private chat redacts a give-up message that named somebody else" {
+        val f = CommandFixture("privforgetredact")
+        // What a completed give-up leaves behind: a message in the person's OWN private
+        // chat, naming them and the counterparty. It is recorded under the private chat
+        // id, never under NO_NAMES_CHAT_ID, so a plan scoped to the sentinel misses it.
+        f.log.record(555L, 10L, listOf("tokA", "tokB"), listOf(1L, 2L))
+        // Named only them, in the same private chat: deleted outright, not redacted.
+        f.log.record(555L, 11L, listOf("tokA"), listOf(1L))
+        // A group message must survive a plain private /forget untouched.
+        f.log.record(-100L, 12L, listOf("tokA", "tokB"), listOf(1L, 2L))
+        val sent = mutableListOf<Sent>()
+        forget(updateFor(555L, ChatType.Private, "/forget"), recordingBot(sent))
+
+        sent.filter { it.path == "editMessageText" }.map { it.body } shouldHaveSize 1
+        sent.single { it.path == "editMessageText" }.body shouldContain "\"message_id\":10"
+        sent.single { it.path == "deleteMessage" }.body shouldContain "\"message_id\":11"
+        // The group's copy was never reached, so message 12 is in neither list.
+        sent.none { it.body.contains("\"message_id\":12") } shouldBe true
+        f.log.messagesForUser(1L, -100L) shouldHaveSize 1
+    }
+    "/forget all reaches the groups too, and still erases everything personal" {
+        val f = CommandFixture("allforget")
+        f.requests.create(NO_NAMES_CHAT_ID, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
+        f.requests.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
+        f.people.save(PersonSettings(1L, 40))
+        f.people.save(PersonSettings(2L, 40))
+        val sent = mutableListOf<Sent>()
+        forget(updateFor(555L, ChatType.Private, "/forget all"), recordingBot(sent))
+        f.requests.resting(NO_NAMES_CHAT_ID) shouldHaveSize 0
+        f.requests.resting(-100L) shouldHaveSize 0
+        f.people.get(1L).tolerancePct shouldBe 20
+        f.people.get(2L).tolerancePct shouldBe 40
+    }
+    "/forget in a group leaves the person's own settings and no-names side alone" {
+        val f = CommandFixture("groupforgetscope")
+        f.requests.create(NO_NAMES_CHAT_ID, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
+        f.requests.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
+        f.people.save(PersonSettings(1L, 40))
+        f.giveUps.record("tokA", "tokB", 1L, Stance.OFFERED)
+        f.pending.add(-100L, "i1", 1L)
+        val sent = mutableListOf<Sent>()
+        forget(updateFor(-100L, ChatType.Group, "/forget"), recordingBot(sent))
+        f.requests.resting(-100L) shouldHaveSize 0
+        f.requests.resting(NO_NAMES_CHAT_ID) shouldHaveSize 1
+        f.people.get(1L).tolerancePct shouldBe 40
+        // `/forget` typed in a group means that group alone: nothing personal is touched.
+        f.giveUps.stanceOf("tokA", "tokB") shouldBe Stance.OFFERED
+        f.pending.allFor(1L) shouldHaveSize 1
     }
 
     "the confirmation counts only what Telegram actually tidied, not every attempt" {

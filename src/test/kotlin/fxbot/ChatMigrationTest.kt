@@ -16,18 +16,23 @@ class ChatMigrationTest : StringSpec({
         val requests = RequestRepository(ds, crypto, db = db)
         val settings = ChatSettingsRepository(ds, crypto, db = db)
         val log = MessageLogRepository(ds, crypto, db = db)
+        val pending = PendingAnnouncementRepository(ds, crypto, db = db)
 
-        requests.create(-100L, 1L, "alice", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7)
+        requests.create(-100L, 1L, "alice", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
         settings.save(ChatSettings(-100L, CurrencyPair("USD", "GBP"), 5, 30))
         log.record(-100L, 10L, listOf("tokA"), listOf(1L))
+        pending.add(-100L, "i1", 1L)
 
-        ChatMigrationService(requests, settings, log, db).migrate(-100L, -1001L) shouldBe 1
+        ChatMigrationService(requests, settings, log, pending, db).migrate(-100L, -1001L) shouldBe 1
 
         val moved = requests.resting(-1001L)
         moved shouldHaveSize 1
         moved[0].username shouldBe "alice"
         settings.get(-1001L).pair shouldBe CurrencyPair("USD", "GBP")
         log.messagesForToken("tokA", 10).first().chatId shouldBe -1001L
+        // An upgrade inside the 60-second batching window must not orphan the row that
+        // says this chat is still owed the announcement.
+        pending.isFor(pending.all().single(), -1001L) shouldBe true
         requests.resting(-100L) shouldHaveSize 0
     }
 })

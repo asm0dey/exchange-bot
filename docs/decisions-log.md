@@ -631,3 +631,11 @@ glitch only appears on an already-mistyped id. Cost if wrong: one odd-looking er
 
 FINAL STATE: 65 commits, 152 tests, 29 main sources, 23 test sources. Whole-branch review
 clean after one fix wave, its two introduced defects fixed and independently verified.
+
+---
+
+The private-interests branch continued from here: interests stated privately, worked on a
+no-names basis, with identities passing only by mutual give-up. Its reasoning lives in
+`docs/adr/0006-size-tolerance-is-a-per-side-residual.md`,
+`docs/adr/0007-no-names-working-and-mutual-name-give-up.md` and the fourteen-task plan at
+`docs/superpowers/plans/2026-09-06-private-interests.md`.

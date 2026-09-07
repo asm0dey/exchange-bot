@@ -17,21 +17,26 @@ class ChatMigrationService(
     private val requests: RequestRepository,
     private val settings: ChatSettingsRepository,
     private val log: MessageLogRepository,
+    private val pending: PendingAnnouncementRepository,
     private val db: Database,
 ) {
     /**
-     * All three rewrites are one transaction. Exposed leaves `useNestedTransactions`
+     * All four rewrites are one transaction. Exposed leaves `useNestedTransactions`
      * false by default and this project's `connectExposed` does not set it, so each
      * repository's own `transaction(db)` joins this outer one and defers its commit
      * to it — the migration is all-or-nothing. Without that, a crash between the
      * calls would strand a chat's settings and message record under a chat ref
      * nothing resolves any more, which is the silent split-state this task exists
      * to prevent.
+     *
+     * `name_give_up` is the only table with nothing to do here: it is keyed on ref
+     * tokens and a person, and carries no chat at all.
      */
     fun migrate(oldChatId: Long, newChatId: Long): Int = transaction(db) {
         val moved = requests.rewriteChatRef(oldChatId, newChatId)
         settings.rewriteChatRef(oldChatId, newChatId)
         log.rewriteChatRef(oldChatId, newChatId)
+        pending.rewriteChatRef(oldChatId, newChatId)
         moved
     }
 }

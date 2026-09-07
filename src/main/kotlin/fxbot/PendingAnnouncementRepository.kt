@@ -66,6 +66,41 @@ class PendingAnnouncementRepository(
         PendingAnnouncements.deleteWhere { PendingAnnouncements.userRef eq userRef }
     }
 
+    /**
+     * A supergroup upgrade changes the chat id, so the ref this row is keyed on stops
+     * resolving. Without this rewrite an upgrade inside the batching window orphans the
+     * row and that chat is never told — the showing keeps resting and matching, so it
+     * degrades quietly, which is exactly why it needs pinning down.
+     *
+     * Re-keyed rather than updated in place: `chat_ref` is half the primary key, and the
+     * new chat could already owe an announcement about the same interest. The `userRef`
+     * and `createdAt` columns are carried across verbatim — the person and the age of the
+     * row are not what changed.
+     */
+    fun rewriteChatRef(oldChatId: Long, newChatId: Long): Int = transaction(db) {
+        val oldRef = crypto.ref(oldChatId.toString())
+        val newRef = crypto.ref(newChatId.toString())
+        val rows = PendingAnnouncements.selectAll()
+            .where { PendingAnnouncements.chatRef eq oldRef }
+            .map {
+                Triple(
+                    it[PendingAnnouncements.interestToken],
+                    it[PendingAnnouncements.userRef],
+                    it[PendingAnnouncements.createdAt],
+                )
+            }
+        PendingAnnouncements.deleteWhere { PendingAnnouncements.chatRef eq oldRef }
+        for ((token, owner, at) in rows) {
+            PendingAnnouncements.upsert {
+                it[chatRef] = newRef
+                it[interestToken] = token
+                it[userRef] = owner
+                it[createdAt] = at
+            }
+        }
+        rows.size
+    }
+
     /** An hour-late "someone just stated this" is noise, and the showing works silently regardless. */
     fun dropOlderThan(cutoff: Instant): Int = transaction(db) {
         PendingAnnouncements.deleteWhere { createdAt less cutoff }

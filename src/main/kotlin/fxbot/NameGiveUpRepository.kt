@@ -32,6 +32,16 @@ class NameGiveUpRepository(
     private val clock: Clock = Clock.systemUTC(),
     // connectExposed(ds) is memoized per DataSource; see RequestRepository's constructor comment.
     private val db: Database = connectExposed(ds),
+    /**
+     * How [dropClosed] gets back to a Telegram id so the person waiting can be told. The
+     * `user_ref` on this table is a one-way MAC and can never be reversed; the offerer's
+     * OWN request carries their id inside its sealed payload, and that is the only
+     * readable copy. Defaulted so every construction site stays a repository over a
+     * DataSource, and shares the memoized [db] rather than registering a second one.
+     * Only ever READ through — a second [RequestRepository] instance has its own
+     * short-id allocation lock, which would not be a guard if anything here created rows.
+     */
+    private val requests: RequestRepository = RequestRepository(ds, crypto, clock, db),
 ) {
     fun record(refToken: String, peerRefToken: String, userId: Long, stance: Stance): Unit = transaction(db) {
         NameGiveUps.upsert {
@@ -67,20 +77,35 @@ class NameGiveUpRepository(
      * has nothing left to consent about. Read-then-delete rather than a correlated
      * subquery — this is a small table on a single-process bot (ADR 0004), and the plain
      * form is the one that is obviously right.
+     *
+     * Returns the people who should be told, each once: somebody who agreed to pass names
+     * and is still waiting for the answer, whose peer's request closed underneath them.
+     * They get their id out of their OWN still-resting request's sealed payload — the
+     * `user_ref` column here is a one-way MAC and is never a route back to a person.
+     *
+     * A row whose OWN request has gone too is dropped silently, and so is a decline:
+     * in the first case there is nobody left to tell and their interest is closed anyway,
+     * and in the second the person's own "no" is what ended it — they are not waiting.
      */
-    fun dropClosed(): Int = transaction(db) {
+    fun dropClosed(): List<Long> = transaction(db) {
         val live = Requests.selectAll()
             .where { Requests.state eq RequestState.OPEN.name }
             .map { it[Requests.refToken] }
             .toSet()
         val dead = NameGiveUps.selectAll()
-            .map { it[NameGiveUps.refToken] to it[NameGiveUps.peerRefToken] }
-            .filter { (mine, theirs) -> mine !in live || theirs !in live }
-        for ((mine, theirs) in dead) {
+            .map {
+                Triple(it[NameGiveUps.refToken], it[NameGiveUps.peerRefToken], Stance.valueOf(it[NameGiveUps.stance]))
+            }
+            .filter { (mine, theirs, _) -> mine !in live || theirs !in live }
+        val bereaved = dead
+            .filter { (mine, theirs, stance) -> stance == Stance.OFFERED && mine in live && theirs !in live }
+            .mapNotNull { (mine, _, _) -> requests.byRefToken(mine)?.userId }
+            .distinct()
+        for ((mine, theirs, _) in dead) {
             NameGiveUps.deleteWhere {
                 (NameGiveUps.refToken eq mine) and (NameGiveUps.peerRefToken eq theirs)
             }
         }
-        dead.size
+        bereaved
     }
 }

@@ -1,7 +1,8 @@
 # exchange-bot
 
-A Telegram bot that introduces people in the same group chat who want opposite
-sides of the same currency exchange. It passes names and gets out of the way —
+A Telegram bot that introduces people who want opposite sides of the same
+currency exchange — in a group chat, or privately with no names either way
+until both of you agree to pass them. It passes names and gets out of the way —
 it never holds money, quotes a price, or settles anything.
 
 ## Setup
@@ -28,10 +29,28 @@ it never holds money, quotes a price, or settles anything.
 which currency you hand over. Selling euros and buying roubles are the same
 side, so they never match each other.
 
-Send `/forget all` to the bot in a private chat to erase your data across
-every group it shares with you, not just the current one.
+Admins: `/pair EUR RUB`, `/tolerance 20`, `/tif 7`, and `/fanout on` to let
+interests stated privately be shown in this chat.
 
-Admins: `/pair EUR RUB`, `/tolerance 20`, `/tif 7`.
+## Privately
+
+Say it once to the bot and it is shown in every chat you share with it that has
+fan-out on, and worked bot-wide against people you share no chat with at all.
+Nobody's name passes either way until you both press to give it up.
+
+    /sell 10 EUR for RUB   you're handing over 10 EUR, wanting RUB
+    /buy 10 RUB for EUR    the same thing, said from the other end
+    /tolerance 20          your own size tolerance, 1-100
+    /status                your interests and where each still rests
+    /cancel a1             withdraw one, every showing with it
+    /done a1               you two swapped
+    /settings              your size tolerance
+    /forget                erase your own side and everything personal
+
+`/forget` privately erases your privately stated interests, your size
+tolerance, your name give-ups and any messages here — but not what is showing
+in a group, because that is a record in that group. `/forget all` reaches those
+too, in every group the bot shares with you.
 
 ## Runtime
 

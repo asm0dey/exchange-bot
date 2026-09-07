@@ -65,6 +65,20 @@ class PendingAnnouncementRepositoryTest : StringSpec({
         p.dropClosed() shouldBe 1
         p.all() shouldHaveSize 0
     }
+    "a supergroup upgrade takes the pending announcements with it" {
+        val (p, _) = pendings("pendmigrate")
+        p.add(-100L, "i1", 1L)
+        p.add(-200L, "i2", 2L)
+        p.rewriteChatRef(-100L, -1001L) shouldBe 1
+        val moved = p.all().single { it.interestToken == "i1" }
+        p.isFor(moved, -1001L) shouldBe true
+        p.isFor(moved, -100L) shouldBe false
+        moved.createdAt shouldBe T0
+        // The person the row belongs to is unchanged by a chat rewrite.
+        p.allFor(1L) shouldHaveSize 1
+        // The other chat's row was never touched.
+        p.isFor(p.all().single { it.interestToken == "i2" }, -200L) shouldBe true
+    }
     "forgetting drops the person's pending announcements" {
         val (p, _) = pendings("pendforget")
         p.add(-100L, "i1", 1L)

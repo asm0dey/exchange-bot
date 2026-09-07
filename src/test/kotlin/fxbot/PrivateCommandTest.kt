@@ -97,7 +97,7 @@ private class PrivateFixture(name: String) {
         Registry.service = RequestService(requests, chats, rates)
         Registry.lifecycle = LifecycleService(requests, chats, rates)
         Registry.buttons = ButtonService(messages, requests)
-        Registry.forget = ForgetService(requests, messages)
+        Registry.forget = ForgetService(requests, messages, people, giveUps, pending)
         Registry.admin = AdminService(chats, client)
         Registry.interests = InterestService(
             requests, chats, people, rates, client, giveUps, pending,

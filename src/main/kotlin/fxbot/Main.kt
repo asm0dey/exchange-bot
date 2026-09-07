@@ -45,19 +45,16 @@ suspend fun main(): Unit = coroutineScope {
     Registry.lifecycle = LifecycleService(Registry.requests, Registry.settings, Registry.rates)
     Registry.messages = MessageLogRepository(ds, crypto, db = db)
     Registry.buttons = ButtonService(Registry.messages, Registry.requests)
-    Registry.forget = ForgetService(Registry.requests, Registry.messages)
     Registry.admin = AdminService(Registry.settings, rateClient)
-    Registry.migration = ChatMigrationService(Registry.requests, Registry.settings, Registry.messages, db)
     Registry.people = PersonSettingsRepository(ds, crypto, db = db)
     Registry.giveUps = NameGiveUpRepository(ds, crypto, db = db)
     Registry.pending = PendingAnnouncementRepository(ds, crypto, db = db)
-
-    val housekeeping = Housekeeping(Registry.requests, Registry.settings, Registry.rates, Registry.messages)
-    startScheduler(ds, housekeeping)
-    // Warm the rate cache without waiting a day for the scheduler's first run — but never
-    // gate startup on it. A slow feed must not stop the bot from listening, and ktor
-    // delivers a request timeout as a CancellationException, which RateClient rethrows.
-    launch { runCatching { housekeeping.refreshRates() } }
+    Registry.forget = ForgetService(
+        Registry.requests, Registry.messages, Registry.people, Registry.giveUps, Registry.pending,
+    )
+    Registry.migration = ChatMigrationService(
+        Registry.requests, Registry.settings, Registry.messages, Registry.pending, db,
+    )
 
     val bot = TelegramBot(cfg.botToken) {
         // Without this the parser never breaks on a space: "/sell 1000 EUR" is taken as
@@ -85,6 +82,21 @@ suspend fun main(): Unit = coroutineScope {
         Registry.requests, Registry.settings, Registry.pending, Registry.interests, Registry.rates,
         telegramSink(bot), this,
     )
+
+    // Housekeeping is bot-dependent too: a lapsed showing's messages have to be rewritten,
+    // and somebody whose give-up died with the other side's interest has to be told.
+    val housekeeping = Housekeeping(
+        Registry.requests, Registry.settings, Registry.rates, Registry.messages,
+        Registry.giveUps, Registry.pending,
+        onClosed = { tokens -> Registry.buttons.refreshFor(tokens, bot) },
+        onGiveUpDied = telegramGiveUpDied(bot),
+    )
+    startScheduler(ds, housekeeping)
+    // Warm the rate cache without waiting a day for the scheduler's first run — but never
+    // gate startup on it. A slow feed must not stop the bot from listening, and ktor
+    // delivers a request timeout as a CancellationException, which RateClient rethrows.
+    launch { runCatching { housekeeping.refreshRates() } }
+
     // A revoked, mistyped, or whitespace-mangled token is the overwhelmingly common startup
     // failure, and it must surface here, where an operator watching a deployment sees it —
     // not later, silently, inside the polling loop below. See `validateBotToken`'s doc comment

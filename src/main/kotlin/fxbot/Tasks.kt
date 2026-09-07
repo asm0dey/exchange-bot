@@ -17,18 +17,39 @@ class Housekeeping(
     private val settings: ChatSettingsRepository,
     private val rates: RateService,
     private val log: MessageLogRepository,
+    private val giveUps: NameGiveUpRepository,
+    private val pending: PendingAnnouncementRepository,
     private val clock: Clock = Clock.systemUTC(),
+    /** Hands the lapsed tokens to the message-editing pass. Defaulted so tests need no bot. */
+    private val onClosed: suspend (List<String>) -> Unit = {},
+    /** Tells whoever was still waiting on a give-up whose peer request closed. Names nobody. */
+    private val onGiveUpDied: suspend (List<Long>) -> Unit = {},
 ) {
-    /** Lapses what is past its time in force, and prunes the message record. Counts only —
-     *  no chat/request identity belongs in this log line. */
-    fun sweep(): Int {
+    /**
+     * Lapses what is past its time in force, prunes the message record, and drops the rows
+     * that only made sense while their requests were resting. Counts and fixed labels only —
+     * no chat, person or request identity belongs in this log line.
+     *
+     * Order matters: the lapsing runs first, so the two `dropClosed` passes below see the
+     * showings that just expired as closed and clean up after them in the same sweep.
+     */
+    suspend fun sweep(): Int {
         val expired = requests.expireDue(clock.instant())
         val pruned = log.prune(clock.instant().minus(RETENTION))
-        logger.info("sweep: expired=${expired.size} pruned=$pruned")
+        val bereaved = giveUps.dropClosed()
+        val stalePending = pending.dropClosed() + pending.dropOlderThan(clock.instant().minus(PENDING_MAX_AGE))
+        logger.info("sweep: expired=${expired.size} pruned=$pruned giveUpsTold=${bereaved.size} pending=$stalePending")
+        if (expired.isNotEmpty()) onClosed(expired)
+        if (bereaved.isNotEmpty()) onGiveUpDied(bereaved)
         return expired.size
     }
 
-    suspend fun refreshRates() = rates.refresh(settings.allPairs())
+    /**
+     * Chat pairs AND the pairs resting on a no-names basis — a pair no chat uses would
+     * otherwise never get a reference rate. The feed is per base currency, so the cost is
+     * one GET per distinct base per day, not per pair.
+     */
+    suspend fun refreshRates() = rates.refresh(settings.allPairs() + requests.noNamesPairs())
 }
 
 /**
@@ -40,7 +61,7 @@ class Housekeeping(
  */
 fun startScheduler(ds: DataSource, housekeeping: Housekeeping) {
     val sweep = Tasks.recurring("sweep", Schedules.fixedDelay(Duration.ofHours(24)))
-        .execute { _, _ -> housekeeping.sweep() }
+        .execute { _, _ -> runBlocking { housekeeping.sweep() } }
     val refresh = Tasks.recurring("refresh-rates", Schedules.fixedDelay(Duration.ofHours(24)))
         .execute { _, _ -> runBlocking { housekeeping.refreshRates() } }
 

@@ -154,6 +154,28 @@ fun telegramNames(bot: TelegramBot) = NameLookup { userId ->
 }
 
 /**
+ * Deliberately says nothing about the other person — not their handle, not their side,
+ * not what they were interested in. Somebody who agreed to pass names and never got an
+ * answer has learnt nothing about who was on the other end, and a message explaining
+ * that the agreement died must not be the thing that tells them.
+ */
+private const val GIVE_UP_DIED =
+    "You agreed to pass names on one of your interests, but the other side closed theirs " +
+        "before answering, so nothing was passed on. Your own interest is still waiting."
+
+/**
+ * Tells each person whose agreement to pass names died with the other side's interest.
+ * A private chat's id IS the person's user id, so this addresses them directly.
+ *
+ * Not retried and not checked: the row is already gone by the time this runs, so there is
+ * nothing left to say a second time, and a person who has blocked the bot is unreachable
+ * either way.
+ */
+fun telegramGiveUpDied(bot: TelegramBot): suspend (List<Long>) -> Unit = { userIds ->
+    for (userId in userIds) message { GIVE_UP_DIED }.send(userId, bot)
+}
+
+/**
  * Telegram refused a send, so the chat was NOT told. Carries no chat, no person and no
  * text: [AnnouncementBatcher] logs the class name of whatever escapes a flush, and that
  * class name is the whole of what this needs to say.
