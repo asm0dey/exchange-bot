@@ -1,5 +1,6 @@
 package fxbot
 
+import eu.vendeli.tgbot.TelegramBot
 import eu.vendeli.tgbot.types.User
 import eu.vendeli.tgbot.types.chat.Chat
 import eu.vendeli.tgbot.types.chat.ChatType
@@ -8,6 +9,7 @@ import eu.vendeli.tgbot.types.common.Update
 import eu.vendeli.tgbot.types.component.CallbackQueryUpdate
 import eu.vendeli.tgbot.types.component.MessageUpdate
 import eu.vendeli.tgbot.types.msg.Message
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContain
@@ -24,6 +26,7 @@ import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.content.OutgoingContent
 import io.ktor.http.headersOf
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -129,6 +132,64 @@ private fun callbackFrom(userId: Long, chatId: Long = DM): CallbackQueryUpdate {
     val message = Message(messageId = 1L, date = KtInstant.fromEpochSeconds(0), chat = chat, from = user)
     val query = CallbackQuery(id = "q1", from = user, message = message, chatInstance = "ci")
     return CallbackQueryUpdate(updateId = 1, origin = Update(updateId = 1), callbackQuery = query)
+}
+
+/**
+ * A bot whose every call Telegram REFUSES — an `ok:false` body with an HTTP error, which is
+ * how a real refusal looks on the wire (`throwExOnActionsFailure` is false, so nothing
+ * throws). `TestBot.recordingBot` answers everything as a success on purpose, so a test
+ * about failure needs its own engine; its doc says exactly that.
+ */
+private fun refusingBot(sink: MutableList<Call>): TelegramBot {
+    val client = HttpClient(MockEngine { request ->
+        val bytes = (request.body as? OutgoingContent.ByteArrayContent)?.bytes() ?: ByteArray(0)
+        sink += Call(request.url.encodedPath.substringAfterLast('/'), bytes.decodeToString())
+        respond(
+            """{"ok":false,"error_code":403,"description":"Forbidden: bot was kicked from the group chat"}""",
+            HttpStatusCode.Forbidden,
+            headersOf(HttpHeaders.ContentType, "application/json"),
+        )
+    })
+    return TelegramBot(token = "000:fake-token-for-tests", httpClient = client)
+}
+
+/** A bot that answers every call with [body], for pinning an adapter's decoding. */
+private fun botReplying(body: String): TelegramBot = TelegramBot(
+    token = "000:fake-token-for-tests",
+    httpClient = HttpClient(MockEngine {
+        respond(body, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
+    }),
+)
+
+/** A bot whose transport blows up before Telegram is ever reached. */
+private fun throwingBot(): TelegramBot = TelegramBot(
+    token = "000:fake-token-for-tests",
+    httpClient = HttpClient(MockEngine { throw java.io.IOException("connection refused") }),
+)
+
+/** A `getChatMember` success carrying [status], with only the fields that variant requires. */
+private fun memberResult(status: String): String = when (status) {
+    "creator" -> """{"ok":true,"result":{"status":"creator","user":{"id":1,"is_bot":false,"first_name":"B"},"is_anonymous":false}}"""
+    "administrator" -> """{"ok":true,"result":{"status":"administrator","user":{"id":1,"is_bot":false,"first_name":"B"},""" +
+        """"can_be_edited":false,"is_anonymous":false,"can_manage_chat":true,"can_delete_messages":false,""" +
+        """"can_restrict_members":false,"can_promote_members":false,"can_change_info":false,"can_invite_users":true,""" +
+        """"can_manage_video_chats":false,"can_post_stories":false,"can_edit_stories":false,"can_delete_stories":false}}"""
+    "member" -> """{"ok":true,"result":{"status":"member","user":{"id":1,"is_bot":false,"first_name":"B"}}}"""
+    "left" -> """{"ok":true,"result":{"status":"left","user":{"id":1,"is_bot":false,"first_name":"B"}}}"""
+    "kicked" -> """{"ok":true,"result":{"status":"kicked","user":{"id":1,"is_bot":false,"first_name":"B"},"until_date":0}}"""
+    else -> error("no fixture for status $status")
+}
+
+/** A `getChat` success. The four fields after `type` are the ones `ChatFullInfo` requires. */
+private fun chatResult(username: String?, firstName: String?, title: String?): String {
+    val fields = listOfNotNull(
+        username?.let { """"username":"$it"""" },
+        firstName?.let { """"first_name":"$it"""" },
+        title?.let { """"title":"$it"""" },
+    ).joinToString(",", prefix = if (username == null && firstName == null && title == null) "" else ",")
+    return """{"ok":true,"result":{"id":7,"type":"private"$fields,"accent_color_id":0,"max_reaction_count":1,""" +
+        """"accepted_gift_types":{"unlimited_gifts":false,"limited_gifts":false,"unique_gifts":false,""" +
+        """"premium_subscription":false,"gifts_from_channels":false}}}"""
 }
 
 class PrivateCommandTest : StringSpec({
@@ -410,5 +471,151 @@ class PrivateCommandTest : StringSpec({
         PRIVATE_COMMANDS.map { it.first } shouldNotContain "pair"
         PRIVATE_COMMANDS.map { it.first } shouldNotContain "tif"
         PRIVATE_COMMANDS.map { it.first } shouldNotContain "fanout"
+    }
+    // ---- Fix 1: a refused send must reach the batcher as a throw ----
+
+    "a refused announcement send throws, so the batcher keeps the pending row" {
+        val f = PrivateFixture("sinkrefused")
+        val a = f.requests.create(GROUP, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
+        val sent = mutableListOf<Call>()
+        val sink = telegramSink(refusingBot(sent))
+        // Throwing is the ONLY way to tell AnnouncementBatcher the chat was not told;
+        // returning normally makes it delete the pending row and lose the announcement.
+        shouldThrow<AnnouncementNotSent> {
+            sink.deliver(
+                listOf(Announcement(GROUP, "text", emptyList(), listOf(a.refToken), listOf(1L))),
+                emptyList(),
+            )
+        }
+        sent.filter { it.path == "sendMessage" } shouldHaveSize 1 // the attempt was made
+        f.messages.logged(GROUP, 1L) shouldBe null // and nothing was recorded as sent
+    }
+
+    "a refused announcement does not stop the ones already sent from being recorded" {
+        // Documents the at-least-once trade: the batch is retried whole, so a chat may be
+        // told twice rather than never.
+        val f = PrivateFixture("sinkpartial")
+        val a = f.requests.create(GROUP, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
+        val sent = mutableListOf<Call>()
+        var calls = 0
+        val bot = TelegramBot(
+            token = "000:fake-token-for-tests",
+            httpClient = HttpClient(MockEngine { request ->
+                val bytes = (request.body as? OutgoingContent.ByteArrayContent)?.bytes() ?: ByteArray(0)
+                sent += Call(request.url.encodedPath.substringAfterLast('/'), bytes.decodeToString())
+                calls++
+                if (calls == 1) {
+                    respond(
+                        """{"ok":true,"result":{"message_id":1,"date":0,"chat":{"id":-100,"type":"group"}}}""",
+                        HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"),
+                    )
+                } else {
+                    respond(
+                        """{"ok":false,"error_code":403,"description":"Forbidden"}""",
+                        HttpStatusCode.Forbidden, headersOf(HttpHeaders.ContentType, "application/json"),
+                    )
+                }
+            }),
+        )
+        shouldThrow<AnnouncementNotSent> {
+            telegramSink(bot).deliver(
+                listOf(
+                    Announcement(GROUP, "first", emptyList(), listOf(a.refToken), listOf(1L)),
+                    Announcement(-200L, "second", emptyList(), listOf(a.refToken), listOf(1L)),
+                ),
+                emptyList(),
+            )
+        }
+        f.messages.logged(GROUP, 1L).shouldNotBeNull().text shouldBe "first"
+        f.messages.logged(-200L, 1L) shouldBe null
+    }
+
+    // ---- Fix 3: the calls that publish the menus, not only their contents ----
+
+    "all three command menus are actually published, each with its own scope" {
+        val sent = mutableListOf<Call>()
+        registerCommandMenus(recordingBot(sent))
+        val calls = sent.filter { it.path == "setMyCommands" }
+        calls shouldHaveSize 3
+        val scopes = calls.map { call ->
+            Regex(""""type":"([a-z_]+)"""").find(call.body)!!.groupValues[1]
+        }
+        scopes shouldContainExactlyInAnyOrder listOf("default", "all_group_chats", "all_private_chats")
+        // Every entry in each list really reaches the wire — `menu()` maps all of them.
+        val privateBody = calls.single { it.body.contains(""""type":"all_private_chats"""") }.body
+        PRIVATE_COMMANDS.forEach { (name, description) ->
+            privateBody shouldContain """"command":"$name""""
+            privateBody shouldContain description
+        }
+        val groupBody = calls.single { it.body.contains(""""type":"all_group_chats"""") }.body
+        GROUP_COMMANDS.forEach { (name, _) -> groupBody shouldContain """"command":"$name"""" }
+    }
+
+    // ---- Fix 4: the two Telegram adapters ----
+
+    "the membership probe reads every status Telegram can answer with" {
+        listOf("creator", "administrator", "member").forEach { status ->
+            telegramMembership(botReplying(memberResult(status))).isMember(GROUP, 1L) shouldBe true
+        }
+        listOf("left", "kicked").forEach { status ->
+            telegramMembership(botReplying(memberResult(status))).isMember(GROUP, 1L) shouldBe false
+        }
+    }
+
+    "the membership probe denies on a Telegram refusal and on a transport failure" {
+        // A hiccup must never read as "probably a member" — same rule as AdminCommands.isAdmin.
+        telegramMembership(refusingBot(mutableListOf())).isMember(GROUP, 1L) shouldBe false
+        telegramMembership(throwingBot()).isMember(GROUP, 1L) shouldBe false
+    }
+
+    "the name lookup reads a handle live, and answers null when it cannot" {
+        telegramNames(botReplying(chatResult("bob", "Bob", null))).handleFor(1L) shouldBe Handle("bob", "Bob")
+        // No first name: the title, then the stand-in — never an empty label.
+        telegramNames(botReplying(chatResult("bob", null, "The Group"))).handleFor(1L) shouldBe
+            Handle("bob", "The Group")
+        telegramNames(botReplying(chatResult(null, null, null))).handleFor(1L) shouldBe
+            Handle(null, "this person")
+        // Null is what GiveUpService already reads as "no route".
+        telegramNames(refusingBot(mutableListOf())).handleFor(1L) shouldBe null
+        telegramNames(throwingBot()).handleFor(1L) shouldBe null
+    }
+
+    // ---- Fix 5: the presser is never told a delivery that did not happen ----
+
+    "a disclosure that could not be delivered is not reported as delivered" {
+        val f = PrivateFixture("disclosefail")
+        val a = f.requests.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
+        val b = f.requests.create(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
+        // Both sides have agreed, so the second press discloses.
+        f.giveUps.record(b.refToken, a.refToken, 2L, Stance.OFFERED)
+        val sent = mutableListOf<Call>()
+        giveUpCallback(a.refToken, b.refToken, callbackFrom(1L), refusingBot(sent))
+        val alert = sent.single { it.path == "answerCallbackQuery" }.body
+        alert shouldContain "couldn't get a message through to either of you"
+        alert shouldNotContain "I've passed your names"
+        // Nothing was recorded, because nothing arrived.
+        f.messages.logged(1L, 1L) shouldBe null
+        f.messages.logged(2L, 1L) shouldBe null
+    }
+
+    "a disclosure that lands is still reported as delivered" {
+        val f = PrivateFixture("discloseok")
+        val a = f.requests.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
+        val b = f.requests.create(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
+        f.giveUps.record(b.refToken, a.refToken, 2L, Stance.OFFERED)
+        val sent = mutableListOf<Call>()
+        giveUpCallback(a.refToken, b.refToken, callbackFrom(1L), recordingBot(sent))
+        sent.single { it.path == "answerCallbackQuery" }.body shouldContain "I've passed your names"
+    }
+
+    // ---- Fix 2: the hint every remaining refusal shares ----
+
+    "the group-only hint claims nothing about admins, since /reopen and /forget share it" {
+        PrivateFixture("hintwording")
+        val sent = mutableListOf<Call>()
+        reopen(updateFor(DM, ChatType.Private, "/reopen"), recordingBot(sent))
+        val body = sent.single().body
+        body shouldContain "group chat"
+        body shouldNotContain "admin"
     }
 })

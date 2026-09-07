@@ -154,6 +154,13 @@ fun telegramNames(bot: TelegramBot) = NameLookup { userId ->
 }
 
 /**
+ * Telegram refused a send, so the chat was NOT told. Carries no chat, no person and no
+ * text: [AnnouncementBatcher] logs the class name of whatever escapes a flush, and that
+ * class name is the whole of what this needs to say.
+ */
+class AnnouncementNotSent : RuntimeException("Telegram refused an announcement send")
+
+/**
  * Sends what a flush produced and records every announcement against every token it
  * names. Recording is what makes [ButtonService.refreshFor] able to rebuild a batched
  * message later: it reads the stored text and the stored button list and nothing else, so
@@ -168,14 +175,24 @@ fun telegramNames(bot: TelegramBot) = NameLookup { userId ->
  */
 fun telegramSink(bot: TelegramBot) = AnnouncementSink { announcements, pings ->
     for (a in announcements) {
+        // `.await()` then check, NOT `.getOrNull()`: `throwExOnActionsFailure` is false
+        // everywhere in this codebase, so Telegram refusing the send (bot kicked from the
+        // group, a 429 that outlived its retries) arrives as a `Response.Failure` and
+        // `getOrNull()` would quietly turn it into null. Returning normally after that
+        // tells the batcher the chat was told, and it then deletes the pending row — the
+        // announcement would be lost for good while the showing kept resting there.
         val sent = message { a.text }
             .options { parseMode = ParseMode.HTML }
             .inlineKeyboardMarkup { a.buttons.forEach { b -> b.label callback b.data; br() } }
             .sendReturning(a.chatId, bot)
-            .getOrNull()
-        sent?.messageId?.let { Registry.messages.record(a.chatId, it, a.refTokens, a.userIds, a.text, a.buttons) }
+            .await()
+            .getOrNull() ?: throw AnnouncementNotSent()
+        Registry.messages.record(a.chatId, sent.messageId, a.refTokens, a.userIds, a.text, a.buttons)
     }
     for (p in pings) {
+        // Not checked, and deliberately: nothing about a ping is written down, so there is
+        // nothing to retry — `AnnouncementBatcher` drains the token set before the send.
+        // Throwing here would only re-send the announcements above, which DID land.
         message { p.text }
             .inlineKeyboardMarkup { p.buttons.forEach { b -> b.label callback b.data; br() } }
             .send(p.userId, bot)

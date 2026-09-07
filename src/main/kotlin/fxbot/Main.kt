@@ -111,11 +111,7 @@ suspend fun main(): Unit = coroutineScope {
     // all_group_chats made them appear immediately. So register both scopes explicitly.
     // languageCode is passed positionally as null ("applies to every language") so the
     // scope argument lands in the right slot.
-    setMyCommands(null, BotCommandScope.Default, menu(GROUP_COMMANDS)).send(bot)
-    setMyCommands(null, BotCommandScope.AllGroupChats, menu(GROUP_COMMANDS)).send(bot)
-    // A private chat now does something quite different from a group, so it gets its own
-    // list. Every command here has a private meaning; the admin ones deliberately do not.
-    setMyCommands(null, BotCommandScope.AllPrivateChats, menu(PRIVATE_COMMANDS)).send(bot)
+    registerCommandMenus(bot)
 
     // A restart inside the window must not leave showings resting in chats that were
     // never told. Re-rendered from live state, never replayed. `flushAllOnStartup`
@@ -213,6 +209,19 @@ internal val PRIVATE_COMMANDS: List<Pair<String, String>> = listOf(
 
 private fun menu(commands: List<Pair<String, String>>): BotCommandsBuilder.() -> Unit = {
     commands.forEach { (name, description) -> botCommand(name, description) }
+}
+
+/**
+ * Writes all three menus. Extracted from `main()` so a test can drive it against a
+ * recording bot: the lists above being right is only half of it — the calls that publish
+ * them have to exist and carry the right scope, and a deleted line is silent otherwise.
+ */
+internal suspend fun registerCommandMenus(bot: TelegramBot) {
+    setMyCommands(null, BotCommandScope.Default, menu(GROUP_COMMANDS)).send(bot)
+    setMyCommands(null, BotCommandScope.AllGroupChats, menu(GROUP_COMMANDS)).send(bot)
+    // A private chat now does something quite different from a group, so it gets its own
+    // list. Every command here has a private meaning; the admin ones deliberately do not.
+    setMyCommands(null, BotCommandScope.AllPrivateChats, menu(PRIVATE_COMMANDS)).send(bot)
 }
 
 private const val MAX_CONSECUTIVE_FAILURES = 5

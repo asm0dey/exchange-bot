@@ -125,11 +125,17 @@ suspend fun giveUpCallback(a: String?, b: String?, update: ProcessedUpdate, bot:
             ackCallback(update, bot, "I've asked them. I'll tell you if they agree.")
         }
         is GiveUpResult.Disclosed -> {
-            logCommand("giveup_button", "disclosed")
             // Recorded in the message log so forgetting can redact them (ADR 0005).
-            discloseTo(r.a, r.b, bot)
-            discloseTo(r.b, r.a, bot)
-            ackCallback(update, bot, "You both agreed — I've passed your names.")
+            val toA = discloseTo(r.a, r.b, bot)
+            val toB = discloseTo(r.b, r.a, bot)
+            // Which of the two the presser is decides what is true to tell them, so the
+            // answer is picked from the delivery that was actually theirs.
+            val presserIsA = update.getUser().id == r.a.userId
+            logCommand("giveup_button", if (toA && toB) "disclosed" else "disclosed_undelivered")
+            ackCallback(
+                update, bot,
+                disclosureReply(mine = if (presserIsA) toA else toB, theirs = if (presserIsA) toB else toA),
+            )
         }
         is GiveUpResult.Recorded -> {
             logCommand("giveup_button", "recorded")
@@ -316,22 +322,37 @@ private fun giveUpText(r: GiveUpResult): String = when (r) {
  * records the message against BOTH people so a `/forget` from either side reaches it
  * (ADR 0005). [Party.handle] is already a `mention(...)`, hence HTML.
  */
-private suspend fun discloseTo(to: Party, other: Party, bot: TelegramBot) {
+private suspend fun discloseTo(to: Party, other: Party, bot: TelegramBot): Boolean {
     val text = "You both agreed to pass names. This is ${other.handle}.\n$AGREE_LINE"
     val buttons = listOf(Button("✅ Done", Cb.done(to.refToken, other.refToken)))
     val sent = message { text }
         .options { parseMode = ParseMode.HTML }
         .inlineKeyboardMarkup { buttons.forEach { b -> b.label callback b.data; br() } }
         .sendReturning(to.userId, bot)
-        .getOrNull()
-    sent?.messageId?.let { id ->
-        Registry.messages.record(
-            to.userId, id,
-            listOf(to.refToken, other.refToken),
-            listOf(to.userId, other.userId),
-            text, buttons,
-        )
-    }
+        .getOrNull() ?: return false
+    Registry.messages.record(
+        to.userId, sent.messageId,
+        listOf(to.refToken, other.refToken),
+        listOf(to.userId, other.userId),
+        text, buttons,
+    )
+    return true
+}
+
+/**
+ * What to tell the presser, from what actually arrived. A person deciding what to believe
+ * about their own name must not be told a delivery happened when it did not — and the
+ * agreement itself is already written, so pressing again re-sends rather than re-asking.
+ * The recovery each wording suggests is therefore real.
+ */
+private fun disclosureReply(mine: Boolean, theirs: Boolean): String = when {
+    mine && theirs -> "You both agreed — I've passed your names."
+    mine -> "You both agreed and I've sent you their details, but I couldn't get a message " +
+        "through to them. They may have blocked me."
+    theirs -> "You both agreed and I've told them, but I couldn't send you their details. " +
+        "Make sure you haven't blocked me, then press again."
+    else -> "You both agreed, but I couldn't get a message through to either of you. " +
+        "Make sure you haven't blocked me, then press again."
 }
 
 /**

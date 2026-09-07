@@ -11,8 +11,15 @@ import eu.vendeli.tgbot.types.component.getOrNull
 import eu.vendeli.tgbot.types.component.getUser
 import org.slf4j.LoggerFactory
 
+/**
+ * True for every command that still refuses privately: the three admin commands, `/reopen`,
+ * and plain `/forget`. It deliberately does NOT say "for a group chat's admins" — `/reopen`
+ * and `/forget` are nobody's admin commands, and `/forget` is advertised in the private
+ * command menu, so a person following that menu would be told a falsehood about their own
+ * command.
+ */
 private const val PRIVATE_HINT =
-    "That one is for a group chat's admins. Add me to your group and use it there."
+    "That one only works in a group chat. Add me to your group and use it there."
 
 private val cmdLogger = LoggerFactory.getLogger("fxbot.commands")
 
