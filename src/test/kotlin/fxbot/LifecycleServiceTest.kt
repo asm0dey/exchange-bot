@@ -412,4 +412,92 @@ class LifecycleServiceTest : StringSpec({
         f.stateOf(mine) shouldBe RequestState.DONE
         f.stateOf(theirs) shouldBe RequestState.OPEN
     }
+
+    // --- The BUTTON path. `doneCallback` calls `done` directly with two ref tokens, so a
+    // gate that lives only in `doneByShortId` leaves the same force-close-and-name open to
+    // anyone who rewrites `giveup?a=X&b=Y` into `done?a=X&b=Y` — and the give-up button the
+    // bot itself hands the presser already carries the peer's sentinel token in Y.
+
+    "the Done button cannot close a no-names pairing that never passed names" {
+        val f = ConsentFixture("donebuttonnogiveup")
+        val mine = f.rest(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
+        val theirs = f.rest(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "i2")
+        val showing = f.rest(-100L, 2L, "ann", Side.BID, "i2")
+        // Exactly what a rewritten give-up payload reaches: the presser's own token, and
+        // the peer's sentinel token the give-up button published to them.
+        val r = f.svc.done(1L, mine.refToken, theirs.refToken)
+        r.shouldBeInstanceOf<ActionResult.Denied>()
+        // Nothing closed — not the peer's sentinel row, and not its showings elsewhere.
+        f.stateOf(mine) shouldBe RequestState.OPEN
+        f.stateOf(theirs) shouldBe RequestState.OPEN
+        f.stateOf(showing) shouldBe RequestState.OPEN
+        // And no handle: a refusal that named the peer would be the disclosure itself.
+        r.text shouldNotContain "ann"
+    }
+
+    "the button refusal reads exactly like every other no-names refusal" {
+        val f = ConsentFixture("donebuttonsamewords")
+        val mine = f.rest(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
+        val theirs = f.rest(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "i2")
+        val button = f.svc.done(1L, mine.refToken, theirs.refToken)
+        val typed = f.svc.doneByShortId(NO_NAMES_CHAT_ID, 1L, mine.shortId, NamedPeer.Somebody(2L))
+        val unplaceable = f.svc.doneByShortId(NO_NAMES_CHAT_ID, 1L, mine.shortId, NamedPeer.Unplaceable)
+        button.shouldBeInstanceOf<ActionResult.Denied>()
+        typed.shouldBeInstanceOf<ActionResult.Denied>()
+        unplaceable.shouldBeInstanceOf<ActionResult.Denied>()
+        button.text shouldBe typed.text
+        button.text shouldBe unplaceable.text
+        // Same fixed outcome label too, so the log cannot tell the three apart either.
+        button.outcomeLabel() shouldBe unplaceable.outcomeLabel()
+    }
+
+    "one side's consent does not arm the Done button either" {
+        val f = ConsentFixture("donebuttonhalfgiveup")
+        val mine = f.rest(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
+        val theirs = f.rest(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "i2")
+        f.giveUps.record(mine.refToken, theirs.refToken, 1L, Stance.OFFERED)
+        f.svc.done(1L, mine.refToken, theirs.refToken).shouldBeInstanceOf<ActionResult.Denied>()
+        f.stateOf(mine) shouldBe RequestState.OPEN
+        f.stateOf(theirs) shouldBe RequestState.OPEN
+    }
+
+    "the Done button handed out after a mutual give-up still closes both, either way round" {
+        val f = ConsentFixture("donebuttongiveup")
+        val mine = f.rest(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
+        val theirs = f.rest(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "i2")
+        val showing = f.rest(-100L, 2L, "ann", Side.BID, "i2")
+        f.giveUps.record(mine.refToken, theirs.refToken, 1L, Stance.OFFERED)
+        f.giveUps.record(theirs.refToken, mine.refToken, 2L, Stance.OFFERED)
+        // The copy the peer was handed carries the tokens the other way round; that copy
+        // must work too, or the gate would break half of the only legitimate flow.
+        f.svc.done(2L, theirs.refToken, mine.refToken).shouldBeInstanceOf<ActionResult.Ok>()
+        f.stateOf(mine) shouldBe RequestState.DONE
+        f.stateOf(theirs) shouldBe RequestState.DONE
+        f.stateOf(showing) shouldBe RequestState.DONE
+    }
+
+    "a second press of a legitimate Done button still says already closed, consent swept or not" {
+        val f = ConsentFixture("donebuttonstale")
+        val mine = f.rest(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
+        val theirs = f.rest(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "i2")
+        f.giveUps.record(mine.refToken, theirs.refToken, 1L, Stance.OFFERED)
+        f.giveUps.record(theirs.refToken, mine.refToken, 2L, Stance.OFFERED)
+        f.svc.done(1L, mine.refToken, theirs.refToken).shouldBeInstanceOf<ActionResult.Ok>()
+        // Housekeeping drops consent rows whose requests have closed; the button in the
+        // chat outlives them, and its owner should still be told what actually happened.
+        f.giveUps.dropClosed()
+        f.giveUps.bothOffered(mine.refToken, theirs.refToken) shouldBe false
+        val again = f.svc.done(1L, mine.refToken, theirs.refToken)
+        again.shouldBeInstanceOf<ActionResult.Gone>()
+        again.text shouldContain "already"
+    }
+
+    "a group Done button needs no give-up, whichever side presses it" {
+        val f = ConsentFixture("donebuttongroup")
+        val mine = f.rest(-100L, 1L, "bob", Side.OFFER)
+        val theirs = f.rest(-100L, 2L, "ann", Side.BID)
+        f.svc.done(2L, mine.refToken, theirs.refToken).shouldBeInstanceOf<ActionResult.Ok>()
+        f.stateOf(mine) shouldBe RequestState.DONE
+        f.stateOf(theirs) shouldBe RequestState.DONE
+    }
 })

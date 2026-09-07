@@ -57,7 +57,11 @@ sealed interface NamedPeer {
     data class Somebody(val userId: Long) : NamedPeer
 }
 
-/** Said once, so the two refusals [doneByShortId] must not tell apart cannot drift apart. */
+/**
+ * Said once, so the refusals [done] and [doneByShortId] must not tell apart cannot drift
+ * apart — a structurally impossible pairing, a name nothing here belongs to, and a peer
+ * who never agreed to pass names all read exactly like this.
+ */
 private const val NOT_A_PAIR = "Those two requests aren't a pair I can close together."
 
 /**
@@ -106,6 +110,26 @@ class LifecycleService(
      * that: the presser must own one of the two, and the two must be a pair the bot could
      * plausibly have suggested — same chat, opposite sides, different people.
      *
+     * Those two are the whole of the authorization in a CHAT, where every member can
+     * already read every name, a wrongful close is publicly visible, and `/reopen` undoes
+     * it. On the no-names side none of that holds, and the structural check passes
+     * trivially there — both rows carry `chatId = 0`, and the opposite side is arranged by
+     * stating it. So a third check applies to a sentinel-scoped pairing: the two must have
+     * actually passed names, read from the give-up table rather than from anything a
+     * client sent. Without it a stranger closes somebody's whole interest, in every chat
+     * it is shown in, and is told "Marked done: @them and @you" — the bot naming a person
+     * who never agreed to be named (ADR 0007).
+     *
+     * The check belongs HERE, not only in [doneByShortId]: this is what a Done button
+     * reaches, and the give-up button the bot hands a presser already carries the peer's
+     * sentinel ref token, so rewriting `giveup?a=X&b=Y` into `done?a=X&b=Y` is one word of
+     * work. The only legitimate no-names Done button is minted by `discloseTo`, which runs
+     * only once `bothOffered` is already true, so nothing legitimate is refused.
+     *
+     * The refusal is [NOT_A_PAIR] — the same words a structurally impossible pairing gets.
+     * A distinct "they never agreed" would itself confirm that the person behind a
+     * harvested token rests an interest, which is the disclosure this check prevents.
+     *
      * The size tolerance is deliberately NOT re-checked: two people are free to agree a
      * swap the bot would not have introduced them for, and this only records that they did.
      */
@@ -131,8 +155,17 @@ class LifecycleService(
         ) {
             return ActionResult.Denied(NOT_A_PAIR)
         }
-
         if (mine.state != RequestState.OPEN) return ActionResult.Gone("That one is already closed.")
+        // Both rows are sentinel-scoped by now — the chats matched just above — so this one
+        // test settles the whole pairing. Below the state check deliberately: `mine` is
+        // always the presser's OWN row, so "already closed" tells them nothing they did not
+        // put there themselves, and a second press of a legitimate Done button keeps saying
+        // so even after housekeeping has swept the consent rows the close made spent.
+        if (theirs != null && mine.chatId == NO_NAMES_CHAT_ID &&
+            !giveUps.bothOffered(mine.refToken, theirs.refToken)
+        ) {
+            return ActionResult.Denied(NOT_A_PAIR)
+        }
         // Both interests close together, in one transaction: a swap is one decision, and a
         // half-applied one would leave a person resting against a counterparty who is gone.
         val closed = requests.closeBothWhole(
@@ -172,19 +205,18 @@ class LifecycleService(
     }
 
     /**
-     * The typed form. In a chat, [done]'s own guard is the whole of the authorization: every
-     * member can already read every name there, a wrongful close is publicly visible, and
-     * `/reopen` undoes it.
+     * The typed form. Consent on the no-names side is enforced by [done] itself, so that
+     * every route in is covered rather than this one alone — see its own comment.
      *
-     * On the no-names side none of that holds. The guard passes trivially there — both
-     * requests carry `chatId = 0`, and the opposite side is arranged by stating it — so
-     * without the check below a stranger could close somebody's whole interest, in every
-     * chat it is shown in, and be told "Marked done: @them and @you", which is the bot
-     * naming a person who never agreed to be named (ADR 0007). So the peer must be somebody
-     * this caller has actually passed names with: the spec's "after a name give-up", read
-     * from the table rather than from anything typed.
+     * What is left here is the part [done] cannot see: a typed name resolves to a PERSON,
+     * and this decides which request of theirs, if any, that means. Two of the three
+     * outcomes never reach [done] with a peer at all — a name nothing resting here belongs
+     * to, and a named person who rests nothing — and both must refuse rather than fall
+     * through to closing the caller's own request alone, because that difference would
+     * answer, for any handle a stranger cares to type, whether that person is resting
+     * anything with the bot.
      *
-     * Both refusals are [NOT_A_PAIR], deliberately: a distinct "they never agreed" would
+     * Every refusal is [NOT_A_PAIR], deliberately: a distinct "they never agreed" would
      * itself confirm that the named person rests an interest, which is the disclosure this
      * check exists to prevent.
      */

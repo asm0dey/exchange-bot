@@ -281,6 +281,18 @@ class GiveUpServiceTest : StringSpec({
         f.giveUps.stanceOf(a.refToken, b.refToken) shouldBe null
     }
 
+    "two tokens harvested from the SAME group are not a pairing either" {
+        // Same chat, same pair, opposite sides, two different people — everything the
+        // structural check asked for, and still not a give-up: a group surface offers
+        // nobody a name to pass, so pairing two of its tokens must not make the bot DM a
+        // same-group counterparty about a give-up they were never offered.
+        val f = GiveUpFixture("harvestedsamegroup", handled(1L to Handle("bob", "Bob"), 2L to Handle("ann", "Ann")))
+        val a = f.requests.create(-100L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7)
+        val b = f.requests.create(-100L, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7)
+        f.svc.offer(1L, a.refToken, b.refToken).shouldBeInstanceOf<GiveUpResult.Refused>()
+        f.giveUps.stanceOf(a.refToken, b.refToken) shouldBe null
+    }
+
     "a peer resting on another pair is refused, and nothing is written" {
         val f = GiveUpFixture("otherpair", handled(1L to Handle("bob", "Bob"), 2L to Handle("ann", "Ann")))
         val a = f.rest(1L, Side.OFFER)

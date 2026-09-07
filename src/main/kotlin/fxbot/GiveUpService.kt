@@ -107,11 +107,17 @@ class GiveUpService(
         // passes without the recipient pressing, so this is not a disclosure — it is an
         // unauthenticated way to make the bot message strangers, which is enough.
         //
-        // Structural only — same chat, same pair, opposite sides, two different people. The
-        // sizes are deliberately NOT re-checked, for the reason `done` gives: either
+        // Structural only — the no-names side, same pair, opposite sides, two different
+        // people. "Same chat" alone was not enough: it is satisfied by two tokens harvested
+        // from the SAME group, which would let a group member drive this and have the bot DM
+        // a same-group counterparty about a give-up the group surface never offers them.
+        // A give-up is a no-names concept, so the pairing must be on the no-names side —
+        // which, with the chats required to match, means both rows are.
+        //
+        // The sizes are deliberately NOT re-checked, for the reason `done` gives: either
         // person's size tolerance may have moved since they were shown each other, and two
         // people who were offered each other must still be able to answer.
-        if (theirs.chatId != mine.chatId || theirs.pair != mine.pair ||
+        if (mine.chatId != NO_NAMES_CHAT_ID || theirs.chatId != mine.chatId || theirs.pair != mine.pair ||
             theirs.side == mine.side || theirs.userId == mine.userId
         ) {
             return GiveUpResult.Refused(NOT_COUNTERPARTIES)
