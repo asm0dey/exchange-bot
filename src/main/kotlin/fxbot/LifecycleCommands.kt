@@ -53,9 +53,15 @@ private suspend fun replyToDecision(
     Registry.buttons.refreshFor(result.touchedTokens, bot)
 }
 
+/**
+ * Privately, the short ids on offer are the ones the person's own interests carry on a
+ * no-names basis — [NO_NAMES_CHAT_ID] is where those rest, and withdrawing one withdraws
+ * every showing with it. In a group it is that chat's own short ids, as before.
+ */
+private fun ProcessedUpdate.scopeId(): Long = if (isGroupChat()) getChat().id else NO_NAMES_CHAT_ID
+
 @CommandHandler(["/cancel"])
 suspend fun cancel(update: ProcessedUpdate, bot: TelegramBot) {
-    if (!inGroupOrExplain(update, bot)) return
     val chat = update.getChat()
     val user = update.getUser()
     val shortId = update.text.trim().split(Regex("\\s+")).getOrNull(1)
@@ -64,7 +70,7 @@ suspend fun cancel(update: ProcessedUpdate, bot: TelegramBot) {
         message { "Which one? Try /cancel a1 — /status lists them." }.send(chat.id, bot)
         return
     }
-    val result = Registry.lifecycle.cancel(chat.id, user.id, shortId)
+    val result = Registry.lifecycle.cancel(update.scopeId(), user.id, shortId)
     logCommand("cancel", result.outcomeLabel())
     replyToDecision(chat.id, bot, result)
 }
@@ -81,7 +87,6 @@ suspend fun reopen(update: ProcessedUpdate, bot: TelegramBot) {
 
 @CommandHandler(["/done"])
 suspend fun done(update: ProcessedUpdate, bot: TelegramBot) {
-    if (!inGroupOrExplain(update, bot)) return
     val chat = update.getChat()
     val user = update.getUser()
     val parts = update.text.trim().split(Regex("\\s+"))
@@ -91,8 +96,9 @@ suspend fun done(update: ProcessedUpdate, bot: TelegramBot) {
         message { "Which one? Try /done a1 @someone" }.send(chat.id, bot)
         return
     }
-    val peerId = resolvePeer(update, chat.id)
-    val result = Registry.lifecycle.doneByShortId(chat.id, user.id, shortId, peerId)
+    val scopeId = update.scopeId()
+    val peerId = resolvePeer(update, scopeId)
+    val result = Registry.lifecycle.doneByShortId(scopeId, user.id, shortId, peerId)
     logCommand("done", result.outcomeLabel())
     replyToDecision(chat.id, bot, result)
 }
@@ -157,7 +163,11 @@ suspend fun forget(update: ProcessedUpdate, bot: TelegramBot) {
 /**
  * Counterparties come from message entities (a reply, or a Telegram-recognized
  * @mention), never from a typed display name matched by hand, and only from
- * people who actually have something waiting here.
+ * people who actually have something waiting in [chatId] — which privately is the
+ * no-names space, so an `@username` there is matched against the handles on the requests
+ * resting on a no-names basis. Somebody with no `@username` cannot be addressed by the
+ * typed form at all; the Done button on the give-up message is the reliable path, and no
+ * second identifier scheme is invented to make them typeable.
  */
 private fun resolvePeer(update: ProcessedUpdate, chatId: Long): Long? {
     val message = (update as? MessageUpdate)?.message ?: return null

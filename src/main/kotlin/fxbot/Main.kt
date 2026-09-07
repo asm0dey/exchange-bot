@@ -48,6 +48,9 @@ suspend fun main(): Unit = coroutineScope {
     Registry.forget = ForgetService(Registry.requests, Registry.messages)
     Registry.admin = AdminService(Registry.settings, rateClient)
     Registry.migration = ChatMigrationService(Registry.requests, Registry.settings, Registry.messages, db)
+    Registry.people = PersonSettingsRepository(ds, crypto, db = db)
+    Registry.giveUps = NameGiveUpRepository(ds, crypto, db = db)
+    Registry.pending = PendingAnnouncementRepository(ds, crypto, db = db)
 
     val housekeeping = Housekeeping(Registry.requests, Registry.settings, Registry.rates, Registry.messages)
     startScheduler(ds, housekeeping)
@@ -71,6 +74,17 @@ suspend fun main(): Unit = coroutineScope {
         }
     }
 
+    // The rest of the wiring waits for the bot: the three adapters below are the Telegram
+    // layer, so they cannot be built before there is a bot to reach it with.
+    Registry.interests = InterestService(
+        Registry.requests, Registry.settings, Registry.people, Registry.rates, rateClient,
+        Registry.giveUps, Registry.pending, telegramMembership(bot),
+    )
+    Registry.giveUpService = GiveUpService(Registry.requests, Registry.giveUps, telegramNames(bot))
+    Registry.batcher = AnnouncementBatcher(
+        Registry.requests, Registry.settings, Registry.pending, Registry.interests, Registry.rates,
+        telegramSink(bot), this,
+    )
     // A revoked, mistyped, or whitespace-mangled token is the overwhelmingly common startup
     // failure, and it must surface here, where an operator watching a deployment sees it —
     // not later, silently, inside the polling loop below. See `validateBotToken`'s doc comment
@@ -97,23 +111,17 @@ suspend fun main(): Unit = coroutineScope {
     // all_group_chats made them appear immediately. So register both scopes explicitly.
     // languageCode is passed positionally as null ("applies to every language") so the
     // scope argument lands in the right slot.
-    val commands: BotCommandsBuilder.() -> Unit = {
-        botCommand("sell", "Hand over currency you have")
-        botCommand("buy", "Ask for currency you want to receive")
-        botCommand("status", "Who's waiting in this chat")
-        botCommand("cancel", "Withdraw your request")
-        botCommand("done", "Mark a swap done")
-        botCommand("reopen", "Undo your last done")
-        botCommand("settings", "This chat's currencies and limits")
-        botCommand("pair", "Admins: change what this chat swaps")
-        botCommand("tolerance", "Admins: how close amounts must be to match")
-        botCommand("tif", "Admins: how many days a request waits")
-        botCommand("fanout", "Admins: show privately stated interests here")
-        botCommand("forget", "Erase your data — add 'all' in a private chat for every group")
-        botCommand("help", "What I can do")
-    }
-    setMyCommands(null, BotCommandScope.Default, commands).send(bot)
-    setMyCommands(null, BotCommandScope.AllGroupChats, commands).send(bot)
+    setMyCommands(null, BotCommandScope.Default, menu(GROUP_COMMANDS)).send(bot)
+    setMyCommands(null, BotCommandScope.AllGroupChats, menu(GROUP_COMMANDS)).send(bot)
+    // A private chat now does something quite different from a group, so it gets its own
+    // list. Every command here has a private meaning; the admin ones deliberately do not.
+    setMyCommands(null, BotCommandScope.AllPrivateChats, menu(PRIVATE_COMMANDS)).send(bot)
+
+    // A restart inside the window must not leave showings resting in chats that were
+    // never told. Re-rendered from live state, never replayed. `flushAllOnStartup`
+    // propagates a sink failure to its caller (unlike the windowed path, which counts and
+    // swallows), so this needs its own guard or a failed first send surfaces at boot.
+    launch { runCatching { Registry.batcher.flushAllOnStartup() } }
 
     logger.info("exchange-bot: listening")
 
@@ -167,6 +175,44 @@ suspend fun main(): Unit = coroutineScope {
             delay(RESTART_DELAY.seconds)
         }
     }
+}
+
+/**
+ * The command menus, as data rather than as builder lambdas, so a test can read them:
+ * `BotCommandsBuilder` keeps its list private and its `build` in an internal companion,
+ * so a `BotCommandsBuilder.() -> Unit` cannot be inspected from outside the library — and
+ * an untested menu is exactly where a command another change registered goes missing.
+ */
+internal val GROUP_COMMANDS: List<Pair<String, String>> = listOf(
+    "sell" to "Hand over currency you have",
+    "buy" to "Ask for currency you want to receive",
+    "status" to "Who's waiting in this chat",
+    "cancel" to "Withdraw your request",
+    "done" to "Mark a swap done",
+    "reopen" to "Undo your last done",
+    "settings" to "This chat's currencies and limits",
+    "pair" to "Admins: change what this chat swaps",
+    "tolerance" to "Admins: how close amounts must be to match",
+    "tif" to "Admins: how many days a request waits",
+    "fanout" to "Admins: show privately stated interests here",
+    "forget" to "Erase your data — add 'all' in a private chat for every group",
+    "help" to "What I can do",
+)
+
+internal val PRIVATE_COMMANDS: List<Pair<String, String>> = listOf(
+    "sell" to "State an interest: /sell 10 EUR for RUB",
+    "buy" to "State an interest: /buy 10 RUB for EUR",
+    "tolerance" to "Your own size tolerance, 1-100",
+    "status" to "Your interests and where each still rests",
+    "cancel" to "Withdraw an interest, every showing with it",
+    "done" to "You two swapped",
+    "settings" to "Your size tolerance",
+    "forget" to "Erase what I hold about you — add 'all' for every group",
+    "help" to "What I can do",
+)
+
+private fun menu(commands: List<Pair<String, String>>): BotCommandsBuilder.() -> Unit = {
+    commands.forEach { (name, description) -> botCommand(name, description) }
 }
 
 private const val MAX_CONSECUTIVE_FAILURES = 5

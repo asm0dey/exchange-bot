@@ -12,7 +12,7 @@ import eu.vendeli.tgbot.types.component.getUser
 import org.slf4j.LoggerFactory
 
 private const val PRIVATE_HINT =
-    "I introduce people who want to swap currency inside a group chat. Add me to your group to use me."
+    "That one is for a group chat's admins. Add me to your group and use it there."
 
 private val cmdLogger = LoggerFactory.getLogger("fxbot.commands")
 
@@ -21,13 +21,16 @@ private val cmdLogger = LoggerFactory.getLogger("fxbot.commands")
  *  chat it was sent in, or what they typed. Internal so every command file shares it. */
 internal fun logCommand(command: String, outcome: String) = cmdLogger.debug("command=$command outcome=$outcome")
 
-/** Channels have no per-person sender to match, mention, or authorize. */
-private fun ProcessedUpdate.isGroupChat(): Boolean =
+/** Groups have a per-person sender to match, mention, and authorize; channels do not. */
+internal fun ProcessedUpdate.isGroupChat(): Boolean =
     getChat().type == ChatType.Group || getChat().type == ChatType.Supergroup
 
-/** Every handler runs through this: the private-chat reply is bot behaviour, not a
- *  special case of posting. Returns true when the caller should carry on.
- *  Internal (not private) so every command file in this package shares one guard. */
+/**
+ * Kept for `/pair` and `/tif` only. Every other command now has a private meaning: a
+ * person states an interest to the bot privately and it is shown in the chats they share
+ * with it, so a blanket "add me to a group" refusal would refuse the whole point.
+ * Internal (not private) so every command file in this package shares one guard.
+ */
 internal suspend fun inGroupOrExplain(update: ProcessedUpdate, bot: TelegramBot): Boolean {
     if (update.isGroupChat()) return true
     message { PRIVATE_HINT }.send(update.getChat().id, bot)
@@ -41,7 +44,7 @@ suspend fun sell(update: ProcessedUpdate, bot: TelegramBot) = handlePost(Verb.SE
 suspend fun buy(update: ProcessedUpdate, bot: TelegramBot) = handlePost(Verb.BUY, update, bot)
 
 private suspend fun handlePost(verb: Verb, update: ProcessedUpdate, bot: TelegramBot) {
-    if (!inGroupOrExplain(update, bot)) return
+    if (!update.isGroupChat()) return handlePrivatePost(verb, update, bot)
     val chat = update.getChat()
     val user = update.getUser()
     val args = update.text.trim().split(Regex("\\s+")).drop(1)
@@ -84,7 +87,7 @@ private suspend fun handlePost(verb: Verb, update: ProcessedUpdate, bot: Telegra
 
 @CommandHandler(["/status"])
 suspend fun status(update: ProcessedUpdate, bot: TelegramBot) {
-    if (!inGroupOrExplain(update, bot)) return
+    if (!update.isGroupChat()) return privateStatus(update, bot)
     val chat = update.getChat()
     val user = update.getUser()
     logCommand("status", "shown")
@@ -95,7 +98,7 @@ suspend fun status(update: ProcessedUpdate, bot: TelegramBot) {
 
 @CommandHandler(["/settings"])
 suspend fun settings(update: ProcessedUpdate, bot: TelegramBot) {
-    if (!inGroupOrExplain(update, bot)) return
+    if (!update.isGroupChat()) return privateSettings(update, bot)
     val chat = update.getChat()
     val s = Registry.settings.get(chat.id)
     logCommand("settings", "shown")
@@ -125,20 +128,18 @@ private val HELP_TEXT = """
 
 @CommandHandler(["/help"])
 suspend fun help(update: ProcessedUpdate, bot: TelegramBot) {
-    if (!inGroupOrExplain(update, bot)) return
     logCommand("help", "shown")
-    message { HELP_TEXT }.send(update.getChat().id, bot)
+    message { if (update.isGroupChat()) HELP_TEXT else PRIVATE_HELP_TEXT }.send(update.getChat().id, bot)
 }
 
 /**
  * The spec promises this reply; without it, opening a DM and tapping Start gets
- * silence. Mirrors [inGroupOrExplain]'s split but inverted — a private chat gets
- * the "add me to a group" hint, a group gets straight to [HELP_TEXT], since a
- * `/start` in a group is not asking to be told what a group chat is for.
+ * silence. Each place gets the help for what it can actually do: a private chat can now
+ * state interests, so the old "add me to a group" hint would be the wrong answer there.
  */
 @CommandHandler(["/start"])
 suspend fun start(update: ProcessedUpdate, bot: TelegramBot) {
     val chat = update.getChat()
     logCommand("start", "shown")
-    message { if (update.isGroupChat()) HELP_TEXT else PRIVATE_HINT }.send(chat.id, bot)
+    message { if (update.isGroupChat()) HELP_TEXT else PRIVATE_HELP_TEXT }.send(chat.id, bot)
 }

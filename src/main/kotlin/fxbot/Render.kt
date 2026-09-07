@@ -37,8 +37,8 @@ fun mention(username: String?, userId: Long, displayName: String): String =
 /** How a request's author is named everywhere: the handle, or a link with the stand-in label. */
 internal fun mentionOf(r: Request): String = mention(r.username, r.userId, r.username ?: "this person")
 
-/** Said once, so the two messages that carry it cannot drift apart. */
-private const val AGREE_LINE = "Agree the rate between yourselves, then press Done."
+/** Said once, so every message that carries it cannot drift apart. */
+internal const val AGREE_LINE = "Agree the rate between yourselves, then press Done."
 
 /**
  * The rate caveat, in one place: every message that compares two sizes admits the same
@@ -163,3 +163,52 @@ internal fun decisionButtons(result: ActionResult.Ok): List<Button> =
 
 fun appearedButtons(mine: List<ShownInterest>): List<Button> =
     mine.flatMap { s -> s.found.flatMap { c -> nameGiveUpButtons(s.request, c.request) } }
+
+/** The immediate private reply: what was found, and where this is about to be shown. */
+fun renderStated(r: InterestResult.Stated): String {
+    val text = StringBuilder("Noted: ${describe(r.interest)} (${r.interest.shortId}).")
+    if (r.found.isEmpty()) {
+        text.append("\nNobody matches yet on a no-names basis — you're waiting.")
+    } else {
+        text.append(
+            if (r.found.size == 1) "\n1 person matches, no names either way:"
+            else "\n${r.found.size} people match, no names either way:",
+        )
+        for (c in r.found) text.append("\n• someone wants to ").append(describe(c.request))
+        text.append("\nOffer to pass your name and I'll ask them the same.")
+    }
+    text.append(
+        when (r.showings.size) {
+            0 -> "\nI'm not showing this in any group — either we share none that swap this pair, " +
+                "or their admins turned that off."
+            1 -> "\nI'll show this in 1 group shortly."
+            else -> "\nI'll show this in ${r.showings.size} groups shortly."
+        },
+    )
+    return text.toString()
+}
+
+/**
+ * The pairings this statement found, each offered on the same two terms every other
+ * message offers them on, plus one way out of the interest itself.
+ */
+fun statedButtons(r: InterestResult.Stated): List<Button> =
+    r.found.flatMap { c -> nameGiveUpButtons(r.interest, c.request) } +
+        Button("✖️ Cancel ${r.interest.shortId}", Cb.cancel(r.interest.refToken))
+
+/** Each interest once, and where it still rests. A chat whose showing has lapsed is simply absent. */
+fun renderStandings(standings: List<InterestStanding>): String {
+    if (standings.isEmpty()) return "You have nothing waiting with me right now."
+    val text = StringBuilder("Waiting with me:")
+    for (s in standings) {
+        text.append("\n• ").append(s.interest.shortId).append(' ').append(describe(s.interest))
+        text.append(
+            when (s.chatIds.size) {
+                0 -> " — on a no-names basis only"
+                1 -> " — on a no-names basis and in 1 group"
+                else -> " — on a no-names basis and in ${s.chatIds.size} groups"
+            },
+        )
+    }
+    return text.toString()
+}

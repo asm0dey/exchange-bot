@@ -15,4 +15,16 @@ object Registry {
     lateinit var forget: ForgetService
     lateinit var admin: AdminService
     lateinit var migration: ChatMigrationService
+    lateinit var people: PersonSettingsRepository
+    lateinit var interests: InterestService
+    lateinit var batcher: AnnouncementBatcher
+
+    /**
+     * Deliberately not `giveUp`: that would differ from [giveUps] — the repository right
+     * below it — by a single character, both are `lateinit var`, and a mis-wire in
+     * `Main.kt` would compile.
+     */
+    lateinit var giveUpService: GiveUpService
+    lateinit var giveUps: NameGiveUpRepository
+    lateinit var pending: PendingAnnouncementRepository
 }
