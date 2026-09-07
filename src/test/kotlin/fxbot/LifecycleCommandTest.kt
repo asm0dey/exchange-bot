@@ -109,6 +109,38 @@ class LifecycleCommandTest : StringSpec({
         body shouldNotContain "\"parse_mode\""
     }
 
+    /**
+     * The seam Ruling B12 was about: `/reopen` used to send its confirmation and stop
+     * there, leaving every message that had carried the request permanently saying
+     * "withdrawn" with its buttons stripped. Both halves of the fix are unit-tested
+     * elsewhere — the service reports what it revived, ButtonService rewrites from live
+     * state — but only driving the real handler proves they are wired together.
+     */
+    "/reopen rewrites the message that said the request was withdrawn" {
+        val f = LifecycleCommandFixture("reopen-rewrites")
+        val a = f.requests.create(
+            -100L, 1L, "bob", Side.OFFER, "EUR", java.math.BigDecimal("1000"), CurrencyPair("EUR", "RUB"), 7,
+        )
+        f.messages.record(
+            -100L, 10L, listOf(a.refToken), listOf(1L), "1 person matches:",
+            listOf(Button("✖️ Cancel", Cb.cancel(a.refToken))),
+        )
+        f.requests.transition(a.refToken, RequestState.OPEN, RequestState.CANCELLED)
+        val sent = mutableListOf<Call>()
+
+        reopen(updateFor(-100L, ChatType.Group, "/reopen"), recordingBot(sent))
+
+        val edits = sent.filter { it.path == "editMessageText" }
+        edits shouldHaveSize 1
+        edits.single().body shouldContain "1 person matches:"
+        edits.single().body shouldNotContain "withdrawn" // the false outcome is off the screen
+        edits.single().body shouldContain Cb.cancel(a.refToken) // and the button is back
+        val confirmation = sent.first { it.path == "sendMessage" }
+        confirmation.body shouldContain "Resting again"
+        // No undo on a request that is resting again — it could only answer "already waiting".
+        confirmation.body shouldNotContain Cb.reopen(a.refToken)
+    }
+
     "a successful /cancel still uses HTML parse mode" {
         val f = LifecycleCommandFixture("cancel-ok-html")
         val a = f.requests.create(-100L, 1L, "bob", Side.OFFER, "EUR", java.math.BigDecimal("1000"), CurrencyPair("EUR", "RUB"), 7)

@@ -77,9 +77,13 @@ class RenderTest : StringSpec({
         text shouldNotContain "notional"
         text shouldNotContain "Bid"
     }
-    "no counterparty means a waitlist line, not an error" {
+    // The vocabulary is binding (CONTEXT.md, Resting): a request that found nobody is
+    // RESTING. "waitlist" is the queued/listed idea that entry rules out, and letting it
+    // stand here while /reopen says "Resting again" would have the bot contradict itself.
+    "no counterparty says the request is resting, not an error" {
         val text = renderSuggestions(emptyList(), RateStatus.Fresh(BigDecimal("99.98")))
-        text shouldContain "waitlist"
+        text shouldContain "resting"
+        text shouldNotContain "waitlist"
     }
     "a stale rate is admitted in the message" {
         val text = renderSuggestions(

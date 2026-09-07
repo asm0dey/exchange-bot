@@ -29,7 +29,11 @@ class ButtonServiceTest : StringSpec({
         f.svc.refreshFor(listOf(a.refToken), recordingBot(calls))
         val edit = calls.single { it.path == "editMessageText" }
         edit.body shouldContain "1 person matches:"
-        edit.body shouldContain "withdrawn"
+        edit.body shouldContain "${a.shortId} — withdrawn"
+        // The message's only button named the closed request, so the keyboard goes out
+        // empty — not as a stray blank row, and not left behind.
+        edit.body shouldContain "\"inline_keyboard\":[]"
+        edit.body shouldNotContain a.refToken
     }
     "the status line says how it closed" {
         val f = ButtonFixture("statuswords")
@@ -42,8 +46,10 @@ class ButtonServiceTest : StringSpec({
         val calls = mutableListOf<Call>()
         f.svc.refreshFor(listOf(done.refToken, lapsed.refToken), recordingBot(calls))
         val bodies = calls.filter { it.path == "editMessageText" }.joinToString("\n") { it.body }
-        bodies shouldContain "done"
-        bodies shouldContain "lapsed"
+        // The whole status line, not a bare word: "done" alone is a substring of a JSON
+        // body full of method names and escaped text, and could pass on the wrong thing.
+        bodies shouldContain "${done.shortId} — done"
+        bodies shouldContain "${lapsed.shortId} — lapsed"
     }
     "closing one interest keeps the buttons of the others on a batched message" {
         val f = ButtonFixture("keepothers")

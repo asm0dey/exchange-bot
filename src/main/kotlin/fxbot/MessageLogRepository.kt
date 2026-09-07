@@ -81,6 +81,12 @@ class MessageLogRepository(
      * Records one sent message, every ref token (and person) it names, and — since V3 —
      * what it actually said and offered, so closing ONE of the requests a batched message
      * carries can rewrite that message instead of stripping the whole keyboard.
+     *
+     * Callers MUST pass every ref token their [buttons] name, not just the subject of the
+     * message: [ButtonService.refreshFor] decides which buttons survive a close by looking
+     * for [refTokens] inside each button's callback data, so a token named by a button but
+     * missing from [refTokens] leaves that button live after its request has closed — the
+     * exact stale-button press this record exists to prevent, and it fails silently.
      */
     fun record(
         chatId: Long,

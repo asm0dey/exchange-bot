@@ -59,7 +59,7 @@ fun describe(r: Request): String {
 fun renderSuggestions(found: List<Counterparty>, status: RateStatus): String {
     val lines = StringBuilder()
     if (found.isEmpty()) {
-        lines.append("No one matches yet — you're on the waitlist.")
+        lines.append("No one matches yet — yours is resting here.")
     } else {
         lines.append(if (found.size == 1) "1 person matches:" else "${found.size} people match:")
         for (c in found) {
