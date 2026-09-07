@@ -142,5 +142,24 @@ internal fun nameGiveUpButtons(mine: Request, theirs: Request): List<Button> = l
     Button("🚫 Not this one", Cb.decline(mine.refToken, theirs.refToken)),
 )
 
+/**
+ * What a just-closed done or cancel offers: undo, and — when the presser was left holding
+ * more than the swap took — restating what is left, in one press. Said once, so the
+ * command path and the button path cannot drift apart.
+ *
+ * Only for a result that closed something: [ActionResult.Ok.touchedTokens] must not be empty,
+ * and a reopen's result never comes here (a resting request has nothing to undo).
+ */
+internal fun decisionButtons(result: ActionResult.Ok): List<Button> =
+    listOf(Button("↩️ Reopen", Cb.reopen(result.touchedTokens.first()))) +
+        listOfNotNull(
+            result.restate?.let {
+                Button(
+                    "➕ State the rest (${formatAmount(it.amount)} ${it.currency})",
+                    Cb.restate(it.myToken, it.peerToken),
+                )
+            },
+        )
+
 fun appearedButtons(mine: List<ShownInterest>): List<Button> =
     mine.flatMap { s -> s.found.flatMap { c -> nameGiveUpButtons(s.request, c.request) } }

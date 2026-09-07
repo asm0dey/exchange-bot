@@ -15,6 +15,7 @@ import io.kotest.matchers.string.shouldNotContain
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
+import io.ktor.client.engine.mock.respondError
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.OutgoingContent
@@ -22,7 +23,7 @@ import io.ktor.http.headersOf
 import kotlin.time.Instant
 
 /**
- * Covers the `replyToClose` fix (`LifecycleCommands.kt`): HTML parse mode must apply
+ * Covers the `replyToDecision` fix (`LifecycleCommands.kt`): HTML parse mode must apply
  * only to [ActionResult.Ok] text, never to `Denied`/`Gone`, because those branches can
  * carry raw user input (the `/cancel`/`/done` short id) that was never meant to be
  * parsed as markup. Same technique as `ForgetCommandTest`/`AdminCommandTest` — the real
@@ -57,12 +58,20 @@ private class LifecycleCommandFixture(name: String) {
     val crypto = testCrypto()
     val requests = RequestRepository(ds, crypto)
     val messages = MessageLogRepository(ds, crypto)
+    val settings = ChatSettingsRepository(ds, crypto)
+
+    /** Never reached: no rate is cached, so every status is unavailable without a request going out. */
+    val rates = RateService(
+        RateClient(HttpClient(MockEngine { respondError(HttpStatusCode.ServiceUnavailable) })),
+        RateRepository(ds),
+    )
 
     init {
         Registry.requests = requests
         Registry.messages = messages
-        Registry.lifecycle = LifecycleService(requests)
-        Registry.buttons = ButtonService(messages)
+        Registry.settings = settings
+        Registry.lifecycle = LifecycleService(requests, settings, rates)
+        Registry.buttons = ButtonService(messages, requests)
     }
 }
 

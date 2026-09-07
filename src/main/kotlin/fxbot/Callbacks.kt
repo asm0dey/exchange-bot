@@ -50,10 +50,21 @@ suspend fun reopenCallback(t: String?, update: ProcessedUpdate, bot: TelegramBot
     val result = if (t == null) ActionResult.Denied(BROKEN_BUTTON)
         else Registry.lifecycle.reopen(chat.id, update.getUser().id, tif, t)
     logCommand("reopen_button", result.outcomeLabel())
-    respond(result, update, bot)
+    respond(result, update, bot, undoable = false)
 }
 
-private suspend fun respond(result: ActionResult, update: ProcessedUpdate, bot: TelegramBot) {
+/**
+ * [undoable] is false for the reopen button: its touched requests are RESTING again, so
+ * offering to reopen them could only ever answer "already waiting". The rewrite below
+ * still runs either way — it is what takes a stale "withdrawn"/"done" line back off the
+ * messages that carried the request.
+ */
+private suspend fun respond(
+    result: ActionResult,
+    update: ProcessedUpdate,
+    bot: TelegramBot,
+    undoable: Boolean = true,
+) {
     val user = update.getUser()
     val queryId = (update as? CallbackQueryUpdate)?.callbackQuery?.id
     when (result) {
@@ -63,15 +74,16 @@ private suspend fun respond(result: ActionResult, update: ProcessedUpdate, bot: 
             queryId?.let { answerCallbackQuery(it).send(user.id, bot) }
             // HTML: the text may carry a `mention(...)` link/@name built by LifecycleService.
             val reply = message { result.text }.options { parseMode = ParseMode.HTML }
-            if (result.closedTokens.isEmpty()) {
+            if (result.touchedTokens.isEmpty() || !undoable) {
                 reply.send(update.getChat().id, bot)
             } else {
-                // Undo, one press away: names the presser's own closed request, so pressing it
-                // never risks reviving a request that belongs to whoever else was named above.
-                reply.inlineKeyboardMarkup { "↩️ Reopen" callback Cb.reopen(result.closedTokens.first()) }
+                // Undo, one press away, plus whatever the swap left the presser holding. The
+                // undo names the presser's own closed request, so pressing it never risks
+                // reviving a request that belongs to whoever else was named above.
+                reply.inlineKeyboardMarkup { decisionButtons(result).forEach { b -> b.label callback b.data; br() } }
                     .send(update.getChat().id, bot)
             }
-            Registry.buttons.stripFor(result.closedTokens, update.getChat().id, bot)
+            if (result.touchedTokens.isNotEmpty()) Registry.buttons.refreshFor(result.touchedTokens, bot)
         }
         is ActionResult.Denied, is ActionResult.Gone -> {
             // Private to the presser: a refusal is not the group's business. This also

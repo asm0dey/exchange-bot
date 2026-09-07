@@ -37,7 +37,8 @@ private data class Payload(
 private val SHORT_IDS: List<String> =
     ('a'..'z').map { it.toString() } + ('a'..'z').flatMap { c -> ('0'..'9').map { "$c$it" } }
 
-enum class DoneOutcome { BOTH, ALREADY_CLOSED, PEER_GONE }
+/** What each side of a two-sided close actually closed — see [RequestRepository.closeBothWhole]. */
+data class ClosedPair(val mine: List<String>, val theirs: List<String>)
 
 class RequestRepository(
     ds: DataSource,
@@ -309,24 +310,29 @@ class RequestRepository(
     }
 
     /**
-     * Closes both sides in one Exposed transaction, each guarded by its expected
-     * state, so two people pressing Done at the same moment close it exactly once:
-     * the `UPDATE ... WHERE state = 'OPEN'` only ever affects a row still resting,
-     * the same row-level guard [transition] already relies on.
+     * Closes the whole interest [r] belongs to — every OPEN row sharing its token, via
+     * [closeInterest] — or [r] alone when it was typed in a chat and has no siblings.
+     * Returns the ref tokens actually closed, so the messages that carried them can be
+     * rewritten. The `WHERE state = 'OPEN'` guard means a double press closes once.
      */
-    fun markDone(mine: String, theirs: String?): DoneOutcome = transaction(db) {
-        fun close(token: String): Boolean =
-            Requests.update({ (Requests.refToken eq token) and (Requests.state eq RequestState.OPEN.name) }) {
-                it[Requests.state] = RequestState.DONE.name
-                it[Requests.closedAt] = clock.instant()
-            } == 1
+    fun closeWhole(r: Request, to: RequestState): List<String> = transaction(db) {
+        r.interestToken?.let { closeInterest(it, to) }
+            ?: if (transition(r.refToken, RequestState.OPEN, to)) listOf(r.refToken) else emptyList()
+    }
 
-        if (!close(mine)) {
-            DoneOutcome.ALREADY_CLOSED
-        } else {
-            val theirsClosed = theirs?.let(::close) ?: true
-            if (theirs != null && !theirsClosed) DoneOutcome.PEER_GONE else DoneOutcome.BOTH
-        }
+    /**
+     * A done is one decision about two interests, so both close in ONE transaction —
+     * a failure between them would otherwise leave one side closed and the other still
+     * resting, with nothing on screen admitting it. Exposed treats the nested
+     * `transaction(db)` calls inside as part of this one, so there is a single commit.
+     *
+     * [theirs] is left untouched when the presser's own side turns out to be closed
+     * already: holding one live token must not close somebody else's request on its own.
+     */
+    fun closeBothWhole(mine: Request, theirs: Request?, to: RequestState): ClosedPair = transaction(db) {
+        val closedMine = closeWhole(mine, to)
+        if (closedMine.isEmpty()) ClosedPair(emptyList(), emptyList())
+        else ClosedPair(closedMine, theirs?.let { closeWhole(it, to) }.orEmpty())
     }
 
     /** Puts a closed request back with a fresh expiry; clears `closed_at`, like every reopen via [transition] does. */

@@ -16,8 +16,13 @@ import eu.vendeli.tgbot.types.msg.EntityType
 
 /**
  * Command-path counterpart of [respond]'s Ok branch in Callbacks.kt: same HTML parse
- * mode (the text may carry a `mention(...)` link/@name), same Reopen button when a
- * request just closed, same button-cleanup on the messages that suggested it.
+ * mode (the text may carry a `mention(...)` link/@name), same [decisionButtons] when a
+ * request just closed, same rewrite of the messages that carried it.
+ *
+ * [undoable] is false for `/reopen`: its touched requests are RESTING again, so there is
+ * nothing to undo — a Reopen button on them could only ever answer "already waiting".
+ * The rewrite still runs, and is the point: it takes the "withdrawn"/"done" line back off
+ * the messages that carried them.
  *
  * HTML parse mode is applied only to [ActionResult.Ok] text — that's the only branch
  * that ever embeds a [mention]. `Denied`/`Gone` text can carry raw user input (e.g. a
@@ -26,17 +31,26 @@ import eu.vendeli.tgbot.types.msg.EntityType
  * swallowed — the reply never arrives) or, worse, an attacker-authored tag rendering
  * as a live link.
  */
-private suspend fun replyToClose(chatId: Long, bot: TelegramBot, result: ActionResult) {
+private suspend fun replyToDecision(
+    chatId: Long,
+    bot: TelegramBot,
+    result: ActionResult,
+    undoable: Boolean = true,
+) {
     val reply = message { result.text }.let {
         if (result is ActionResult.Ok) it.options { parseMode = ParseMode.HTML } else it
     }
-    if (result is ActionResult.Ok && result.closedTokens.isNotEmpty()) {
-        reply.inlineKeyboardMarkup { "↩️ Reopen" callback Cb.reopen(result.closedTokens.first()) }
+    if (result !is ActionResult.Ok || result.touchedTokens.isEmpty()) {
+        reply.send(chatId, bot)
+        return
+    }
+    if (undoable) {
+        reply.inlineKeyboardMarkup { decisionButtons(result).forEach { b -> b.label callback b.data; br() } }
             .send(chatId, bot)
-        Registry.buttons.stripFor(result.closedTokens, chatId, bot)
     } else {
         reply.send(chatId, bot)
     }
+    Registry.buttons.refreshFor(result.touchedTokens, bot)
 }
 
 @CommandHandler(["/cancel"])
@@ -52,7 +66,7 @@ suspend fun cancel(update: ProcessedUpdate, bot: TelegramBot) {
     }
     val result = Registry.lifecycle.cancel(chat.id, user.id, shortId)
     logCommand("cancel", result.outcomeLabel())
-    replyToClose(chat.id, bot, result)
+    replyToDecision(chat.id, bot, result)
 }
 
 @CommandHandler(["/reopen"])
@@ -62,7 +76,7 @@ suspend fun reopen(update: ProcessedUpdate, bot: TelegramBot) {
     val tif = Registry.settings.get(chat.id).tifDays
     val result = Registry.lifecycle.reopen(chat.id, update.getUser().id, tif)
     logCommand("reopen", result.outcomeLabel())
-    message { result.text }.send(chat.id, bot)
+    replyToDecision(chat.id, bot, result, undoable = false)
 }
 
 @CommandHandler(["/done"])
@@ -80,7 +94,7 @@ suspend fun done(update: ProcessedUpdate, bot: TelegramBot) {
     val peerId = resolvePeer(update, chat.id)
     val result = Registry.lifecycle.doneByShortId(chat.id, user.id, shortId, peerId)
     logCommand("done", result.outcomeLabel())
-    replyToClose(chat.id, bot, result)
+    replyToDecision(chat.id, bot, result)
 }
 
 private const val REDACTED = "(a message was edited at someone's request)"

@@ -1,10 +1,33 @@
 package fxbot
 
+import java.math.BigDecimal
+
+/**
+ * What a done left the presser holding, offered back so they can state it again in one
+ * press. Never written to the closed row: the residual is a NEW thing the person states,
+ * and the amount they originally typed is never rewritten (ADR 0003).
+ */
+data class RestateOffer(
+    val myToken: String,
+    val peerToken: String,
+    val amount: BigDecimal,
+    val currency: String,
+)
+
 sealed interface ActionResult {
     val text: String
 
-    /** [closedTokens] lists every request just closed, so button cleanup knows what to strip. */
-    data class Ok(override val text: String, val closedTokens: List<String>) : ActionResult
+    /**
+     * [touchedTokens] lists every request whose state just changed — closed by a done or
+     * a cancel, revived by a reopen — so the messages that carried them can be rewritten
+     * from live state. A reopen belongs here as much as a close does: a carrier message
+     * left saying "withdrawn" about a request that is resting again is a lie on screen.
+     */
+    data class Ok(
+        override val text: String,
+        val touchedTokens: List<String>,
+        val restate: RestateOffer? = null,
+    ) : ActionResult
     data class Denied(override val text: String) : ActionResult
     data class Gone(override val text: String) : ActionResult
 }
@@ -22,10 +45,18 @@ internal fun ActionResult.outcomeLabel(): String = when (this) {
  * client sent us (callback_data is a UI suggestion, not proof of identity). Cancel
  * and reopen are the owner's alone; either counterparty may confirm a swap happened.
  */
-class LifecycleService(private val requests: RequestRepository) {
+class LifecycleService(
+    private val requests: RequestRepository,
+    private val settings: ChatSettingsRepository,
+    private val rates: RateService,
+) {
 
     /** Text sent with HTML parse mode — see [mention] — so callers must send it that way. */
     private fun nameOf(r: Request) = mention(r.username, r.userId, r.username ?: "this person")
+
+    /** Each chat's own time in force, and the no-names default for the row with no chat. */
+    private fun tifFor(chatId: Long): Int =
+        if (chatId == NO_NAMES_CHAT_ID) NO_NAMES_TIF_DAYS else settings.get(chatId).tifDays
 
     fun cancel(chatId: Long, userId: Long, shortId: String): ActionResult {
         val r = requests.byShortId(chatId, shortId)
@@ -40,11 +71,10 @@ class LifecycleService(private val requests: RequestRepository) {
             ?: return ActionResult.Gone("That request is gone.")
         if (r.userId != userId) return ActionResult.Denied("That's not your request.")
         if (r.state != RequestState.OPEN) return ActionResult.Gone("That request is already closed.")
-        return if (requests.transition(token, RequestState.OPEN, RequestState.CANCELLED)) {
-            ActionResult.Ok("Withdrawn.", listOf(token))
-        } else {
-            ActionResult.Gone("That request is already closed.")
-        }
+        // Withdrawing one showing withdraws the interest behind it, wherever else it is shown.
+        val closed = requests.closeWhole(r, RequestState.CANCELLED)
+        return if (closed.isEmpty()) ActionResult.Gone("That request is already closed.")
+        else ActionResult.Ok("Withdrawn.", closed)
     }
 
     /**
@@ -80,33 +110,43 @@ class LifecycleService(private val requests: RequestRepository) {
             return ActionResult.Denied("Those two requests aren't a pair I can close together.")
         }
 
-        return when (requests.markDone(mine.refToken, theirs?.refToken)) {
-            DoneOutcome.BOTH -> {
-                // A known-accepted residual (ADR/progress R45) relies on this announcement to
-                // make a force-close visible: a member can pair their own token with an
-                // uninvolved same-chat opposite-side request and close it out from under its
-                // owner. The mitigation is that the closure names BOTH people publicly and the
-                // wronged party can /reopen — so the text MUST name both, not just say "done".
-                // `theirs` can still be null here (the command path with no counterparty
-                // resolved closes only the caller's own request), in which case there is
-                // nobody else to name.
-                val text = if (theirs != null) {
-                    "Marked done: ${nameOf(mine)} and ${nameOf(theirs)}. If that's wrong, /reopen."
-                } else {
-                    "Marked done. If that's wrong, /reopen."
-                }
-                ActionResult.Ok(text, listOfNotNull(mine.refToken, theirs?.refToken))
-            }
-            DoneOutcome.PEER_GONE ->
-                // theirs is always non-null when markDone returns PEER_GONE — that outcome only
-                // occurs when a theirsToken was supplied and its close failed.
-                ActionResult.Ok(
-                    "Closed only ${nameOf(mine)}'s — ${nameOf(theirs!!)}'s was already closed.",
-                    listOf(mine.refToken),
-                )
-            DoneOutcome.ALREADY_CLOSED ->
-                ActionResult.Gone("That one is already closed.")
+        if (mine.state != RequestState.OPEN) return ActionResult.Gone("That one is already closed.")
+        // Both interests close together, in one transaction: a swap is one decision, and a
+        // half-applied one would leave a person resting against a counterparty who is gone.
+        val closed = requests.closeBothWhole(
+            mine,
+            theirs?.takeIf { it.state == RequestState.OPEN },
+            RequestState.DONE,
+        )
+        if (closed.mine.isEmpty()) return ActionResult.Gone("That one is already closed.")
+        if (theirs != null && closed.theirs.isEmpty()) {
+            return ActionResult.Ok(
+                "Closed only ${nameOf(mine)}'s — ${nameOf(theirs)}'s was already closed.",
+                closed.mine,
+            )
         }
+
+        // A known-accepted residual (ADR/progress R45) relies on this announcement to make a
+        // force-close visible: a member can pair their own token with an uninvolved same-chat
+        // opposite-side request and close it out from under its owner. The mitigation is that
+        // the closure names BOTH people publicly and the wronged party can /reopen — so the
+        // text MUST name both, not just say "done". `theirs` can still be null here (the
+        // command path with no counterparty resolved closes only the caller's own request), in
+        // which case there is nobody else to name.
+        val text = if (theirs != null) {
+            "Marked done: ${nameOf(mine)} and ${nameOf(theirs)}. If that's wrong, /reopen."
+        } else {
+            "Marked done. If that's wrong, /reopen."
+        }
+        // Worked out from the two closed rows, in the presser's own stated currency. Nothing
+        // is offered when there is none left over, or when the two are stated in different
+        // currencies with no reference rate to bridge them.
+        val offer = theirs?.let { peer ->
+            residualOf(mine, peer, rates.status(mine.pair).rate)?.let { left ->
+                RestateOffer(mine.refToken, peer.refToken, left, mine.statedCurrency)
+            }
+        }
+        return ActionResult.Ok(text, closed.mine + closed.theirs, offer)
     }
 
     fun doneByShortId(chatId: Long, userId: Long, shortId: String, peerUserId: Long?): ActionResult {
@@ -130,10 +170,15 @@ class LifecycleService(private val requests: RequestRepository) {
         if (named != null && named.userId != userId) return ActionResult.Denied("That's not your request.")
         val last = named ?: requests.mostRecentlyClosed(chatId, userId)
             ?: return ActionResult.Gone("You have nothing closed here to bring back.")
-        return if (requests.reopen(last.refToken, tifDays)) {
-            ActionResult.Ok("Back on the waitlist: ${describe(last)}", emptyList())
-        } else {
-            ActionResult.Gone("That one is already waiting.")
-        }
+        // A named token can already be resting — a second press of the same Reopen button.
+        // `mostRecentlyClosed` never returns one, so this only guards the button form.
+        if (last.state == RequestState.OPEN) return ActionResult.Gone("That one is already waiting.")
+        // An interest comes back whole, each showing with its own chat's time in force; a
+        // request typed in a chat comes back alone, with the time in force of the chat it
+        // was typed in.
+        val revived = last.interestToken?.let { requests.reopenInterest(it, last.state, ::tifFor) }
+            ?: if (requests.reopen(last.refToken, tifDays)) listOf(last.refToken) else emptyList()
+        return if (revived.isEmpty()) ActionResult.Gone("That one is already waiting.")
+        else ActionResult.Ok("Resting again: ${describe(last)}", revived)
     }
 }
