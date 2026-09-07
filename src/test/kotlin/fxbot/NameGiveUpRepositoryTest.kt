@@ -69,6 +69,24 @@ class NameGiveUpRepositoryTest : StringSpec({
         g.dropClosed() shouldBe emptyList<Long>()
         g.stanceOf(a.refToken, b.refToken) shouldBe null
     }
+    "a give-up both sides already answered is dropped without telling anybody" {
+        val (g, requests) = giveUps("dropcloseddisclosed")
+        val a = requests.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
+        val b = requests.create(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i2")
+        // Both sides pressed, so the names were passed. Nothing deletes these rows at
+        // disclosure — they live on as OFFERED until one of the requests closes.
+        g.record(a.refToken, b.refToken, 1L, Stance.OFFERED)
+        g.record(b.refToken, a.refToken, 2L, Stance.OFFERED)
+        g.bothOffered(a.refToken, b.refToken) shouldBe true
+
+        requests.closeInterest("i2", RequestState.DONE)
+
+        // Person 1 is holding person 2's handle. "The other side closed theirs before
+        // answering, so nothing was passed on" would be a false statement to send them.
+        g.dropClosed() shouldBe emptyList<Long>()
+        g.stanceOf(a.refToken, b.refToken) shouldBe null
+        g.stanceOf(b.refToken, a.refToken) shouldBe null
+    }
     "a decline that dies with its requests tells nobody" {
         val (g, requests) = giveUps("dropclosedeclined")
         val a = requests.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")

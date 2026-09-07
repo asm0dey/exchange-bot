@@ -154,6 +154,56 @@ class TasksTest : StringSpec({
         // Nothing lapsed, so the message-rewriting pass was not asked to do anything.
         lapsed shouldHaveSize 0
     }
+    "a hook that throws neither fails the sweep nor stops the other hook" {
+        val ds = memDataSource("sweephookfails")
+        migrate(ds)
+        val crypto = testCrypto()
+        val sweepAt = T0.plusSeconds(8 * 86_400)
+        val clock = Clock.fixed(sweepAt, ZoneOffset.UTC)
+        // One showing stated at T0 with a 7-day time in force: it lapses in this sweep,
+        // so onClosed fires — and throws.
+        val lapsing = RequestRepository(ds, crypto, Clock.fixed(T0, ZoneOffset.UTC))
+        lapsing.create(-100L, 9L, "zed", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7)
+        // A give-up whose peer closed, whose offerer is still resting: onGiveUpDied fires
+        // AFTER the throwing hook, and its rows are already gone by then.
+        val requests = RequestRepository(ds, crypto, clock)
+        val mine = requests.create(NO_NAMES_CHAT_ID, 7L, "bob", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
+        val theirs = requests.create(NO_NAMES_CHAT_ID, 8L, "ann", Side.BID, "EUR", BigDecimal("1"), EURRUB, 7, "i2")
+        val giveUps = NameGiveUpRepository(ds, crypto, clock).also {
+            it.record(mine.refToken, theirs.refToken, 7L, Stance.OFFERED)
+        }
+        requests.closeInterest("i2", RequestState.DONE)
+        val told = mutableListOf<List<Long>>()
+        val hk = housekeepingWith(
+            ds, crypto, clock, lapsing, giveUps = giveUps,
+            onGiveUpDied = { told += it },
+            onClosed = { throw IllegalStateException("telegram is down") },
+        )
+
+        hk.sweep() shouldBe 1
+        told shouldBe listOf(listOf(7L))
+    }
+    "a throwing give-up notice does not fail the sweep either" {
+        val ds = memDataSource("sweepgiveuphookfails")
+        migrate(ds)
+        val crypto = testCrypto()
+        val clock = Clock.fixed(T0, ZoneOffset.UTC)
+        val requests = RequestRepository(ds, crypto, clock)
+        val mine = requests.create(NO_NAMES_CHAT_ID, 7L, "bob", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
+        val theirs = requests.create(NO_NAMES_CHAT_ID, 8L, "ann", Side.BID, "EUR", BigDecimal("1"), EURRUB, 7, "i2")
+        val giveUps = NameGiveUpRepository(ds, crypto, clock).also {
+            it.record(mine.refToken, theirs.refToken, 7L, Stance.OFFERED)
+        }
+        requests.closeInterest("i2", RequestState.DONE)
+        val hk = housekeepingWith(
+            ds, crypto, clock, requests, giveUps = giveUps,
+            onGiveUpDied = { throw IllegalStateException("telegram is down") },
+        )
+
+        // A retry could not recover anything — the rows are gone — so the task reports
+        // its real result rather than asking db-scheduler to run the whole sweep again.
+        hk.sweep() shouldBe 0
+    }
     "startScheduler registers both tasks with no task_data" {
         // db-scheduler's task_data is an unencrypted BYTEA — nothing chat- or
         // pair-identifying may ever land in it. `Tasks.recurring(name, schedule)`

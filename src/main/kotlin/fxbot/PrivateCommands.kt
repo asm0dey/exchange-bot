@@ -167,12 +167,23 @@ private const val GIVE_UP_DIED =
  * Tells each person whose agreement to pass names died with the other side's interest.
  * A private chat's id IS the person's user id, so this addresses them directly.
  *
- * Not retried and not checked: the row is already gone by the time this runs, so there is
- * nothing left to say a second time, and a person who has blocked the bot is unreachable
- * either way.
+ * Each recipient is INDEPENDENT. The rows are already deleted by the time this runs, so a
+ * throw here is not retryable — it would simply lose the rest of the list, and one
+ * unreachable person must not silently cost everybody after them their message. A
+ * Telegram-side refusal (blocked bot) arrives as a `Response` this never inspects and is
+ * genuinely nothing to do about; only a transport throw is caught, counted and stepped
+ * over. Cancellation is not a failure and is rethrown.
  */
 fun telegramGiveUpDied(bot: TelegramBot): suspend (List<Long>) -> Unit = { userIds ->
-    for (userId in userIds) message { GIVE_UP_DIED }.send(userId, bot)
+    for (userId in userIds) {
+        try {
+            message { GIVE_UP_DIED }.send(userId, bot)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            adapterLogger.warn("give-up died notice: outcome=threw cause=${e.javaClass.simpleName}")
+        }
+    }
 }
 
 /**

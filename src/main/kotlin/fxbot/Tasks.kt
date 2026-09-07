@@ -3,6 +3,7 @@ package fxbot
 import com.github.kagkarlsson.scheduler.Scheduler
 import com.github.kagkarlsson.scheduler.task.helper.Tasks
 import com.github.kagkarlsson.scheduler.task.schedule.Schedules
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
 import java.time.Clock
@@ -32,6 +33,11 @@ class Housekeeping(
      *
      * Order matters: the lapsing runs first, so the two `dropClosed` passes below see the
      * showings that just expired as closed and clean up after them in the same sweep.
+     *
+     * The two hooks are INDEPENDENT of each other and neither can fail the task. Their
+     * rows are already deleted by the time they run, so a db-scheduler retry would find
+     * nothing left to tell anybody about — letting one throw would permanently lose the
+     * other's notifications, which is exactly the loss these hooks exist to prevent.
      */
     suspend fun sweep(): Int {
         val expired = requests.expireDue(clock.instant())
@@ -39,9 +45,20 @@ class Housekeeping(
         val bereaved = giveUps.dropClosed()
         val stalePending = pending.dropClosed() + pending.dropOlderThan(clock.instant().minus(PENDING_MAX_AGE))
         logger.info("sweep: expired=${expired.size} pruned=$pruned giveUpsTold=${bereaved.size} pending=$stalePending")
-        if (expired.isNotEmpty()) onClosed(expired)
-        if (bereaved.isNotEmpty()) onGiveUpDied(bereaved)
+        if (expired.isNotEmpty()) fire("closed") { onClosed(expired) }
+        if (bereaved.isNotEmpty()) fire("giveUpDied") { onGiveUpDied(bereaved) }
         return expired.size
+    }
+
+    /** Runs one hook, logging a fixed outcome label if it throws. Cancellation is not a failure. */
+    private suspend fun fire(hook: String, body: suspend () -> Unit) {
+        try {
+            body()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.warn("sweep: hook=$hook outcome=threw cause=${e.javaClass.simpleName}")
+        }
     }
 
     /**

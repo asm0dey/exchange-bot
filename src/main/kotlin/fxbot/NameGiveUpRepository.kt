@@ -83,22 +83,34 @@ class NameGiveUpRepository(
      * They get their id out of their OWN still-resting request's sealed payload — the
      * `user_ref` column here is a one-way MAC and is never a route back to a person.
      *
-     * A row whose OWN request has gone too is dropped silently, and so is a decline:
-     * in the first case there is nobody left to tell and their interest is closed anyway,
-     * and in the second the person's own "no" is what ended it — they are not waiting.
+     * Three kinds of row are dropped silently. One whose OWN request has gone too: there
+     * is nobody left to tell and their interest is closed anyway. A decline: the person's
+     * own "no" is what ended it, so they are not waiting on anything. And one the peer
+     * already ANSWERED — when the reciprocal row is `OFFERED` too, the names were passed
+     * and nothing deletes these rows at disclosure, so they survive as `OFFERED` until a
+     * request closes. Telling somebody who is holding the other person's handle that
+     * "nothing was passed on" would be false, and this is the ordinary path: any later
+     * cancel, done or lapse of the peer's showing reaches it.
      */
     fun dropClosed(): List<Long> = transaction(db) {
         val live = Requests.selectAll()
             .where { Requests.state eq RequestState.OPEN.name }
             .map { it[Requests.refToken] }
             .toSet()
-        val dead = NameGiveUps.selectAll()
+        val rows = NameGiveUps.selectAll()
             .map {
                 Triple(it[NameGiveUps.refToken], it[NameGiveUps.peerRefToken], Stance.valueOf(it[NameGiveUps.stance]))
             }
-            .filter { (mine, theirs, _) -> mine !in live || theirs !in live }
+        // Every direction that says yes, so the reciprocal of a row can be looked up
+        // without a second query — this is the one read the whole method works from.
+        val offered = rows.filter { (_, _, stance) -> stance == Stance.OFFERED }
+            .map { (mine, theirs, _) -> mine to theirs }
+            .toSet()
+        val dead = rows.filter { (mine, theirs, _) -> mine !in live || theirs !in live }
         val bereaved = dead
-            .filter { (mine, theirs, stance) -> stance == Stance.OFFERED && mine in live && theirs !in live }
+            .filter { (mine, theirs, stance) ->
+                stance == Stance.OFFERED && mine in live && theirs !in live && (theirs to mine) !in offered
+            }
             .mapNotNull { (mine, _, _) -> requests.byRefToken(mine)?.userId }
             .distinct()
         for ((mine, theirs, _) in dead) {

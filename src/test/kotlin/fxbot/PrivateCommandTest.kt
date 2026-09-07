@@ -167,6 +167,31 @@ private fun throwingBot(): TelegramBot = TelegramBot(
     httpClient = HttpClient(MockEngine { throw java.io.IOException("connection refused") }),
 )
 
+/**
+ * Blows up on the FIRST call and records every one after it — one unreachable recipient
+ * partway through a list, which is the shape that silently costs everybody after them
+ * their message if a loop has no per-recipient catch.
+ */
+private fun throwingOnceBot(sink: MutableList<Call>): TelegramBot {
+    var thrown = false
+    return TelegramBot(
+        token = "000:fake-token-for-tests",
+        httpClient = HttpClient(MockEngine { request ->
+            if (!thrown) {
+                thrown = true
+                throw java.io.IOException("connection refused")
+            }
+            val bytes = (request.body as? OutgoingContent.ByteArrayContent)?.bytes() ?: ByteArray(0)
+            sink += Call(request.url.encodedPath.substringAfterLast('/'), bytes.decodeToString())
+            respond(
+                """{"ok":true,"result":{"message_id":1,"date":0,"chat":{"id":-100,"type":"group"}}}""",
+                HttpStatusCode.OK,
+                headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        }),
+    )
+}
+
 /** A `getChatMember` success carrying [status], with only the fields that variant requires. */
 private fun memberResult(status: String): String = when (status) {
     "creator" -> """{"ok":true,"result":{"status":"creator","user":{"id":1,"is_bot":false,"first_name":"B"},"is_anonymous":false}}"""
@@ -578,6 +603,34 @@ class PrivateCommandTest : StringSpec({
         // Null is what GiveUpService already reads as "no route".
         telegramNames(refusingBot(mutableListOf())).handleFor(1L) shouldBe null
         telegramNames(throwingBot()).handleFor(1L) shouldBe null
+    }
+
+    "the give-up died notice reaches each person, and names nobody" {
+        val sent = mutableListOf<Call>()
+        telegramGiveUpDied(recordingBot(sent))(listOf(7L, 8L))
+
+        sent shouldHaveSize 2
+        sent.map { it.path } shouldBe listOf("sendMessage", "sendMessage")
+        // A private chat's id IS the person's user id, so these are the two recipients.
+        sent[0].body shouldContain """"chat_id":7"""
+        sent[1].body shouldContain """"chat_id":8"""
+        // Names nobody: no handle, no mention link, no counterparty id, no amount.
+        sent.forEach { call ->
+            call.body shouldNotContain "@"
+            call.body shouldNotContain "tg://user"
+            call.body shouldContain "nothing was passed on"
+        }
+    }
+
+    "one unreachable person does not cost everybody after them their notice" {
+        val sent = mutableListOf<Call>()
+        // The rows are already deleted when this runs, so a throw is not retryable —
+        // it would simply lose the rest of the list.
+        telegramGiveUpDied(throwingOnceBot(sent))(listOf(7L, 8L, 9L))
+
+        sent shouldHaveSize 2
+        sent[0].body shouldContain """"chat_id":8"""
+        sent[1].body shouldContain """"chat_id":9"""
     }
 
     // ---- Fix 5: the presser is never told a delivery that did not happen ----
