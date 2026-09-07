@@ -12,11 +12,10 @@ import eu.vendeli.tgbot.types.component.getUser
 import org.slf4j.LoggerFactory
 
 /**
- * True for every command that still refuses privately: the three admin commands, `/reopen`,
- * and plain `/forget`. It deliberately does NOT say "for a group chat's admins" — `/reopen`
- * and `/forget` are nobody's admin commands, and `/forget` is advertised in the private
- * command menu, so a person following that menu would be told a falsehood about their own
- * command.
+ * True for every command that still refuses privately: `/pair`, `/tif` and `/fanout`. It
+ * deliberately does NOT say "for a group chat's admins" — this guard runs BEFORE the admin
+ * check, so it is also what a non-admin sees, and it would be telling them their problem is
+ * a permission they may well have.
  */
 private const val PRIVATE_HINT =
     "That one only works in a group chat. Add me to your group and use it there."
@@ -33,9 +32,12 @@ internal fun ProcessedUpdate.isGroupChat(): Boolean =
     getChat().type == ChatType.Group || getChat().type == ChatType.Supergroup
 
 /**
- * Kept for `/pair` and `/tif` only. Every other command now has a private meaning: a
- * person states an interest to the bot privately and it is shown in the chats they share
- * with it, so a blanket "add me to a group" refusal would refuse the whole point.
+ * Kept for the three admin commands — `/pair`, `/tif` and `/fanout`, all of which reach it
+ * through `AdminCommands.adminOnly` — and for nothing else. Every other command now has a
+ * private meaning, `/reopen` included: a person states an interest to the bot privately and
+ * it is shown in the chats they share with it, so a blanket "add me to a group" refusal
+ * would refuse the whole point. `/forget all` has its own private-chat guard in [forget],
+ * not this one.
  * Internal (not private) so every command file in this package shares one guard.
  */
 internal suspend fun inGroupOrExplain(update: ProcessedUpdate, bot: TelegramBot): Boolean {

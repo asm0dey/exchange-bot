@@ -59,6 +59,7 @@ private class LifecycleCommandFixture(name: String) {
     val requests = RequestRepository(ds, crypto)
     val messages = MessageLogRepository(ds, crypto)
     val settings = ChatSettingsRepository(ds, crypto)
+    val giveUps = NameGiveUpRepository(ds, crypto)
 
     /** Never reached: no rate is cached, so every status is unavailable without a request going out. */
     val rates = RateService(
@@ -70,7 +71,7 @@ private class LifecycleCommandFixture(name: String) {
         Registry.requests = requests
         Registry.messages = messages
         Registry.settings = settings
-        Registry.lifecycle = LifecycleService(requests, settings, rates)
+        Registry.lifecycle = LifecycleService(requests, settings, rates, giveUps)
         Registry.buttons = ButtonService(messages, requests)
     }
 }

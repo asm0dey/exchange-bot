@@ -4,6 +4,7 @@ import eu.vendeli.tgbot.TelegramBot
 import eu.vendeli.tgbot.api.chat.getChat
 import eu.vendeli.tgbot.api.chat.getChatMember
 import eu.vendeli.tgbot.api.message.message
+import eu.vendeli.tgbot.types.chat.ChatMember
 import eu.vendeli.tgbot.types.component.ParseMode
 import eu.vendeli.tgbot.types.component.ProcessedUpdate
 import eu.vendeli.tgbot.types.component.getChat
@@ -23,6 +24,7 @@ internal val PRIVATE_HELP_TEXT = """
     /status — your interests and where each still rests
     /cancel a1 — withdraw an interest, every showing with it
     /done a1 @anna — you two swapped
+    /reopen — bring back the interest that closed last
     /settings — your size tolerance
     /forget — erase what I hold about you (add 'all' to reach every group)
 """.trimIndent()
@@ -129,8 +131,14 @@ fun telegramMembership(bot: TelegramBot) = MembershipProbe { chatId, userId ->
     // A Telegram-side refusal comes back as a null member, not a throw
     // (`throwExOnActionsFailure` is false everywhere in this codebase), and is
     // indistinguishable from "not a member" — so it is not counted as a failure.
-    when (member?.status) {
-        "creator", "administrator", "member", "restricted" -> true
+    //
+    // Matched on the sealed subtype, not on the status string, because "restricted" alone
+    // does not answer the question: `ChatMember.Restricted` carries `isMember`, and it is
+    // false for somebody who is restricted and NOT in the chat. Reading the string would
+    // fan a showing — with their handle on it — out to a group they do not belong to.
+    when (member) {
+        is ChatMember.Owner, is ChatMember.Administrator, is ChatMember.Member -> true
+        is ChatMember.Restricted -> member.isMember
         else -> false
     }
 }
@@ -207,6 +215,14 @@ class AnnouncementNotSent : RuntimeException("Telegram refused an announcement s
  * `GiveUpService`'s existing "no longer waiting" refusal, which names nobody.
  */
 fun telegramSink(bot: TelegramBot) = AnnouncementSink { announcements, pings ->
+    // Counted here and thrown ONCE below, rather than thrown at the first refusal: a throw
+    // inside the loop abandons every announcement ordered behind the refusing chat, so one
+    // chat the bot has been kicked from would keep the rest pending until they aged out as
+    // stale — and on the startup path, where `flushAllOnStartup` reads every pending row,
+    // one dead chat would starve everybody's. The throw still has to happen, because it is
+    // the only way to tell the batcher a chat was NOT told; retrying the batch whole is the
+    // "told twice rather than never" trade `AnnouncementBatcher` documents.
+    var refused = 0
     for (a in announcements) {
         // `.await()` then check, NOT `.getOrNull()`: `throwExOnActionsFailure` is false
         // everywhere in this codebase, so Telegram refusing the send (bot kicked from the
@@ -219,7 +235,11 @@ fun telegramSink(bot: TelegramBot) = AnnouncementSink { announcements, pings ->
             .inlineKeyboardMarkup { a.buttons.forEach { b -> b.label callback b.data; br() } }
             .sendReturning(a.chatId, bot)
             .await()
-            .getOrNull() ?: throw AnnouncementNotSent()
+            .getOrNull()
+        if (sent == null) {
+            refused++
+            continue
+        }
         Registry.messages.record(a.chatId, sent.messageId, a.refTokens, a.userIds, a.text, a.buttons)
     }
     for (p in pings) {
@@ -230,4 +250,7 @@ fun telegramSink(bot: TelegramBot) = AnnouncementSink { announcements, pings ->
             .inlineKeyboardMarkup { p.buttons.forEach { b -> b.label callback b.data; br() } }
             .send(p.userId, bot)
     }
+    // After the pings, which are nobody's retry and are independent of any chat that
+    // refused above.
+    if (refused > 0) throw AnnouncementNotSent()
 }

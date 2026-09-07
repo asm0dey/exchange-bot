@@ -41,6 +41,26 @@ internal fun ActionResult.outcomeLabel(): String = when (this) {
 }
 
 /**
+ * Who a typed `/done` named, as far as the command surface could resolve them. Three
+ * cases, not two, because on the no-names side "somebody I can't place" and "somebody who
+ * never agreed to pass names" MUST read as one refusal: if they read differently, the
+ * command answers, for any handle a stranger cares to type, whether that person is resting
+ * anything with the bot at all.
+ */
+sealed interface NamedPeer {
+    /** No reply, no mention: the caller named nobody. */
+    data object Nobody : NamedPeer
+
+    /** Somebody was named, and nothing resting in this scope is theirs. */
+    data object Unplaceable : NamedPeer
+
+    data class Somebody(val userId: Long) : NamedPeer
+}
+
+/** Said once, so the two refusals [doneByShortId] must not tell apart cannot drift apart. */
+private const val NOT_A_PAIR = "Those two requests aren't a pair I can close together."
+
+/**
  * Authorization is decided here, from the acting user id — never from anything a
  * client sent us (callback_data is a UI suggestion, not proof of identity). Cancel
  * and reopen are the owner's alone; either counterparty may confirm a swap happened.
@@ -49,6 +69,8 @@ class LifecycleService(
     private val requests: RequestRepository,
     private val settings: ChatSettingsRepository,
     private val rates: RateService,
+    /** Consent, for the one authorization a chat's own visibility cannot stand in for. */
+    private val giveUps: NameGiveUpRepository,
 ) {
 
     /** Text sent with HTML parse mode — see [mention] — so callers must send it that way. */
@@ -107,7 +129,7 @@ class LifecycleService(
                 theirs.userId != mine.userId
             )
         ) {
-            return ActionResult.Denied("Those two requests aren't a pair I can close together.")
+            return ActionResult.Denied(NOT_A_PAIR)
         }
 
         if (mine.state != RequestState.OPEN) return ActionResult.Gone("That one is already closed.")
@@ -149,13 +171,40 @@ class LifecycleService(
         return ActionResult.Ok(text, closed.mine + closed.theirs, offer)
     }
 
-    fun doneByShortId(chatId: Long, userId: Long, shortId: String, peerUserId: Long?): ActionResult {
+    /**
+     * The typed form. In a chat, [done]'s own guard is the whole of the authorization: every
+     * member can already read every name there, a wrongful close is publicly visible, and
+     * `/reopen` undoes it.
+     *
+     * On the no-names side none of that holds. The guard passes trivially there — both
+     * requests carry `chatId = 0`, and the opposite side is arranged by stating it — so
+     * without the check below a stranger could close somebody's whole interest, in every
+     * chat it is shown in, and be told "Marked done: @them and @you", which is the bot
+     * naming a person who never agreed to be named (ADR 0007). So the peer must be somebody
+     * this caller has actually passed names with: the spec's "after a name give-up", read
+     * from the table rather than from anything typed.
+     *
+     * Both refusals are [NOT_A_PAIR], deliberately: a distinct "they never agreed" would
+     * itself confirm that the named person rests an interest, which is the disclosure this
+     * check exists to prevent.
+     */
+    fun doneByShortId(chatId: Long, userId: Long, shortId: String, peer: NamedPeer): ActionResult {
         val mine = requests.byShortId(chatId, shortId)
             // shortId is raw user input, never validated — escaped in case this text is
             // ever sent under an HTML parse mode by some future caller.
             ?: return ActionResult.Gone("I can't find a waiting request called ${escapeHtml(shortId)} here.")
         if (mine.userId != userId) return ActionResult.Denied("That's not your request.")
-        val theirs = peerUserId?.let { peer -> requests.resting(chatId).firstOrNull { it.userId == peer } }
+        val noNames = chatId == NO_NAMES_CHAT_ID
+        // In a chat an unplaceable name stays what it has always been — nobody was named,
+        // and the caller's own request closes alone.
+        if (noNames && peer is NamedPeer.Unplaceable) return ActionResult.Denied(NOT_A_PAIR)
+        val theirs = (peer as? NamedPeer.Somebody)
+            ?.let { named -> requests.resting(chatId).firstOrNull { it.userId == named.userId } }
+        if (noNames && peer is NamedPeer.Somebody &&
+            (theirs == null || !giveUps.bothOffered(mine.refToken, theirs.refToken))
+        ) {
+            return ActionResult.Denied(NOT_A_PAIR)
+        }
         return done(userId, mine.refToken, theirs?.refToken)
     }
 

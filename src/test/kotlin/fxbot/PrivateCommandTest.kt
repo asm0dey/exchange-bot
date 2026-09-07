@@ -8,7 +8,9 @@ import eu.vendeli.tgbot.types.common.CallbackQuery
 import eu.vendeli.tgbot.types.common.Update
 import eu.vendeli.tgbot.types.component.CallbackQueryUpdate
 import eu.vendeli.tgbot.types.component.MessageUpdate
+import eu.vendeli.tgbot.types.msg.EntityType
 import eu.vendeli.tgbot.types.msg.Message
+import eu.vendeli.tgbot.types.msg.MessageEntity
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.collections.shouldBeEmpty
@@ -95,7 +97,7 @@ private class PrivateFixture(name: String) {
         Registry.pending = pending
         Registry.messages = messages
         Registry.service = RequestService(requests, chats, rates)
-        Registry.lifecycle = LifecycleService(requests, chats, rates)
+        Registry.lifecycle = LifecycleService(requests, chats, rates, giveUps)
         Registry.buttons = ButtonService(messages, requests)
         Registry.forget = ForgetService(requests, messages, people, giveUps, pending)
         Registry.admin = AdminService(chats, client)
@@ -117,6 +119,26 @@ private fun updateFor(chatId: Long, chatType: ChatType, text: String, userId: Lo
     val chat = Chat(id = chatId, type = chatType)
     val user = User(id = userId, isBot = false, firstName = "Bob", username = "bob")
     val message = Message(messageId = 1L, date = KtInstant.fromEpochSeconds(0), chat = chat, from = user, text = text)
+    return MessageUpdate(updateId = 1, origin = Update(updateId = 1), message = message)
+}
+
+/**
+ * `/done a1 @name`, with the `@name` carried as a real Telegram `mention` entity —
+ * `resolvePeer` reads entities and never the raw text, so a peer is only ever named this
+ * way (or by a reply).
+ */
+private fun mentionUpdate(chatId: Long, chatType: ChatType, text: String, userId: Long = 1L): MessageUpdate {
+    val at = text.indexOf('@')
+    val chat = Chat(id = chatId, type = chatType)
+    val user = User(id = userId, isBot = false, firstName = "Bob", username = "bob")
+    val message = Message(
+        messageId = 1L,
+        date = KtInstant.fromEpochSeconds(0),
+        chat = chat,
+        from = user,
+        text = text,
+        entities = listOf(MessageEntity(EntityType.Mention, at, text.length - at)),
+    )
     return MessageUpdate(updateId = 1, origin = Update(updateId = 1), message = message)
 }
 
@@ -202,6 +224,15 @@ private fun memberResult(status: String): String = when (status) {
     "member" -> """{"ok":true,"result":{"status":"member","user":{"id":1,"is_bot":false,"first_name":"B"}}}"""
     "left" -> """{"ok":true,"result":{"status":"left","user":{"id":1,"is_bot":false,"first_name":"B"}}}"""
     "kicked" -> """{"ok":true,"result":{"status":"kicked","user":{"id":1,"is_bot":false,"first_name":"B"},"until_date":0}}"""
+    // `restricted` carries `is_member`, and it is FALSE for somebody who is restricted and
+    // not in the chat at all — the one status whose name does not settle the question.
+    "restricted_member", "restricted_left" ->
+        """{"ok":true,"result":{"status":"restricted","user":{"id":1,"is_bot":false,"first_name":"B"},""" +
+            """"is_member":${status == "restricted_member"},"can_send_messages":true,"can_send_audios":true,""" +
+            """"can_send_documents":true,"can_send_photos":true,"can_send_videos":true,"can_send_video_notes":true,""" +
+            """"can_send_voice_notes":true,"can_send_polls":true,"can_send_other_messages":true,""" +
+            """"can_add_web_page_previews":true,"can_change_info":false,"can_invite_users":false,""" +
+            """"can_pin_messages":false,"can_manage_topics":false,"until_date":0}}"""
     else -> error("no fixture for status $status")
 }
 
@@ -490,7 +521,7 @@ class PrivateCommandTest : StringSpec({
             "pair", "tolerance", "tif", "fanout", "forget", "help",
         )
         PRIVATE_COMMANDS.map { it.first } shouldContainExactlyInAnyOrder listOf(
-            "sell", "buy", "tolerance", "status", "cancel", "done", "settings", "forget", "help",
+            "sell", "buy", "tolerance", "status", "cancel", "done", "reopen", "settings", "forget", "help",
         )
         // Admin-only commands have no private meaning, so they are not suggested there.
         PRIVATE_COMMANDS.map { it.first } shouldNotContain "pair"
@@ -579,10 +610,13 @@ class PrivateCommandTest : StringSpec({
     // ---- Fix 4: the two Telegram adapters ----
 
     "the membership probe reads every status Telegram can answer with" {
-        listOf("creator", "administrator", "member").forEach { status ->
+        listOf("creator", "administrator", "member", "restricted_member").forEach { status ->
             telegramMembership(botReplying(memberResult(status))).isMember(GROUP, 1L) shouldBe true
         }
-        listOf("left", "kicked").forEach { status ->
+        // `restricted` with `is_member: false` is somebody restricted and NOT in the chat.
+        // Reading the status string alone would fan a showing — with their handle on it —
+        // out to a group they do not belong to.
+        listOf("left", "kicked", "restricted_left").forEach { status ->
             telegramMembership(botReplying(memberResult(status))).isMember(GROUP, 1L) shouldBe false
         }
     }
@@ -663,12 +697,160 @@ class PrivateCommandTest : StringSpec({
 
     // ---- Fix 2: the hint every remaining refusal shares ----
 
-    "the group-only hint claims nothing about admins, since /reopen and /forget share it" {
+    "the group-only hint claims nothing about admins, since the check runs before the admin one" {
         PrivateFixture("hintwording")
         val sent = mutableListOf<Call>()
-        reopen(updateFor(DM, ChatType.Private, "/reopen"), recordingBot(sent))
+        fanout(updateFor(DM, ChatType.Private, "/fanout on"), recordingBot(sent))
         val body = sent.single().body
         body shouldContain "group chat"
         body shouldNotContain "admin"
+    }
+
+    // ---- C-1: a stranger can neither force-close nor unmask a no-names interest ----
+
+    "a private /done naming somebody who never agreed closes nothing and names nobody" {
+        val f = PrivateFixture("donestranger")
+        // Mallory states one interest of her own, purely to have a short id to type.
+        val mine = f.requests.create(
+            NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1",
+        )
+        val victim = f.requests.create(
+            NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2",
+        )
+        val showing = f.requests.create(GROUP, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
+        val sent = mutableListOf<Call>()
+
+        done(mentionUpdate(DM, ChatType.Private, "/done ${mine.shortId} @ann"), recordingBot(sent))
+
+        // Nothing the bot says may confirm that @ann rests anything at all (ADR 0007).
+        sent.joinToString { it.body } shouldNotContain "@ann"
+        // And nothing closed: not the victim's interest, not its showing, not the caller's.
+        f.requests.byRefToken(victim.refToken)!!.state shouldBe RequestState.OPEN
+        f.requests.byRefToken(showing.refToken)!!.state shouldBe RequestState.OPEN
+        f.requests.byRefToken(mine.refToken)!!.state shouldBe RequestState.OPEN
+    }
+
+    "the two private /done refusals are word for word the same, so neither is an oracle" {
+        val f = PrivateFixture("doneoracle")
+        val mine = f.requests.create(
+            NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1",
+        )
+        f.requests.create(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
+        val toResting = mutableListOf<Call>()
+        val toNobody = mutableListOf<Call>()
+
+        // @ann rests an opposite-side interest with no give-up; @zoe rests nothing at all.
+        done(mentionUpdate(DM, ChatType.Private, "/done ${mine.shortId} @ann"), recordingBot(toResting))
+        done(mentionUpdate(DM, ChatType.Private, "/done ${mine.shortId} @zoe"), recordingBot(toNobody))
+
+        toResting.single().body shouldBe toNobody.single().body
+        // Neither closed the caller's own interest either, which would itself tell them apart.
+        f.requests.byRefToken(mine.refToken)!!.state shouldBe RequestState.OPEN
+    }
+
+    "a private /done closes both interests once both sides have passed names" {
+        val f = PrivateFixture("doneconsented")
+        val mine = f.requests.create(
+            NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1",
+        )
+        val theirs = f.requests.create(
+            NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2",
+        )
+        val showing = f.requests.create(GROUP, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
+        // Both agreed, which is what the spec means by the typed form being used after a
+        // name give-up — and consent is read from the table, never from what was typed.
+        f.giveUps.record(mine.refToken, theirs.refToken, 1L, Stance.OFFERED)
+        f.giveUps.record(theirs.refToken, mine.refToken, 2L, Stance.OFFERED)
+        val sent = mutableListOf<Call>()
+
+        done(mentionUpdate(DM, ChatType.Private, "/done ${mine.shortId} @ann"), recordingBot(sent))
+
+        f.requests.byRefToken(mine.refToken)!!.state shouldBe RequestState.DONE
+        f.requests.byRefToken(theirs.refToken)!!.state shouldBe RequestState.DONE
+        f.requests.byRefToken(showing.refToken)!!.state shouldBe RequestState.DONE
+        sent.first { it.path == "sendMessage" }.body shouldContain "@ann"
+    }
+
+    // ---- I-1: one dead chat must not starve the announcements behind it ----
+
+    "a chat that refuses does not stop the chat after it from being told" {
+        val f = PrivateFixture("sinkstarve")
+        val a = f.requests.create(GROUP, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
+        val sent = mutableListOf<Call>()
+        // Keyed on the text, not on call order, so a client-side retry cannot change which
+        // announcement is the refused one.
+        val bot = TelegramBot(
+            token = "000:fake-token-for-tests",
+            httpClient = HttpClient(MockEngine { request ->
+                val body = (request.body as? OutgoingContent.ByteArrayContent)?.bytes()?.decodeToString().orEmpty()
+                sent += Call(request.url.encodedPath.substringAfterLast('/'), body)
+                if (body.contains("first")) {
+                    respond(
+                        """{"ok":false,"error_code":403,"description":"Forbidden"}""",
+                        HttpStatusCode.Forbidden, headersOf(HttpHeaders.ContentType, "application/json"),
+                    )
+                } else {
+                    respond(
+                        """{"ok":true,"result":{"message_id":1,"date":0,"chat":{"id":-100,"type":"group"}}}""",
+                        HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"),
+                    )
+                }
+            }),
+        )
+        shouldThrow<AnnouncementNotSent> {
+            telegramSink(bot).deliver(
+                listOf(
+                    Announcement(GROUP, "first", emptyList(), listOf(a.refToken), listOf(1L)),
+                    Announcement(-200L, "second", emptyList(), listOf(a.refToken), listOf(1L)),
+                ),
+                emptyList(),
+            )
+        }
+        // The refused chat costs its own announcement and nothing else: the one behind it
+        // was attempted, landed, and was recorded.
+        f.messages.logged(GROUP, 1L) shouldBe null
+        f.messages.logged(-200L, 1L).shouldNotBeNull().text shouldBe "second"
+        sent.map { it.body }.any { it.contains("second") } shouldBe true
+    }
+
+    // ---- I-2: a private Undo writes no chat_settings row ----
+
+    "a private Undo writes no chat_settings row for the person's own chat" {
+        val f = PrivateFixture("undoprivate")
+        val mine = f.requests.create(
+            NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1",
+        )
+        val showing = f.requests.create(GROUP, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
+        f.requests.transition(mine.refToken, RequestState.OPEN, RequestState.CANCELLED)
+        f.requests.transition(showing.refToken, RequestState.OPEN, RequestState.CANCELLED)
+        val sent = mutableListOf<Call>()
+
+        reopenCallback(mine.refToken, callbackFrom(1L), recordingBot(sent))
+
+        f.requests.byRefToken(mine.refToken)!!.state shouldBe RequestState.OPEN
+        f.requests.byRefToken(showing.refToken)!!.state shouldBe RequestState.OPEN
+        // A private chat's id IS a person's user id, so a default row written here would be
+        // a stored record of the person themselves — a fan-out candidate no /forget erases.
+        f.chats.allChats().map { it.chatId } shouldBe listOf(GROUP)
+    }
+
+    // ---- I-5: a wrongly closed private interest has a recovery command ----
+
+    "a private /reopen brings the interest back, every showing with it" {
+        val f = PrivateFixture("privreopen")
+        val sent = mutableListOf<Call>()
+        sell(updateFor(DM, ChatType.Private, "/sell 10 EUR for RUB"), recordingBot(sent))
+        val shortId = f.requests.resting(NO_NAMES_CHAT_ID).single().shortId
+        cancel(updateFor(DM, ChatType.Private, "/cancel $shortId"), recordingBot(sent))
+        f.requests.resting(NO_NAMES_CHAT_ID).shouldBeEmpty()
+        sent.clear()
+
+        reopen(updateFor(DM, ChatType.Private, "/reopen"), recordingBot(sent))
+
+        f.requests.resting(NO_NAMES_CHAT_ID) shouldHaveSize 1
+        f.requests.resting(GROUP) shouldHaveSize 1
+        sent.first { it.path == "sendMessage" }.body shouldContain "Resting again"
+        // And the same phantom row I-2 is about: reading a chat's settings for a DM writes one.
+        f.chats.allChats().map { it.chatId } shouldBe listOf(GROUP)
     }
 })

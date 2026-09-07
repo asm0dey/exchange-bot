@@ -44,10 +44,19 @@ suspend fun cancelCallback(t: String?, update: ProcessedUpdate, bot: TelegramBot
     respond(result, update, bot)
 }
 
+/**
+ * A chat's settings are read only when there IS a chat: a private chat's id is the
+ * person's own user id, and `ChatSettingsRepository.get` persists a default row on a miss,
+ * so reading it here would write a `chat_settings` row keyed to the person themselves —
+ * a fan-out candidate, a pair to price, and a record of them that no `/forget` path
+ * erases, which the spec's Privacy section forbids. Nothing is lost by not reading it: for
+ * an interest, `LifecycleService.reopen` gives each showing its own chat's time in force
+ * and ignores this argument entirely.
+ */
 @CommandHandler.CallbackQuery(["reopen"], autoAnswer = false)
 suspend fun reopenCallback(t: String?, update: ProcessedUpdate, bot: TelegramBot) {
     val chat = update.getChat()
-    val tif = Registry.settings.get(chat.id).tifDays
+    val tif = if (update.isGroupChat()) Registry.settings.get(chat.id).tifDays else NO_NAMES_TIF_DAYS
     val result = if (t == null) ActionResult.Denied(BROKEN_BUTTON)
         else Registry.lifecycle.reopen(chat.id, update.getUser().id, tif, t)
     logCommand("reopen_button", result.outcomeLabel())

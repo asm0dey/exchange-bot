@@ -42,12 +42,12 @@ suspend fun main(): Unit = coroutineScope {
     Registry.settings = ChatSettingsRepository(ds, crypto, db = db)
     Registry.rates = RateService(rateClient, RateRepository(ds, db = db))
     Registry.service = RequestService(Registry.requests, Registry.settings, Registry.rates)
-    Registry.lifecycle = LifecycleService(Registry.requests, Registry.settings, Registry.rates)
+    Registry.giveUps = NameGiveUpRepository(ds, crypto, db = db)
+    Registry.lifecycle = LifecycleService(Registry.requests, Registry.settings, Registry.rates, Registry.giveUps)
     Registry.messages = MessageLogRepository(ds, crypto, db = db)
     Registry.buttons = ButtonService(Registry.messages, Registry.requests)
     Registry.admin = AdminService(Registry.settings, rateClient)
     Registry.people = PersonSettingsRepository(ds, crypto, db = db)
-    Registry.giveUps = NameGiveUpRepository(ds, crypto, db = db)
     Registry.pending = PendingAnnouncementRepository(ds, crypto, db = db)
     Registry.forget = ForgetService(
         Registry.requests, Registry.messages, Registry.people, Registry.giveUps, Registry.pending,
@@ -129,7 +129,14 @@ suspend fun main(): Unit = coroutineScope {
     // never told. Re-rendered from live state, never replayed. `flushAllOnStartup`
     // propagates a sink failure to its caller (unlike the windowed path, which counts and
     // swallows), so this needs its own guard or a failed first send surfaces at boot.
-    launch { runCatching { Registry.batcher.flushAllOnStartup() } }
+    launch {
+        // Guarded, and SAID: the windowed path logs every failed flush through `guarded`,
+        // so a first send refused at boot must not be the one that passes in silence. The
+        // exception's class name is the whole of the line — no chat, no person, no text.
+        runCatching { Registry.batcher.flushAllOnStartup() }.onFailure {
+            logger.warn("startup announcement flush: outcome=failed type=${it.javaClass.simpleName}")
+        }
+    }
 
     logger.info("exchange-bot: listening")
 
@@ -214,6 +221,7 @@ internal val PRIVATE_COMMANDS: List<Pair<String, String>> = listOf(
     "status" to "Your interests and where each still rests",
     "cancel" to "Withdraw an interest, every showing with it",
     "done" to "You two swapped",
+    "reopen" to "Bring back the interest that closed last",
     "settings" to "Your size tolerance",
     "forget" to "Erase what I hold about you — add 'all' for every group",
     "help" to "What I can do",

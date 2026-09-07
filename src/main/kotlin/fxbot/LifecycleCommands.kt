@@ -75,12 +75,19 @@ suspend fun cancel(update: ProcessedUpdate, bot: TelegramBot) {
     replyToDecision(chat.id, bot, result)
 }
 
+/**
+ * Privately this brings back the interest that closed most recently, every showing with
+ * it — the recovery a wrongly closed interest otherwise has no command for, since the Undo
+ * button only ever reaches whoever pressed, who may not be the person whose interest was
+ * closed. The time in force passed here is the no-names default and is not what the
+ * showings come back on: [LifecycleService.reopen] gives each one its own chat's number.
+ */
 @CommandHandler(["/reopen"])
 suspend fun reopen(update: ProcessedUpdate, bot: TelegramBot) {
-    if (!inGroupOrExplain(update, bot)) return
     val chat = update.getChat()
-    val tif = Registry.settings.get(chat.id).tifDays
-    val result = Registry.lifecycle.reopen(chat.id, update.getUser().id, tif)
+    val scopeId = update.scopeId()
+    val tif = if (scopeId == NO_NAMES_CHAT_ID) NO_NAMES_TIF_DAYS else Registry.settings.get(chat.id).tifDays
+    val result = Registry.lifecycle.reopen(scopeId, update.getUser().id, tif)
     logCommand("reopen", result.outcomeLabel())
     replyToDecision(chat.id, bot, result, undoable = false)
 }
@@ -97,8 +104,7 @@ suspend fun done(update: ProcessedUpdate, bot: TelegramBot) {
         return
     }
     val scopeId = update.scopeId()
-    val peerId = resolvePeer(update, scopeId)
-    val result = Registry.lifecycle.doneByShortId(scopeId, user.id, shortId, peerId)
+    val result = Registry.lifecycle.doneByShortId(scopeId, user.id, shortId, resolvePeer(update, scopeId))
     logCommand("done", result.outcomeLabel())
     replyToDecision(chat.id, bot, result)
 }
@@ -183,14 +189,22 @@ suspend fun forget(update: ProcessedUpdate, bot: TelegramBot) {
  * resting on a no-names basis. Somebody with no `@username` cannot be addressed by the
  * typed form at all; the Done button on the give-up message is the reliable path, and no
  * second identifier scheme is invented to make them typeable.
+ *
+ * "Somebody was named and nothing resting here is theirs" comes back as
+ * [NamedPeer.Unplaceable], NOT as [NamedPeer.Nobody]: privately those two answers must be
+ * one answer, and this is the only place that still knows which of them happened. See
+ * [LifecycleService.doneByShortId].
  */
-private fun resolvePeer(update: ProcessedUpdate, chatId: Long): Long? {
-    val message = (update as? MessageUpdate)?.message ?: return null
-    message.replyToMessage?.from?.id?.let { return it }
+private fun resolvePeer(update: ProcessedUpdate, chatId: Long): NamedPeer {
+    val message = (update as? MessageUpdate)?.message ?: return NamedPeer.Nobody
+    message.replyToMessage?.from?.id?.let { return NamedPeer.Somebody(it) }
     val entities = message.entities.orEmpty()
-    entities.firstOrNull { it.user != null }?.user?.id?.let { return it }
+    entities.firstOrNull { it.user != null }?.user?.id?.let { return NamedPeer.Somebody(it) }
     val mentioned = entities.firstOrNull { it.type == EntityType.Mention }
         ?.let { message.text?.substring(it.offset + 1, it.offset + it.length) }
-        ?: return null
-    return Registry.requests.resting(chatId).firstOrNull { it.username.equals(mentioned, ignoreCase = true) }?.userId
+        ?: return NamedPeer.Nobody
+    return Registry.requests.resting(chatId)
+        .firstOrNull { it.username.equals(mentioned, ignoreCase = true) }
+        ?.let { NamedPeer.Somebody(it.userId) }
+        ?: NamedPeer.Unplaceable
 }

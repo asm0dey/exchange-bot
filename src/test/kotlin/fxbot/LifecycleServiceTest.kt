@@ -5,6 +5,7 @@ import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
+import io.kotest.matchers.string.shouldNotContain
 import io.kotest.matchers.types.shouldBeInstanceOf
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
@@ -58,11 +59,27 @@ private fun lifecycle(
     val crypto = testCrypto()
     val repo = RequestRepository(ds, crypto, clock)
     val settings = ChatSettingsRepository(ds, crypto, clock)
-    return LifecycleService(repo, settings, deadRateService(ds, Clock.fixed(T0, ZoneOffset.UTC))) to repo
+    val giveUps = NameGiveUpRepository(ds, crypto, clock)
+    return LifecycleService(repo, settings, deadRateService(ds, Clock.fixed(T0, ZoneOffset.UTC)), giveUps) to repo
 }
 
 private fun RequestRepository.put(chatId: Long, userId: Long, name: String, side: Side) =
     create(chatId, userId, name, side, "EUR", BigDecimal("1000"), EURRUB, 7)
+
+/** The same wiring, with the consent table in reach — what the no-names `/done` is decided from. */
+private class ConsentFixture(name: String) {
+    private val ds = memDataSource(name).also { migrate(it) }
+    private val clock: Clock = Clock.fixed(T0, ZoneOffset.UTC)
+    private val crypto = testCrypto()
+    val requests = RequestRepository(ds, crypto, clock)
+    val giveUps = NameGiveUpRepository(ds, crypto, clock)
+    val svc = LifecycleService(requests, ChatSettingsRepository(ds, crypto, clock), deadRateService(ds, clock), giveUps)
+
+    fun rest(chatId: Long, userId: Long, name: String, side: Side, interest: String? = null) =
+        requests.create(chatId, userId, name, side, "EUR", BigDecimal("1000"), EURRUB, 7, interest)
+
+    fun stateOf(r: Request) = requests.byRefToken(r.refToken)!!.state
+}
 
 class LifecycleServiceTest : StringSpec({
     "the owner can cancel their own request" {
@@ -315,5 +332,84 @@ class LifecycleServiceTest : StringSpec({
         val r = svc.done(1L, mine.refToken, null)
         r.shouldBeInstanceOf<ActionResult.Ok>()
         r.restate shouldBe null
+    }
+
+    // --- On the no-names side, `done`'s own guard passes trivially (both rows carry
+    // chatId = 0 and the opposite side is arranged by stating it), so consent is what
+    // authorizes closing somebody else's interest there.
+
+    "a no-names peer who never agreed to pass names closes nothing" {
+        val f = ConsentFixture("donenogiveup")
+        val mine = f.rest(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
+        val theirs = f.rest(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "i2")
+        val showing = f.rest(-100L, 2L, "ann", Side.BID, "i2")
+        val r = f.svc.doneByShortId(NO_NAMES_CHAT_ID, 1L, mine.shortId, NamedPeer.Somebody(2L))
+        r.shouldBeInstanceOf<ActionResult.Denied>()
+        // Not a word about whether that person exists or rests anything.
+        r.text shouldNotContain "ann"
+        f.stateOf(mine) shouldBe RequestState.OPEN
+        f.stateOf(theirs) shouldBe RequestState.OPEN
+        f.stateOf(showing) shouldBe RequestState.OPEN
+    }
+
+    "one side's consent is not enough on the no-names side" {
+        val f = ConsentFixture("donehalfgiveup")
+        val mine = f.rest(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
+        val theirs = f.rest(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "i2")
+        f.giveUps.record(mine.refToken, theirs.refToken, 1L, Stance.OFFERED)
+        f.svc.doneByShortId(NO_NAMES_CHAT_ID, 1L, mine.shortId, NamedPeer.Somebody(2L))
+            .shouldBeInstanceOf<ActionResult.Denied>()
+        f.stateOf(theirs) shouldBe RequestState.OPEN
+    }
+
+    "a mutual give-up is what lets a no-names /done close both" {
+        val f = ConsentFixture("donegiveup")
+        val mine = f.rest(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
+        val theirs = f.rest(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "i2")
+        val showing = f.rest(-100L, 2L, "ann", Side.BID, "i2")
+        f.giveUps.record(mine.refToken, theirs.refToken, 1L, Stance.OFFERED)
+        f.giveUps.record(theirs.refToken, mine.refToken, 2L, Stance.OFFERED)
+        f.svc.doneByShortId(NO_NAMES_CHAT_ID, 1L, mine.shortId, NamedPeer.Somebody(2L))
+            .shouldBeInstanceOf<ActionResult.Ok>()
+        f.stateOf(mine) shouldBe RequestState.DONE
+        f.stateOf(theirs) shouldBe RequestState.DONE
+        f.stateOf(showing) shouldBe RequestState.DONE
+    }
+
+    "naming somebody unplaceable is refused in the same words on the no-names side" {
+        val f = ConsentFixture("doneunplaceable")
+        val mine = f.rest(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
+        f.rest(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "i2")
+        val unplaceable = f.svc.doneByShortId(NO_NAMES_CHAT_ID, 1L, mine.shortId, NamedPeer.Unplaceable)
+        val noConsent = f.svc.doneByShortId(NO_NAMES_CHAT_ID, 1L, mine.shortId, NamedPeer.Somebody(2L))
+        unplaceable.shouldBeInstanceOf<ActionResult.Denied>()
+        noConsent.shouldBeInstanceOf<ActionResult.Denied>()
+        unplaceable.text shouldBe noConsent.text
+        f.stateOf(mine) shouldBe RequestState.OPEN
+    }
+
+    "in a chat the same close needs no give-up, and an unplaceable name is nobody" {
+        val f = ConsentFixture("donegroupunchanged")
+        val mine = f.rest(-100L, 1L, "bob", Side.OFFER)
+        val theirs = f.rest(-100L, 2L, "ann", Side.BID)
+        f.svc.doneByShortId(-100L, 1L, mine.shortId, NamedPeer.Somebody(2L))
+            .shouldBeInstanceOf<ActionResult.Ok>()
+        f.stateOf(mine) shouldBe RequestState.DONE
+        f.stateOf(theirs) shouldBe RequestState.DONE
+        // And a name nothing in the chat belongs to still closes the caller's own alone.
+        val alone = f.rest(-100L, 1L, "bob", Side.OFFER)
+        f.svc.doneByShortId(-100L, 1L, alone.shortId, NamedPeer.Unplaceable)
+            .shouldBeInstanceOf<ActionResult.Ok>()
+        f.stateOf(alone) shouldBe RequestState.DONE
+    }
+
+    "a private /done with nobody named still closes only the caller's own interest" {
+        val f = ConsentFixture("donenobody")
+        val mine = f.rest(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
+        val theirs = f.rest(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "i2")
+        f.svc.doneByShortId(NO_NAMES_CHAT_ID, 1L, mine.shortId, NamedPeer.Nobody)
+            .shouldBeInstanceOf<ActionResult.Ok>()
+        f.stateOf(mine) shouldBe RequestState.DONE
+        f.stateOf(theirs) shouldBe RequestState.OPEN
     }
 })

@@ -258,6 +258,49 @@ class GiveUpServiceTest : StringSpec({
         r.text shouldNotContain "@ann"
     }
 
+    // ---- The peer must be a counterparty of the presser's, not merely an OPEN request ----
+
+    "a peer on the same side is refused, and nothing is written" {
+        val f = GiveUpFixture("samesidepeer", handled(1L to Handle("bob", "Bob"), 2L to Handle("ann", "Ann")))
+        val a = f.rest(1L, Side.OFFER)
+        val b = f.rest(2L, Side.OFFER)
+        f.svc.offer(1L, a.refToken, b.refToken).shouldBeInstanceOf<GiveUpResult.Refused>()
+        f.giveUps.stanceOf(a.refToken, b.refToken) shouldBe null
+    }
+
+    "a token harvested from a group's buttons buys no give-up" {
+        // `announcementButtons` publishes counterparty ref tokens in group callback_data,
+        // and this codebase's own threat model says a modified client can read them. Such a
+        // token names a request resting in a CHAT, which is not a counterparty of anything
+        // on the no-names side — so the bot must not DM its owner about a pairing it never
+        // made, however many tokens somebody harvested.
+        val f = GiveUpFixture("harvested", handled(1L to Handle("bob", "Bob"), 2L to Handle("ann", "Ann")))
+        val a = f.rest(1L, Side.OFFER)
+        val b = f.requests.create(-100L, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7)
+        f.svc.offer(1L, a.refToken, b.refToken).shouldBeInstanceOf<GiveUpResult.Refused>()
+        f.giveUps.stanceOf(a.refToken, b.refToken) shouldBe null
+    }
+
+    "a peer resting on another pair is refused, and nothing is written" {
+        val f = GiveUpFixture("otherpair", handled(1L to Handle("bob", "Bob"), 2L to Handle("ann", "Ann")))
+        val a = f.rest(1L, Side.OFFER)
+        val b = f.requests.create(
+            NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "USD", BigDecimal("1000"), CurrencyPair("RUB", "USD"), 7, "i2",
+        )
+        f.svc.offer(1L, a.refToken, b.refToken).shouldBeInstanceOf<GiveUpResult.Refused>()
+        f.giveUps.stanceOf(a.refToken, b.refToken) shouldBe null
+    }
+
+    "two requests of the presser's own are not a pairing either" {
+        val f = GiveUpFixture("ownboth", handled(1L to Handle("bob", "Bob")))
+        val a = f.rest(1L, Side.OFFER)
+        val b = f.requests.create(
+            NO_NAMES_CHAT_ID, 1L, "bob", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i1b",
+        )
+        f.svc.offer(1L, a.refToken, b.refToken).shouldBeInstanceOf<GiveUpResult.Refused>()
+        f.giveUps.stanceOf(a.refToken, b.refToken) shouldBe null
+    }
+
     "a decline dies with the requests" {
         val f = GiveUpFixture("declinedies", handled(1L to Handle("bob", "Bob"), 2L to Handle("ann", "Ann")))
         val a = f.rest(1L, Side.OFFER)

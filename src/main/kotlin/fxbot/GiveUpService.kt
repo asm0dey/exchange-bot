@@ -53,6 +53,9 @@ private const val YOUR_REQUEST_GONE = "Your own request isn't waiting anymore, s
 
 private const val SELF_PAIRING = "You can't pass your own name to yourself."
 
+private const val NOT_COUNTERPARTIES =
+    "Those two aren't counterparties of each other, so there's no name to pass between them."
+
 /**
  * Identities pass only by mutual give-up (ADR 0007). Consent is persisted, never carried
  * in a button: the presser is re-derived from `callback_query.from.id` by the caller, and
@@ -95,6 +98,24 @@ class GiveUpService(
         if (mine.state != RequestState.OPEN) return GiveUpResult.Refused(YOUR_REQUEST_GONE)
         if (theirs.state != RequestState.OPEN) return GiveUpResult.Refused(PEER_GONE)
         if (giveUps.declined(myToken, peerToken)) return GiveUpResult.Refused(PEER_GONE)
+        // The peer must be a counterparty of the presser's, not merely some OPEN request.
+        // A ref token is not a secret in practice: `announcementButtons` publishes
+        // counterparty tokens in group callback_data, and this codebase's own threat model
+        // (see LifecycleService.done) says a modified client can read them. Without this,
+        // anyone in any group could harvest tokens and have the bot DM each of those people
+        // "someone has offered to pass their name" about a pairing it never made. No name
+        // passes without the recipient pressing, so this is not a disclosure — it is an
+        // unauthenticated way to make the bot message strangers, which is enough.
+        //
+        // Structural only — same chat, same pair, opposite sides, two different people. The
+        // sizes are deliberately NOT re-checked, for the reason `done` gives: either
+        // person's size tolerance may have moved since they were shown each other, and two
+        // people who were offered each other must still be able to answer.
+        if (theirs.chatId != mine.chatId || theirs.pair != mine.pair ||
+            theirs.side == mine.side || theirs.userId == mine.userId
+        ) {
+            return GiveUpResult.Refused(NOT_COUNTERPARTIES)
+        }
         if (!introducible(mine, theirs)) return GiveUpResult.Refused(NO_ROUTE)
 
         giveUps.record(myToken, peerToken, userId, Stance.OFFERED)
