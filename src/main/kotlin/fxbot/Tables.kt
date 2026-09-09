@@ -101,6 +101,14 @@ object NameGiveUps : Table("name_give_up") {
     override val primaryKey = PrimaryKey(refToken, peerRefToken)
 }
 
+object DoneRefusals : Table("done_refusal") {
+    val refToken = text("ref_token")
+    val peerRefToken = text("peer_ref_token")
+    val refusals = integer("refusals")
+    val refusedAt = timestamp("refused_at")
+    override val primaryKey = PrimaryKey(refToken, peerRefToken)
+}
+
 object PendingAnnouncements : Table("pending_announcement") {
     val chatRef = text("chat_ref")
     val interestToken = text("interest_token")

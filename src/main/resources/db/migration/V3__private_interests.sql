@@ -34,3 +34,16 @@ CREATE TABLE pending_announcement (
     PRIMARY KEY (chat_ref, interest_token)
 );
 CREATE INDEX pending_announcement_user_idx ON pending_announcement (user_ref);
+
+-- One row per pairing that was asked about and refused, keyed in ONE direction: ref_token
+-- is the person who declared the done, peer_ref_token the person who said no. The
+-- asymmetry of the key is what makes the block one-directional, with no column to express
+-- it. Both are random tokens carrying no personal data. Rows die with their requests, so
+-- this is never a durable record of who refused whom.
+CREATE TABLE done_refusal (
+    ref_token      TEXT      NOT NULL,
+    peer_ref_token TEXT      NOT NULL,
+    refusals       INT       NOT NULL,
+    refused_at     TIMESTAMP NOT NULL,
+    PRIMARY KEY (ref_token, peer_ref_token)
+);
