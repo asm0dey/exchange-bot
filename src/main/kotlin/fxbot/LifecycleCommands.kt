@@ -89,22 +89,56 @@ internal suspend fun sendAsk(r: ActionResult.Asked, bot: TelegramBot) {
     }
 }
 
-/** The other side of a confirmed done, told where THEY spoke rather than where the press happened. */
+/**
+ * The other side of a confirmed done, told where THEY spoke rather than where the press
+ * happened. Recorded against the reopen token and — when there is one — the restate
+ * offer's counterparty token, both naming real people: the Reopen button alone names
+ * whoever this notice is FOR, and a `/forget` from either side must still reach this
+ * message (ADR 0005), same reasoning as [sendAsk].
+ */
 internal suspend fun sendNotice(n: Notice, bot: TelegramBot) {
     val buttons = noticeButtons(n)
-    message { n.text }
+    val sent = message { n.text }
         .options { parseMode = ParseMode.HTML }
         .inlineKeyboardMarkup { buttons.forEach { b -> b.label callback b.data; br() } }
-        .send(n.chatId, bot)
+        .sendReturning(n.chatId, bot)
+        .getOrNull()
+    sent?.messageId?.let { id ->
+        val tokens = listOf(n.reopenToken) + listOfNotNull(n.restate?.peerToken)
+        val userIds = tokens.mapNotNull { Registry.requests.byRefToken(it)?.userId }
+        // Every named token must resolve to a real owner before this is recorded at all —
+        // a partial record would pair tokens and user ids off by one.
+        if (userIds.size == tokens.size) {
+            Registry.messages.record(n.chatId, id, tokens, userIds, n.text, buttons)
+        }
+    }
 }
 
-/** Nobody is asked and nothing closes — the declarer just picks. */
+/**
+ * Nobody is asked and nothing closes — the declarer just picks. Recorded against the
+ * declarer's own request plus every candidate's, same as [suggestionButtons]' senders:
+ * every button here names somebody, and each of them must be reachable by `/forget`
+ * (ADR 0005), and each candidate token must be known to [ButtonService.refreshFor] so a
+ * candidate who closes elsewhere first doesn't leave a stale button behind.
+ */
 internal suspend fun sendChoice(chatId: Long, r: ActionResult.Choose, bot: TelegramBot) {
     val book = nameBookFor(r.candidates, Registry.names)
     val buttons = chooseButtons(r, book)
-    message { r.text }
+    val sent = message { r.text }
         .inlineKeyboardMarkup { buttons.forEach { b -> b.label callback b.data; br() } }
-        .send(chatId, bot)
+        .sendReturning(chatId, bot)
+        .getOrNull()
+    sent?.messageId?.let { id ->
+        val mineUserId = Registry.requests.byRefToken(r.mineToken)?.userId
+        if (mineUserId != null) {
+            Registry.messages.record(
+                chatId, id,
+                listOf(r.mineToken) + r.candidates.map { it.refToken },
+                listOf(mineUserId) + r.candidates.map { it.userId },
+                r.text, buttons,
+            )
+        }
+    }
 }
 
 /**

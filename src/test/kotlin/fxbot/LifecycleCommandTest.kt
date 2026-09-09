@@ -10,6 +10,7 @@ import eu.vendeli.tgbot.types.component.CallbackQueryUpdate
 import eu.vendeli.tgbot.types.component.MessageUpdate
 import eu.vendeli.tgbot.types.msg.Message
 import io.kotest.core.spec.style.StringSpec
+import io.kotest.matchers.collections.shouldContainExactlyInAnyOrder
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
@@ -213,6 +214,8 @@ class LifecycleCommandTest : StringSpec({
         refuseDoneCallback(mine.refToken, theirs.refToken, f.callback(2L), bot)
         f.requests.byRefToken(mine.refToken)!!.state shouldBe RequestState.OPEN
         calls.none { it.path == "sendMessage" } shouldBe true
+        // The presser still hears "Noted" — privately, as a popup, not a group message.
+        calls.single { it.path == "answerCallbackQuery" }.body shouldContain "Noted"
     }
 
     // Cb.confirm/refuse deliberately reverse `done`'s ownership: `a` is always the
@@ -238,5 +241,52 @@ class LifecycleCommandTest : StringSpec({
         refuseDoneCallback(mine.refToken, theirs.refToken, f.callback(1L), bot)
         f.requests.byRefToken(mine.refToken)!!.state shouldBe RequestState.OPEN
         f.requests.byRefToken(theirs.refToken)!!.state shouldBe RequestState.OPEN
+    }
+
+    // ---- Review follow-up: `sendAsk`/`sendChoice` must actually record what they send,
+    // not just send it — a button naming somebody that isn't recorded is both a stale-
+    // button hazard (MessageLogRepository.record's own doc comment) and an ADR 0005 gap.
+
+    "sendAsk records the question against both people, so /forget from either reaches it" {
+        val f = LifecycleCommandFixture("cmd_ask_recorded")
+        val mine = f.rest(GROUP, 1L, "bob", Side.OFFER)
+        val theirs = f.rest(GROUP, 2L, "ann", Side.BID)
+        done(f.groupUpdate(1L, "/done ${mine.shortId}"), recordingBot(mutableListOf<Call>()))
+
+        val logged = f.messages.logged(GROUP, 1L)
+        logged.shouldNotBeNull()
+        logged.refTokens shouldContainExactlyInAnyOrder listOf(mine.refToken, theirs.refToken)
+        f.messages.messagesForUser(1L, GROUP) shouldHaveSize 1
+        f.messages.messagesForUser(2L, GROUP) shouldHaveSize 1
+    }
+
+    "sendChoice records the declarer's own token plus every candidate's" {
+        val f = LifecycleCommandFixture("cmd_choose_recorded")
+        val mine = f.rest(GROUP, 1L, "bob", Side.OFFER)
+        val alice = f.rest(GROUP, 2L, "alice", Side.BID)
+        val carol = f.rest(GROUP, 3L, "carol", Side.BID)
+        done(f.groupUpdate(1L, "/done ${mine.shortId}"), recordingBot(mutableListOf<Call>()))
+
+        val logged = f.messages.logged(GROUP, 1L)
+        logged.shouldNotBeNull()
+        logged.refTokens shouldContainExactlyInAnyOrder listOf(mine.refToken, alice.refToken, carol.refToken)
+        f.messages.messagesForUser(1L, GROUP) shouldHaveSize 1
+        f.messages.messagesForUser(2L, GROUP) shouldHaveSize 1
+        f.messages.messagesForUser(3L, GROUP) shouldHaveSize 1
+    }
+
+    "sendNotice records the reopen token and the restate offer's counterparty token" {
+        val f = LifecycleCommandFixture("cmd_notice_recorded")
+        val mine = f.rest(GROUP, 1L, "bob", Side.OFFER)
+        val theirs = f.rest(GROUP, 2L, "ann", Side.BID)
+        // Ann confirms — Task 7's Ok.notify is what sendNotice sends, addressed to bob.
+        confirmDoneCallback(mine.refToken, theirs.refToken, f.callback(2L), recordingBot(mutableListOf<Call>()))
+
+        // Both closed with no residual (equal amounts), so the notice names only bob's own
+        // (reopen) token — still one real person, still recordable.
+        val logged = f.messages.logged(GROUP, 1L)
+        logged.shouldNotBeNull()
+        logged.refTokens shouldContainExactlyInAnyOrder listOf(mine.refToken)
+        f.messages.messagesForUser(1L, GROUP) shouldHaveSize 1
     }
 })

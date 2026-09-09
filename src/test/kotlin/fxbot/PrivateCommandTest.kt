@@ -786,6 +786,51 @@ class PrivateCommandTest : StringSpec({
         f.requests.byRefToken(showing.refToken)!!.state shouldBe RequestState.DONE
     }
 
+    // ---- Review follow-up: neither the ask nor the confirmation notice is pinned to
+    // arrive in the RIGHT person's own chat by any test — a fixture where both parties
+    // share one chat can't tell "sent to the right chat" apart from "sent to whichever
+    // chat everything happens to share." Both people here speak privately, so their own
+    // chat IS their user id, and the counterparty presses from a THIRD chat (a group)
+    // that is neither of their own — so a message landing there by mistake is caught.
+
+    "the ask reaches the counterparty's own chat, not wherever the declarer typed" {
+        val f = PrivateFixture("done-routes-ask")
+        val mine = f.requests.create(
+            NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1",
+        )
+        f.requests.create(NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
+        val sent = mutableListOf<Call>()
+
+        // bob types this in chat DM (555) — the question must reach ann's OWN chat,
+        // her user id (2), not DM and not bob's own user id (1).
+        done(mentionUpdate(DM, ChatType.Private, "/done ${mine.shortId} @ann"), recordingBot(sent))
+
+        val ask = sent.first { it.body.contains("Did you?") }
+        ask.body shouldContain """"chat_id":2"""
+        ask.body shouldNotContain """"chat_id":555"""
+        ask.body shouldNotContain """"chat_id":1"""
+    }
+
+    "the confirmation notice reaches the declarer's own chat, not wherever the peer pressed" {
+        val f = PrivateFixture("done-routes-notice")
+        val mine = f.requests.create(
+            NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1",
+        )
+        val theirs = f.requests.create(
+            NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2",
+        )
+        val sent = mutableListOf<Call>()
+
+        // Ann presses Yes from the group — nowhere near either of their own chats. The
+        // notice to bob must still land in HIS own chat, his user id (1), never the
+        // group (-100) she actually pressed from.
+        confirmDoneCallback(mine.refToken, theirs.refToken, callbackFrom(2L, GROUP), recordingBot(sent))
+
+        val notice = sent.first { it.body.contains("confirmed") }
+        notice.body shouldContain """"chat_id":1"""
+        notice.body shouldNotContain """"chat_id":-100"""
+    }
+
     // ---- I-1: one dead chat must not starve the announcements behind it ----
 
     "a chat that refuses does not stop the chat after it from being told" {

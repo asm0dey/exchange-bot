@@ -79,15 +79,20 @@ private suspend fun respond(
     val queryId = (update as? CallbackQueryUpdate)?.callbackQuery?.id
     when (result) {
         is ActionResult.Ok -> {
+            if (result.touchedTokens.isEmpty()) {
+                // Nothing changed state — `refuse` is the only source of this today.
+                // Answered privately to the presser, same as `Denied`/`Gone` below: a
+                // refusal is not the group's business, and the declarer is not told —
+                // but the presser still gets `refuse`'s own text, not just a dismissed
+                // spinner.
+                queryId?.let {
+                    answerCallbackQuery(it).options { text = result.text }.send(user.id, bot)
+                }
+                return
+            }
             // Dismisses the client's loading spinner without a popup — the outcome is
             // announced to the whole group below, since it may affect the other side too.
             queryId?.let { answerCallbackQuery(it).send(user.id, bot) }
-            if (result.touchedTokens.isEmpty()) {
-                // Nothing changed state — `refuse` is the only source of this today — so
-                // there is nothing to announce: no message, no keyboard, no refresh pass,
-                // no notice. The spinner dismissal above is the only answer the press gets.
-                return
-            }
             // HTML: the text may carry a `mention(...)` link/@name built by LifecycleService.
             val reply = message { result.text }.options { parseMode = ParseMode.HTML }
             if (undoable) {
