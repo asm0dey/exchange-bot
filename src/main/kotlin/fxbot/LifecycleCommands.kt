@@ -24,12 +24,12 @@ import eu.vendeli.tgbot.types.msg.EntityType
  * The rewrite still runs, and is the point: it takes the "withdrawn"/"done" line back off
  * the messages that carried them.
  *
- * HTML parse mode is applied only to [ActionResult.Ok] text — that's the only branch
- * that ever embeds a [mention]. `Denied`/`Gone` text can carry raw user input (e.g. a
- * short id typed by the caller) that was never meant to be parsed as markup: sending
- * it under `ParseMode.HTML` risks a Telegram entity-parse rejection (silently
- * swallowed — the reply never arrives) or, worse, an attacker-authored tag rendering
- * as a live link.
+ * HTML parse mode is applied to [ActionResult.Ok] and [ActionResult.Asked] text — the two
+ * branches that embed a [mention] — and to nothing else. `Denied`/`Gone` text can carry raw
+ * user input (e.g. a short id typed by the caller) that was never meant to be parsed as
+ * markup: sending it under `ParseMode.HTML` risks a Telegram entity-parse rejection
+ * (silently swallowed — the reply never arrives) or, worse, an attacker-authored tag
+ * rendering as a live link.
  */
 private suspend fun replyToDecision(
     chatId: Long,

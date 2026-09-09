@@ -618,6 +618,30 @@ class LifecycleServiceTest : StringSpec({
         f.requests.byRefToken(theirs.refToken)!!.state shouldBe RequestState.OPEN
     }
 
+    "a Yes from somebody whose own request has already closed refuses" {
+        val f = AskFixture("confirm_mine_gone")
+        val mine = f.rest(-100L, 1L, "bob", Side.OFFER)
+        val theirs = f.rest(-100L, 2L, "ann", Side.BID)
+        // Ann withdrew after bob declared it; his is still waiting.
+        f.requests.transition(theirs.refToken, RequestState.OPEN, RequestState.CANCELLED)
+        val r = f.svc.confirm(2L, mine.refToken, theirs.refToken)
+        r.shouldBeInstanceOf<ActionResult.Gone>()
+        r.text shouldBe "Your own request is already closed."
+        f.requests.byRefToken(mine.refToken)!!.state shouldBe RequestState.OPEN
+    }
+
+    "a No from somebody who owns neither request writes nothing" {
+        val f = AskFixture("refuse_stranger")
+        val mine = f.rest(-100L, 1L, "bob", Side.OFFER)
+        val theirs = f.rest(-100L, 2L, "ann", Side.BID)
+        // The counter is what gates asking, so a third party who harvested both tokens must
+        // not be able to poison it and lock a legitimate declarer out.
+        val r = f.svc.refuse(3L, mine.refToken, theirs.refToken)
+        r.shouldBeInstanceOf<ActionResult.Denied>()
+        r.text shouldBe "That isn't a question I asked you."
+        f.refusals.count(mine.refToken, theirs.refToken) shouldBe 0
+    }
+
     "a No closes nothing and leaves both resting" {
         val f = AskFixture("refuse_nothing")
         val mine = f.rest(-100L, 1L, "bob", Side.OFFER)

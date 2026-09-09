@@ -95,8 +95,12 @@ sealed interface NamedPeer {
 private const val NOT_A_PAIR = "Those two requests aren't a pair I can close together."
 
 /**
- * Two refusals end it. A first No is usually an honest mix-up — the wrong short id, the
- * wrong person, a misremembered swap. A second is a pattern.
+ * How many times one declarer may be told no about one pairing before [LifecycleService.done]
+ * stops asking. A first No is usually an honest mix-up — the wrong short id, the wrong
+ * person, a misremembered swap. A second is a pattern.
+ *
+ * It gates ASKS and nothing else. A Yes is not checked against it — see the residual
+ * paragraph on [LifecycleService.confirm] for why, and for what that leaves open.
  */
 const val MAX_REFUSALS = 2
 
@@ -239,7 +243,13 @@ class LifecycleService(
     /**
      * The counterparty says no. Nothing closes and the pairing stands — somebody denying a
      * done they did not make must not lose a real counterparty for it. The refusal is
-     * counted against the DECLARER, so a second one blocks them and nobody else.
+     * counted against the DECLARER, so a second one stops [done] asking on their behalf
+     * about this pairing, and nobody else's.
+     *
+     * Stops the ASKING, not the closing: [confirm] does not consult the count, so a blocked
+     * declarer holding both tokens can still press Yes. That is the residual [confirm]
+     * documents, not a second one — checking the count there would refuse an honest
+     * counterparty's Yes once both directions had been asked and refused.
      */
     fun refuse(userId: Long, declarerToken: String, peerToken: String): ActionResult {
         val theirs = requests.byRefToken(declarerToken) ?: return ActionResult.Gone("That request is gone.")
