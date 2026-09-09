@@ -86,8 +86,8 @@ class TasksTest : StringSpec({
         // reason RateServiceTest compares by value, not by `shouldBe`.
         rateRepo.get("EUR", "RUB")!!.rate.shouldBeEqualIgnoringScale(BigDecimal("99.98"))
     }
-    "the refresh also prices a pair only the no-names side is using" {
-        val ds = memDataSource("refreshnonames")
+    "the refresh also prices a pair only the bot-side is using" {
+        val ds = memDataSource("refreshnochat")
         migrate(ds)
         val crypto = testCrypto()
         val clock = Clock.fixed(T0, ZoneOffset.UTC)

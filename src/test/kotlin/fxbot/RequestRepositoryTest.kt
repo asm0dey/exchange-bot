@@ -182,7 +182,7 @@ class RequestRepositoryTest : StringSpec({
     "rows born of one interest share its token, and siblings finds them all, in every state, in creation order" {
         val (r, _) = repo("siblings")
         val tok = "int-1"
-        val noNames = r.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
+        val noChat = r.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
         val showing = r.create(-100L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
         val closed = r.create(-200L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
         r.create(-300L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7) // a different interest
@@ -192,9 +192,9 @@ class RequestRepositoryTest : StringSpec({
         r.transition(closed.refToken, RequestState.OPEN, RequestState.CANCELLED)
 
         val found = r.siblings(tok)
-        found.map { it.refToken } shouldBe listOf(noNames.refToken, showing.refToken, closed.refToken)
+        found.map { it.refToken } shouldBe listOf(noChat.refToken, showing.refToken, closed.refToken)
         found.last().state shouldBe RequestState.CANCELLED
-        r.byRefToken(noNames.refToken)!!.interestToken shouldBe tok
+        r.byRefToken(noChat.refToken)!!.interestToken shouldBe tok
     }
 
     "a request typed in a chat has no interest token" {
@@ -238,7 +238,7 @@ class RequestRepositoryTest : StringSpec({
         r.byRefToken(c.refToken)!!.state shouldBe RequestState.EXPIRED
     }
 
-    "the cap counts a person's resting no-names interests, not their showings" {
+    "the cap counts a person's resting bot-side interests, not their showings" {
         val (r, _) = repo("countinterests")
         r.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
         r.create(-100L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
@@ -249,12 +249,12 @@ class RequestRepositoryTest : StringSpec({
         r.countOpenInterests(1L) shouldBe 2
     }
 
-    "countOpenInterests deduplicates by token even when two no-names rows share one" {
+    "countOpenInterests deduplicates by token even when two bot-side rows share one" {
         // The test above never separates the WHERE-clause filter from the .distinct()
         // call: interest i1 there has 3 rows but only 1 with chatId == NO_CHAT_ID,
         // so the WHERE clause alone already reduces it to 1 before distinct() ever runs.
         // This constructs the case only .distinct() can resolve: two rows that BOTH
-        // satisfy the no-names predicate and share one token.
+        // satisfy the bot-side predicate and share one token.
         val (r, _) = repo("countdistinct")
         r.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
         r.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
@@ -268,8 +268,8 @@ class RequestRepositoryTest : StringSpec({
         r.countOpenInterests(1L) shouldBe 0
     }
 
-    "the pairs resting on a no-names basis can be enumerated for the rate refresh" {
-        val (r, _) = repo("nonamespairs")
+    "the pairs resting in the bot can be enumerated for the rate refresh" {
+        val (r, _) = repo("nochatpairs")
         r.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
         r.create(NO_CHAT_ID, 2L, "ann", Side.OFFER, "CHF", BigDecimal("10"), CurrencyPair("CHF", "JPY"), 7, "i2")
         r.create(-100L, 3L, "cat", Side.OFFER, "USD", BigDecimal("10"), CurrencyPair("USD", "GBP"), 7)

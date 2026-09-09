@@ -135,7 +135,7 @@ class ForgetCommandTest : StringSpec({
         sent.last().body shouldContain "Erased 1"
     }
 
-    "plain /forget in a private chat erases the no-names side and everything personal" {
+    "plain /forget in a private chat erases the bot-side and everything personal" {
         val f = CommandFixture("privforget")
         f.requests.create(NO_CHAT_ID, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
         f.requests.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
@@ -193,7 +193,7 @@ class ForgetCommandTest : StringSpec({
         f.people.get(1L).tolerancePct shouldBe 20
         f.people.get(2L).tolerancePct shouldBe 40
     }
-    "/forget in a group leaves the person's own settings and no-names side alone" {
+    "/forget in a group leaves the person's own settings and bot-side alone" {
         val f = CommandFixture("groupforgetscope")
         f.requests.create(NO_CHAT_ID, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
         f.requests.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")

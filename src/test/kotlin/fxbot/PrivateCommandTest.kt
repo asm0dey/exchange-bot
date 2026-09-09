@@ -497,7 +497,7 @@ class PrivateCommandTest : StringSpec({
         f.messages.messagesForUser(2L, GROUP) shouldHaveSize 1
         // The ping is deliberately NOT recorded: its give-up button names the
         // counterparty's token, and storing that against this person's private chat would
-        // link two people on a no-names basis before either pressed anything.
+        // link two people with no chat before either pressed anything.
         f.messages.logged(2L, 1L) shouldBe null
         sent.filter { it.path == "sendMessage" } shouldHaveSize 2
     }
@@ -706,7 +706,7 @@ class PrivateCommandTest : StringSpec({
         body shouldNotContain "admin"
     }
 
-    // ---- C-1: a stranger can neither force-close nor unmask a no-names interest ----
+    // ---- C-1: a stranger can neither force-close nor unmask a bot-side interest ----
 
     "a private /done naming somebody who never agreed closes nothing and names nobody" {
         val f = PrivateFixture("donestranger")

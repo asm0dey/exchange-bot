@@ -84,7 +84,7 @@ class ForgetServiceTest : StringSpec({
     }
     "the messages cleaned up can be scoped to a different chat from the requests erased" {
         val f = Fixture("messagescope")
-        // The private form: requests are erased on the no-names side, but the messages to
+        // The private form: requests are erased on the bot-side, but the messages to
         // clean up are the ones in the person's real private chat — nothing is ever
         // recorded under the sentinel.
         f.requests.create(NO_CHAT_ID, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")

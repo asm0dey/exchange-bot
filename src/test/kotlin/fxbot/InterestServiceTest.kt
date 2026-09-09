@@ -80,7 +80,7 @@ class InterestServiceTest : StringSpec({
         b.found.shouldBeEmpty()
     }
 
-    "an interest rests on a no-names basis and in every fitting chat" {
+    "an interest rests in the bot and in every fitting chat" {
         val f = InterestFixture("fanout").withRate()
             .chat(-100L, EURRUB)
             .chat(-200L, CurrencyPair("RUB", "EUR"))          // the same two currencies, other way round
@@ -126,7 +126,7 @@ class InterestServiceTest : StringSpec({
         owed.count { f.pending.isFor(it, -200L) } shouldBe 1
     }
 
-    "the no-names row and each showing take their time in force from different places" {
+    "the bot-side row and each showing take their time in force from different places" {
         // Every other fixture chat uses 7, which is also NO_CHAT_TIF_DAYS, so nothing
         // else here can tell the two sources apart. This chat uses 3.
         val f = InterestFixture("tif").withRate().chat(-100L, tif = 3)
@@ -152,14 +152,14 @@ class InterestServiceTest : StringSpec({
 
     "the two surfaces never meet" {
         val f = InterestFixture("surfaces").withRate().chat(-100L)
-        // Someone who has only ever typed in a chat is invisible to the no-names side.
+        // Someone who has only ever typed in a chat is invisible to the bot-side.
         f.requests.create(-100L, 9L, "chatonly", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7)
         val r = f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
         r.shouldBeInstanceOf<InterestResult.Stated>()
         r.found.shouldBeEmpty()
     }
 
-    "each side of a no-names pairing is judged at its own tolerance" {
+    "each side of a pairing with no chat is judged at its own tolerance" {
         val f = InterestFixture("owntolerance").withRate()
         f.people.save(PersonSettings(1L, 50))
         f.svc.state(1L, "bob", Verb.SELL, "4", "EUR", "RUB")
@@ -206,7 +206,7 @@ class InterestServiceTest : StringSpec({
     }
 
     "sharing a chat is not enough — the showings there must actually pair" {
-        // Sizes that meet on a no-names basis at 100 but not at the chat's 5.
+        // Sizes that meet on the bot-side at 100 but not at the chat's 5.
         val f = InterestFixture("sharechatnopair").withRate().chat(-100L, EURRUB, tolerance = 5)
         f.people.save(PersonSettings(1L, 100))
         f.people.save(PersonSettings(2L, 100))

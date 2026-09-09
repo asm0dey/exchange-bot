@@ -272,7 +272,7 @@ class GiveUpServiceTest : StringSpec({
         // `announcementButtons` publishes counterparty ref tokens in group callback_data,
         // and this codebase's own threat model says a modified client can read them. Such a
         // token names a request resting in a CHAT, which is not a counterparty of anything
-        // on the no-names side — so the bot must not DM its owner about a pairing it never
+        // on the bot-side — so the bot must not DM its owner about a pairing it never
         // made, however many tokens somebody harvested.
         val f = GiveUpFixture("harvested", handled(1L to Handle("bob", "Bob"), 2L to Handle("ann", "Ann")))
         val a = f.rest(1L, Side.OFFER)

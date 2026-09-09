@@ -226,13 +226,13 @@ class LifecycleService(
             // ever sent under an HTML parse mode by some future caller.
             ?: return ActionResult.Gone("I can't find a waiting request called ${escapeHtml(shortId)} here.")
         if (mine.userId != userId) return ActionResult.Denied("That's not your request.")
-        val noNames = chatId == NO_CHAT_ID
+        val noChat = chatId == NO_CHAT_ID
         // In a chat an unplaceable name stays what it has always been — nobody was named,
         // and the caller's own request closes alone.
-        if (noNames && peer is NamedPeer.Unplaceable) return ActionResult.Denied(NOT_A_PAIR)
+        if (noChat && peer is NamedPeer.Unplaceable) return ActionResult.Denied(NOT_A_PAIR)
         val theirs = (peer as? NamedPeer.Somebody)
             ?.let { named -> requests.resting(chatId).firstOrNull { it.userId == named.userId } }
-        if (noNames && peer is NamedPeer.Somebody &&
+        if (noChat && peer is NamedPeer.Somebody &&
             (theirs == null || !giveUps.bothOffered(mine.refToken, theirs.refToken))
         ) {
             return ActionResult.Denied(NOT_A_PAIR)

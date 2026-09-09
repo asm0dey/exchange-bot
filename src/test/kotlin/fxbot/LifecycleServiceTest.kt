@@ -66,7 +66,7 @@ private fun lifecycle(
 private fun RequestRepository.put(chatId: Long, userId: Long, name: String, side: Side) =
     create(chatId, userId, name, side, "EUR", BigDecimal("1000"), EURRUB, 7)
 
-/** The same wiring, with the consent table in reach — what the no-names `/done` is decided from. */
+/** The same wiring, with the consent table in reach — what the bot-side `/done` is decided from. */
 private class ConsentFixture(name: String) {
     private val ds = memDataSource(name).also { migrate(it) }
     private val clock: Clock = Clock.fixed(T0, ZoneOffset.UTC)
@@ -232,19 +232,19 @@ class LifecycleServiceTest : StringSpec({
         repo.byRefToken(a.refToken)!!.state shouldBe RequestState.CANCELLED
     }
 
-    // --- An interest is a set of rows sharing an interest token: the no-names row plus one
+    // --- An interest is a set of rows sharing an interest token: the bot-side row plus one
     // showing per chat. Done and cancel are decisions about the whole thing.
 
     "cancelling one showing withdraws the whole interest" {
         val (svc, repo) = lifecycle("cancelinterest")
-        val noNames = repo.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
+        val noChat = repo.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
         val here = repo.create(-100L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
         val there = repo.create(-200L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
         val r = svc.cancel(-100L, 1L, here.shortId)
         r.shouldBeInstanceOf<ActionResult.Ok>()
-        r.touchedTokens.toSet() shouldBe setOf(noNames.refToken, here.refToken, there.refToken)
+        r.touchedTokens.toSet() shouldBe setOf(noChat.refToken, here.refToken, there.refToken)
         repo.byRefToken(there.refToken)!!.state shouldBe RequestState.CANCELLED
-        repo.byRefToken(noNames.refToken)!!.state shouldBe RequestState.CANCELLED
+        repo.byRefToken(noChat.refToken)!!.state shouldBe RequestState.CANCELLED
     }
     "a done closes both interests whole" {
         val (svc, repo) = lifecycle("doneinterest")
@@ -334,11 +334,11 @@ class LifecycleServiceTest : StringSpec({
         r.restate shouldBe null
     }
 
-    // --- On the no-names side, `done`'s own guard passes trivially (both rows carry
+    // --- On the bot-side, `done`'s own guard passes trivially (both rows carry
     // chatId = 0 and the opposite side is arranged by stating it), so consent is what
     // authorizes closing somebody else's interest there.
 
-    "a no-names peer who never agreed to pass names closes nothing" {
+    "a bot-side peer who never agreed to pass names closes nothing" {
         val f = ConsentFixture("donenogiveup")
         val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
         val theirs = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
@@ -352,7 +352,7 @@ class LifecycleServiceTest : StringSpec({
         f.stateOf(showing) shouldBe RequestState.OPEN
     }
 
-    "one side's consent is not enough on the no-names side" {
+    "one side's consent is not enough on the bot-side" {
         val f = ConsentFixture("donehalfgiveup")
         val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
         val theirs = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
@@ -362,7 +362,7 @@ class LifecycleServiceTest : StringSpec({
         f.stateOf(theirs) shouldBe RequestState.OPEN
     }
 
-    "a mutual give-up is what lets a no-names /done close both" {
+    "a mutual give-up is what lets a bot-side /done close both" {
         val f = ConsentFixture("donegiveup")
         val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
         val theirs = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
@@ -376,7 +376,7 @@ class LifecycleServiceTest : StringSpec({
         f.stateOf(showing) shouldBe RequestState.DONE
     }
 
-    "naming somebody unplaceable is refused in the same words on the no-names side" {
+    "naming somebody unplaceable is refused in the same words on the bot-side" {
         val f = ConsentFixture("doneunplaceable")
         val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
         f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
@@ -418,7 +418,7 @@ class LifecycleServiceTest : StringSpec({
     // anyone who rewrites `giveup?a=X&b=Y` into `done?a=X&b=Y` — and the give-up button the
     // bot itself hands the presser already carries the peer's sentinel token in Y.
 
-    "the Done button cannot close a no-names pairing that never passed names" {
+    "the Done button cannot close a bot-side pairing that never passed names" {
         val f = ConsentFixture("donebuttonnogiveup")
         val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
         val theirs = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
@@ -435,7 +435,7 @@ class LifecycleServiceTest : StringSpec({
         r.text shouldNotContain "ann"
     }
 
-    "the button refusal reads exactly like every other no-names refusal" {
+    "the button refusal reads exactly like every other bot-side refusal" {
         val f = ConsentFixture("donebuttonsamewords")
         val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
         val theirs = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")

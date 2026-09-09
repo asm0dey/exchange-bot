@@ -4,7 +4,7 @@
 ALTER TABLE request ADD COLUMN interest_token TEXT;
 CREATE INDEX request_interest_idx ON request (interest_token);
 
--- One person's own size tolerance, for no-names working. Sealed like chat_settings;
+-- One person's own size tolerance, used only for working with the bot. Sealed like chat_settings;
 -- the AAD is the user_ref, so forgetting deletes it with the predicate the schema
 -- already uses everywhere else.
 CREATE TABLE person_settings (

@@ -144,7 +144,7 @@ suspend fun forget(update: ProcessedUpdate, bot: TelegramBot) {
     logCommand("forget", if (global) "erased_global" else if (private) "erased_private" else "erased_chat")
     val scope = when {
         global -> null                       // every chat, plus the bot-side
-        private -> NO_CHAT_ID          // the person's own side of the bot
+        private -> NO_CHAT_ID                // the person's own side of the bot
         else -> chat.id                      // this group alone
     }
     // Requests rest under the sentinel; messages are recorded under the real chat. Only
