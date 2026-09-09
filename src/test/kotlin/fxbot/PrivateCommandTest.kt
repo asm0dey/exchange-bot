@@ -352,6 +352,28 @@ class PrivateCommandTest : StringSpec({
         f.requests.resting(NO_CHAT_ID).shouldBeEmpty()
     }
 
+    "restating in a chat owes a private word too, to whoever it finds who stated privately" {
+        val f = PrivateFixture("restate_appeared")
+        val mine = f.requests.create(GROUP, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7)
+        val theirs = f.requests.create(GROUP, 2L, "ann", Side.BID, "EUR", BigDecimal("600"), EURRUB, 7)
+        f.requests.transition(mine.refToken, RequestState.OPEN, RequestState.DONE)
+        f.requests.transition(theirs.refToken, RequestState.OPEN, RequestState.DONE)
+        // Rests in the same group, but carries an interestToken: a showing of an interest
+        // stated privately, exactly matching the residual restate is about to post.
+        val showing = f.requests.create(GROUP, 3L, "cat", Side.BID, "EUR", BigDecimal("400"), EURRUB, 7, "i3")
+        val sent = mutableListOf<Call>()
+        restateCallback(mine.refToken, theirs.refToken, callbackFrom(1L, chatId = GROUP), recordingBot(sent))
+        val fresh = f.requests.resting(GROUP).single { it.userId == 1L }
+        // The window is real (60s) in this fixture, so nothing has been sent yet — but the
+        // ping is queued, and flushing it directly is how AnnouncementBatcherTest itself
+        // proves a queued ping without waiting on the clock.
+        Registry.batcher.flushAppeared(3L)
+        val pings = f.delivered.flatMap { it.second }
+        pings.map { it.userId } shouldBe listOf(3L)
+        pings.single().refTokens shouldContain fresh.refToken
+        pings.single().refTokens shouldContain showing.refToken
+    }
+
     "restating a privately stated interest states it again privately, and it fans out" {
         val f = PrivateFixture("restatepriv")
         val mine = f.requests.create(

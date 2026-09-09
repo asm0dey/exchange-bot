@@ -115,6 +115,25 @@ class InterestServiceTest : StringSpec({
         f.svc.counterparties(showing).map { it.request.refToken } shouldBe listOf(peer.refToken)
     }
 
+    "a showing is priced on its own pair, never the chat's current one, once an admin repairs it" {
+        // bob's 1000 EUR and ann's 99980 RUB are an exact match at EUR/RUB = 99.98 — the
+        // rate this fixture caches. Both rows carry EUR/RUB as their own pair permanently;
+        // only the chat's CONFIGURED pair is about to move out from under them.
+        val f = InterestFixture("showing_priced_own_pair").withRate()
+        f.chats.save(ChatSettings(GROUP, EURRUB, 20, 7, fanOut = true))
+        val bob = f.requests.create(GROUP, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
+        val ann = f.requests.create(GROUP, 2L, "ann", Side.BID, "RUB", BigDecimal("99980"), EURRUB, 7, "i2")
+        f.svc.counterparties(bob).map { it.request.refToken } shouldBe listOf(ann.refToken)
+
+        // An admin repairs the chat to EUR/USD. bob's and ann's showings still carry
+        // EUR/RUB — only the chat's setting has moved. Pricing bob at the chat's NEW pair
+        // would read ann's 99980 RUB against a EUR/USD rate instead, turning her tiny
+        // residual into a huge one and dropping a pairing that has not changed at all.
+        f.rateRepo.put("EUR", "USD", BigDecimal("1.1"), T0)
+        f.chats.save(ChatSettings(GROUP, CurrencyPair("EUR", "USD"), 20, 7, true))
+        f.svc.counterparties(bob).map { it.request.refToken } shouldBe listOf(ann.refToken)
+    }
+
     "a chat the person is not in is dropped" {
         val f = InterestFixture("notmember", membership = MembershipProbe { chatId, _ -> chatId == -100L })
             .withRate().chat(-100L).chat(-200L)

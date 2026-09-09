@@ -300,6 +300,7 @@ private suspend fun restateInChat(
                     text, buttons,
                 )
             }
+            Registry.batcher.enqueueAppeared(result.appeared)
             ackCallback(update, bot, "Stated.")
         }
     }
