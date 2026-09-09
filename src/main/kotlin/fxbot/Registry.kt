@@ -15,4 +15,10 @@ object Registry {
     lateinit var forget: ForgetService
     lateinit var admin: AdminService
     lateinit var migration: ChatMigrationService
+    lateinit var people: PersonSettingsRepository
+    lateinit var interests: InterestService
+    lateinit var batcher: AnnouncementBatcher
+    lateinit var refusals: DoneRefusalRepository
+    lateinit var pending: PendingAnnouncementRepository
+    lateinit var names: NameLookup
 }

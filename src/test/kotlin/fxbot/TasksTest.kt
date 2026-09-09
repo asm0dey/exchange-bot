@@ -14,10 +14,36 @@ import java.math.BigDecimal
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
+import javax.sql.DataSource
 
 private val EURRUB = CurrencyPair("EUR", "RUB")
 private val T0 = Instant.parse("2026-08-30T12:00:00Z")
 private const val BODY = """{"result":"success","base_code":"EUR","rates":{"RUB":99.98}}"""
+
+private fun stubRates(ds: DataSource, clock: Clock) = RateService(
+    RateClient(HttpClient(MockEngine { respond(BODY, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json")) })),
+    RateRepository(ds), clock,
+)
+
+/**
+ * Builds a [Housekeeping] over one in-memory database. Every collaborator is defaulted so
+ * a test names only the ones it actually cares about — the constructor is seven arguments
+ * wide and a wall of them at each call site hides which one the test is about.
+ */
+private fun housekeepingWith(
+    ds: DataSource,
+    crypto: Crypto,
+    clock: Clock,
+    requests: RequestRepository,
+    settings: ChatSettingsRepository = ChatSettingsRepository(ds, crypto, clock),
+    rates: RateService = stubRates(ds, clock),
+    refusals: DoneRefusalRepository = DoneRefusalRepository(ds, clock),
+    pending: PendingAnnouncementRepository = PendingAnnouncementRepository(ds, crypto, clock),
+    onClosed: suspend (List<String>) -> Unit = {},
+) = Housekeeping(
+    requests, settings, rates, MessageLogRepository(ds, crypto, clock),
+    refusals, pending, clock, onClosed,
+)
 
 private fun housekeeping(name: String, at: Instant): Pair<Housekeeping, RequestRepository> {
     val ds = memDataSource(name)
@@ -25,12 +51,7 @@ private fun housekeeping(name: String, at: Instant): Pair<Housekeeping, RequestR
     val crypto = testCrypto()
     val clock = Clock.fixed(at, ZoneOffset.UTC)
     val requests = RequestRepository(ds, crypto, Clock.fixed(T0, ZoneOffset.UTC))
-    val settings = ChatSettingsRepository(ds, crypto, clock)
-    val rates = RateService(
-        RateClient(HttpClient(MockEngine { respond(BODY, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json")) })),
-        RateRepository(ds), clock,
-    )
-    return Housekeeping(requests, settings, rates, MessageLogRepository(ds, crypto, clock), clock) to requests
+    return housekeepingWith(ds, crypto, clock, requests) to requests
 }
 
 class TasksTest : StringSpec({
@@ -58,12 +79,75 @@ class TasksTest : StringSpec({
             RateClient(HttpClient(MockEngine { respond(BODY, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json")) })),
             rateRepo, clock,
         )
-        Housekeeping(RequestRepository(ds, crypto, clock), settings, rates, MessageLogRepository(ds, crypto, clock), clock)
-            .refreshRates()
+        housekeepingWith(ds, crypto, clock, RequestRepository(ds, crypto, clock), settings, rates).refreshRates()
         // BigDecimal.equals is scale-sensitive; the DB read comes back scale-10
         // (DECIMAL(30, 10)) regardless of the scale it was written with — same
         // reason RateServiceTest compares by value, not by `shouldBe`.
         rateRepo.get("EUR", "RUB")!!.rate.shouldBeEqualIgnoringScale(BigDecimal("99.98"))
+    }
+    "the refresh also prices a pair only the bot-side is using" {
+        val ds = memDataSource("refreshnochat")
+        migrate(ds)
+        val crypto = testCrypto()
+        val clock = Clock.fixed(T0, ZoneOffset.UTC)
+        val requests = RequestRepository(ds, crypto, clock)
+        requests.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "CHF", BigDecimal("10"), CurrencyPair("CHF", "JPY"), 7, "i1")
+        val rateRepo = RateRepository(ds)
+        val bases = mutableListOf<String>()
+        val client = RateClient(HttpClient(MockEngine { request ->
+            bases += request.url.encodedPath.substringAfterLast('/')
+            respond(BODY, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
+        }))
+        val settings = ChatSettingsRepository(ds, crypto, clock).also { it.save(ChatSettings(-100L, EURRUB, 20, 7)) }
+        housekeepingWith(ds, crypto, clock, requests, settings, RateService(client, rateRepo, clock)).refreshRates()
+        bases.toSet() shouldBe setOf("EUR", "CHF")
+    }
+    "the sweep drops refusal rows and pending announcements whose requests have closed" {
+        val ds = memDataSource("sweepdrops")
+        migrate(ds)
+        val crypto = testCrypto()
+        val sweepAt = T0.plusSeconds(8 * 86_400)
+        val clock = Clock.fixed(sweepAt, ZoneOffset.UTC)
+        val requests = RequestRepository(ds, crypto, Clock.fixed(T0, ZoneOffset.UTC))
+        val a = requests.create(-100L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
+        // Stated at the sweep's own instant, so these are still resting when it runs and
+        // everything hanging off them has to survive it.
+        val fresh = RequestRepository(ds, crypto, clock)
+        val b = fresh.create(-100L, 2L, "ann", Side.BID, "EUR", BigDecimal("1"), EURRUB, 7, "i2")
+        val c = fresh.create(-100L, 3L, "cat", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i3")
+        val refusals = DoneRefusalRepository(ds, clock).also {
+            it.record(a.refToken, "gone")
+            it.record(b.refToken, c.refToken)
+        }
+        PendingAnnouncementRepository(ds, crypto, Clock.fixed(T0, ZoneOffset.UTC)).add(-100L, "i1", 1L)
+        val pending = PendingAnnouncementRepository(ds, crypto, clock).also { it.add(-100L, "i2", 2L) }
+        val lapsed = mutableListOf<String>()
+        val hk = housekeepingWith(ds, crypto, clock, requests, refusals = refusals, pending = pending) { lapsed += it }
+        hk.sweep() shouldBe 1
+        lapsed shouldBe listOf(a.refToken)
+        refusals.count(a.refToken, "gone") shouldBe 0
+        pending.all().single().interestToken shouldBe "i2"
+        // The rows whose requests are still resting are untouched.
+        refusals.count(b.refToken, c.refToken) shouldBe 1
+    }
+    "a hook that throws does not fail the sweep" {
+        val ds = memDataSource("sweephookfails")
+        migrate(ds)
+        val crypto = testCrypto()
+        val sweepAt = T0.plusSeconds(8 * 86_400)
+        val clock = Clock.fixed(sweepAt, ZoneOffset.UTC)
+        // One showing stated at T0 with a 7-day time in force: it lapses in this sweep,
+        // so onClosed fires — and throws.
+        val lapsing = RequestRepository(ds, crypto, Clock.fixed(T0, ZoneOffset.UTC))
+        lapsing.create(-100L, 9L, "zed", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7)
+        val hk = housekeepingWith(
+            ds, crypto, clock, lapsing,
+            onClosed = { throw IllegalStateException("telegram is down") },
+        )
+
+        // A retry could not recover anything — the lapsing is already committed — so the
+        // task reports its real result rather than asking db-scheduler to run it again.
+        hk.sweep() shouldBe 1
     }
     "startScheduler registers both tasks with no task_data" {
         // db-scheduler's task_data is an unencrypted BYTEA — nothing chat- or
@@ -76,17 +160,7 @@ class TasksTest : StringSpec({
         migrate(ds)
         val crypto = testCrypto()
         val clock = Clock.fixed(T0, ZoneOffset.UTC)
-        val hk = Housekeeping(
-            RequestRepository(ds, crypto, clock),
-            ChatSettingsRepository(ds, crypto, clock),
-            RateService(
-                RateClient(HttpClient(MockEngine { respond(BODY, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json")) })),
-                RateRepository(ds), clock,
-            ),
-            MessageLogRepository(ds, crypto, clock),
-            clock,
-        )
-        startScheduler(ds, hk)
+        startScheduler(ds, housekeepingWith(ds, crypto, clock, RequestRepository(ds, crypto, clock)))
 
         val taskData = ds.connection.use { conn ->
             conn.createStatement().executeQuery("SELECT task_name, task_data FROM scheduled_tasks").use { rs ->

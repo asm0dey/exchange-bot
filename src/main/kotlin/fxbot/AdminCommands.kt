@@ -72,12 +72,26 @@ suspend fun pair(update: ProcessedUpdate, bot: TelegramBot) = adminOnly("pair", 
     else Registry.admin.setPair(update.getChat().id, args[0], args[1])
 }
 
+/**
+ * The one command that means two different things in the two places, exactly as
+ * `/forget` already does: in a group it is the admin setting for that chat, privately it
+ * is the person's own size tolerance for working with the bot. Branching BEFORE [adminOnly]
+ * is what keeps the private form out of the admin check, which would otherwise refuse it.
+ */
 @CommandHandler(["/tolerance"])
-suspend fun tolerance(update: ProcessedUpdate, bot: TelegramBot) = adminOnly("tolerance", update, bot) { args ->
-    Registry.admin.setTolerance(update.getChat().id, args.firstOrNull().orEmpty())
+suspend fun tolerance(update: ProcessedUpdate, bot: TelegramBot) {
+    if (!update.isGroupChat()) return privateTolerance(update, bot)
+    adminOnly("tolerance", update, bot) { args ->
+        Registry.admin.setTolerance(update.getChat().id, args.firstOrNull().orEmpty())
+    }
 }
 
 @CommandHandler(["/tif"])
 suspend fun tif(update: ProcessedUpdate, bot: TelegramBot) = adminOnly("tif", update, bot) { args ->
     Registry.admin.setTif(update.getChat().id, args.firstOrNull().orEmpty())
+}
+
+@CommandHandler(["/fanout"])
+suspend fun fanout(update: ProcessedUpdate, bot: TelegramBot) = adminOnly("fanout", update, bot) { args ->
+    Registry.admin.setFanOut(update.getChat().id, args.firstOrNull().orEmpty())
 }

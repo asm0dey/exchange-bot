@@ -125,4 +125,38 @@ class MatcherTest : StringSpec({
         notional(r, BigDecimal.ZERO) shouldBe null
         notional(r, BigDecimal("-99.98")) shouldBe null
     }
+
+    // --- ADR 0006: each side judges its own residual against its own tolerance.
+
+    "a smaller counterparty is a counterparty when the larger side accepts the leftover" {
+        // A sells 4 EUR with a 50% tolerance; B buys 2. A's residual is 2 of 4 = 50%.
+        val a = req(Verb.SELL, "4", "EUR")
+        findCounterparties(a, listOf(req(Verb.BUY, "2", "EUR")), RATE, 50) shouldHaveSize 1
+    }
+    "the larger side's own tolerance can exclude a pairing the smaller side accepts" {
+        // Same shapes, A's tolerance is 20: 50% > 20, so A refuses even though B has no residual.
+        val a = req(Verb.SELL, "4", "EUR")
+        findCounterparties(a, listOf(req(Verb.BUY, "2", "EUR")), RATE, 20).shouldBeEmpty()
+    }
+    "the smaller side has no residual of its own, so it accepts however tight its tolerance is" {
+        // B is the subject now, with a tolerance of 1: B's residual is 0, A's is not B's business.
+        val b = req(Verb.BUY, "2", "EUR")
+        findCounterparties(b, listOf(req(Verb.SELL, "4", "EUR")), RATE, 1, peerTolerancePct = { 50 })
+            .shouldHaveSize(1)
+    }
+    "the peer's own tolerance is consulted, not the subject's" {
+        // The subject is small and generous; the peer is large and strict, so the peer refuses.
+        val b = req(Verb.BUY, "2", "EUR")
+        findCounterparties(b, listOf(req(Verb.SELL, "4", "EUR")), RATE, 100, peerTolerancePct = { 20 })
+            .shouldBeEmpty()
+    }
+    "a residual exactly equal to the tolerance is accepted" {
+        val a = req(Verb.SELL, "1000", "EUR")
+        findCounterparties(a, listOf(req(Verb.BUY, "800", "EUR")), RATE, 20) shouldHaveSize 1
+        findCounterparties(a, listOf(req(Verb.BUY, "799", "EUR")), RATE, 20).shouldBeEmpty()
+    }
+    "a near-equal pairing leaves a residual well inside a 20 percent tolerance" {
+        val a = req(Verb.SELL, "1000", "EUR")
+        findCounterparties(a, listOf(req(Verb.BUY, "999", "EUR")), RATE, 20) shouldHaveSize 1
+    }
 })

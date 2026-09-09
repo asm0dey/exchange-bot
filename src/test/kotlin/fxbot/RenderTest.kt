@@ -1,6 +1,7 @@
 package fxbot
 
 import io.kotest.core.spec.style.StringSpec
+import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import io.kotest.matchers.string.shouldNotContain
@@ -16,6 +17,14 @@ private fun r(verb: Verb, amount: String, ccy: String, user: Long, name: String?
         statedAmount = BigDecimal(amount), pair = EURRUB, state = RequestState.OPEN,
         createdAt = Instant.EPOCH, expiresAt = Instant.EPOCH,
     )
+
+private fun req(userId: Long, username: String?) = Request(
+    refToken = "t$userId", chatId = -100L, userId = userId, username = username,
+    shortId = "a1", side = Side.OFFER, statedCurrency = "EUR",
+    statedAmount = java.math.BigDecimal("100"), pair = CurrencyPair("EUR", "RUB"),
+    state = RequestState.OPEN,
+    createdAt = java.time.Instant.EPOCH, expiresAt = java.time.Instant.EPOCH.plusSeconds(60),
+)
 
 class RenderTest : StringSpec({
     "the give currency follows the side" {
@@ -50,14 +59,39 @@ class RenderTest : StringSpec({
     "callback data stays inside Telegram's 64 bytes" {
         val a = "a".repeat(22)
         val b = "b".repeat(22)
-        Cb.done(a, b).toByteArray().size shouldBe 54
-        (Cb.done(a, b).toByteArray().size <= 64) shouldBe true
+        // "done?a=" + 22 + "&b=" + a short id, at its widest (two characters).
+        Cb.done(a, "z9").toByteArray().size shouldBe 34
+        (Cb.done(a, "z9").toByteArray().size <= 64) shouldBe true
         (Cb.cancel(a).toByteArray().size <= 64) shouldBe true
         (Cb.reopen(a).toByteArray().size <= 64) shouldBe true
+        // The longest payload of the lot: "restate?a=" + 22 + "&b=" + 22.
+        Cb.restate(a, b).toByteArray().size shouldBe 57
+        // "yes?a=" + 22 + "&b=" + 22.
+        Cb.confirm(a, b).toByteArray().size shouldBe 53
+        (Cb.refuse(a, b).toByteArray().size <= 64) shouldBe true
     }
     "callback data uses the framework's query syntax" {
         Cb.cancel("tok") shouldBe "cancel?t=tok"
-        Cb.done("x", "y") shouldBe "done?a=x&b=y"
+        Cb.done("x", "a1") shouldBe "done?a=x&b=a1"
+    }
+    // A ref token is a bearer capability and callback data reaches the client, so a done
+    // that carried the counterparty's token handed the reader the means to close that
+    // person's whole interest. Their row's short id carries no such power — `renderStatus`
+    // prints it beside their name to the same readers — and it names one row, not a person.
+    "a done names its counterparty's row by short id, never by their ref token" {
+        val subject = r(Verb.SELL, "1000", "EUR", 1, "bob", token = "s".repeat(22))
+        val peer = r(Verb.BUY, "900", "EUR", 2, "alice", token = "c".repeat(22))
+        val data = suggestionButtons(subject, listOf(Counterparty(peer, BigDecimal("900"), BigDecimal.ZERO)))[0].data
+        data shouldBe "done?a=${subject.refToken}&b=${peer.shortId}"
+        data shouldNotContain peer.refToken
+        Cb.doneNamesRow(data, peer) { subject.chatId } shouldBe true
+        // The same short id in another chat is another row, and this button is not about it.
+        Cb.doneNamesRow(data, peer.copy(chatId = -200L)) { subject.chatId } shouldBe false
+        Cb.doneNamesRow(data, peer.copy(shortId = "zz")) { subject.chatId } shouldBe false
+    }
+    "confirm and refuse reverse done's ownership: a is the declarer, b the person asked" {
+        Cb.confirm("declarer", "asked") shouldBe "yes?a=declarer&b=asked"
+        Cb.refuse("declarer", "asked") shouldBe "no?a=declarer&b=asked"
     }
 
     "a suggestion names each counterparty and how to reach them" {
@@ -73,9 +107,13 @@ class RenderTest : StringSpec({
         text shouldNotContain "notional"
         text shouldNotContain "Bid"
     }
-    "no counterparty means a waitlist line, not an error" {
+    // The vocabulary is binding (CONTEXT.md, Resting): a request that found nobody is
+    // RESTING. "waitlist" is the queued/listed idea that entry rules out, and letting it
+    // stand here while /reopen says "Resting again" would have the bot contradict itself.
+    "no counterparty says the request is resting, not an error" {
         val text = renderSuggestions(emptyList(), RateStatus.Fresh(BigDecimal("99.98")))
-        text shouldContain "waitlist"
+        text shouldContain "resting"
+        text shouldNotContain "waitlist"
     }
     "a stale rate is admitted in the message" {
         val text = renderSuggestions(
@@ -95,8 +133,55 @@ class RenderTest : StringSpec({
         val buttons = suggestionButtons(subject, found)
         buttons.size shouldBe 2
         buttons[0].label shouldContain "alice"
-        buttons[0].data shouldBe Cb.done("s".repeat(22), "c".repeat(22))
+        buttons[0].data shouldBe Cb.done("s".repeat(22), found[0].request.shortId)
         buttons[1].data shouldBe Cb.cancel("s".repeat(22))
+    }
+
+    "one choose button per candidate, each an ordinary done with the declarer's own token" {
+        val mine = r(Verb.SELL, "1000", "EUR", 1, "bob", token = "m".repeat(22))
+        val alice = r(Verb.BUY, "900", "EUR", 2, "alice", token = "a".repeat(22))
+        val carol = r(Verb.BUY, "300", "EUR", 3, "carol", token = "c".repeat(22))
+        val result = ActionResult.Choose("More than one person here could be the one. Which of them?", mine.refToken, listOf(alice, carol))
+        val buttons = chooseButtons(result)
+        buttons.size shouldBe 2
+        buttons[0].label shouldContain "alice"
+        buttons[0].data shouldBe Cb.done(mine.refToken, alice.shortId)
+        buttons[1].label shouldContain "carol"
+        buttons[1].data shouldBe Cb.done(mine.refToken, carol.shortId)
+    }
+
+    "askButtons offers exactly Yes and No, built from myToken and peerToken" {
+        val asked = ActionResult.Asked(
+            text = "Asked @ann to confirm. Nothing's closed yet.",
+            declarerUserId = 1L,
+            peerUserId = 2L,
+            peerChatId = 2L,
+            question = "@bob says you two swapped 1,000 EUR. Did you?",
+            myToken = "m".repeat(22),
+            peerToken = "p".repeat(22),
+        )
+        val buttons = askButtons(asked)
+        buttons.size shouldBe 2
+        buttons[0].data shouldBe Cb.confirm("m".repeat(22), "p".repeat(22))
+        buttons[1].data shouldBe Cb.refuse("m".repeat(22), "p".repeat(22))
+    }
+
+    "noticeButtons offers Reopen alone, plus a restate button only when there's a residual" {
+        val plain = Notice(
+            chatId = 2L, text = "Confirmed.", reopenToken = "r".repeat(22), recipientUserId = 1L,
+            otherToken = "o".repeat(22), otherUserId = 2L, restate = null,
+        )
+        noticeButtons(plain).size shouldBe 1
+        noticeButtons(plain)[0].data shouldBe Cb.reopen("r".repeat(22))
+
+        val withResidual = Notice(
+            chatId = 2L, text = "Confirmed.", reopenToken = "r".repeat(22), recipientUserId = 1L,
+            otherToken = "o".repeat(22), otherUserId = 2L,
+            restate = RestateOffer("m".repeat(22), "p".repeat(22), BigDecimal("50"), "EUR"),
+        )
+        val buttons = noticeButtons(withResidual)
+        buttons.size shouldBe 2
+        buttons[1].data shouldBe Cb.restate("m".repeat(22), "p".repeat(22))
     }
 
     "status caps the list and says how many were left out" {
@@ -104,5 +189,39 @@ class RenderTest : StringSpec({
         val text = renderStatus(many, viewerId = 3, limit = 20)
         text shouldContain "+5 more"
         text shouldContain "yours"
+    }
+
+    "a private reply names its counterparties and offers a done for each" {
+        val mine = req(userId = 1L, username = "bob")
+        val theirs = req(userId = 2L, username = "ann")
+        val stated = InterestResult.Stated(
+            interest = mine, showings = emptyList(),
+            shown = listOf(ShownInterest(mine, listOf(Counterparty(theirs, null, java.math.BigDecimal.ZERO)))),
+            status = RateStatus.Unavailable, appeared = emptyList(),
+        )
+        renderStated(stated) shouldContain "@ann"
+        renderStated(stated) shouldNotContain "no names"
+        statedButtons(stated).map { it.data } shouldContain Cb.done(mine.refToken, theirs.shortId)
+    }
+
+    "a stored handle beats a looked-up display name, and no lookup is made for it" {
+        val r = req(userId = 7L, username = "bob")
+        var lookups = 0
+        val book = nameBookFor(listOf(r), NameLookup { lookups++; Handle(null, "Robert") })
+        mentionOf(r, book) shouldBe "@bob"
+        lookups shouldBe 0
+    }
+
+    "somebody with no handle is a link over the display name the lookup gave"  {
+        val r = req(userId = 7L, username = null)
+        val book = nameBookFor(listOf(r), NameLookup { Handle(null, "Boris <the> Great") })
+        mentionOf(r, book) shouldBe """<a href="tg://user?id=7">Boris &lt;the&gt; Great</a>"""
+    }
+
+    "an unreachable person is still a link, labelled the way they always were" {
+        val r = req(userId = 7L, username = null)
+        val book = nameBookFor(listOf(r), NameLookup { null })
+        mentionOf(r, book) shouldBe """<a href="tg://user?id=7">this person</a>"""
+        plainName(r, book) shouldBe "this person"
     }
 })

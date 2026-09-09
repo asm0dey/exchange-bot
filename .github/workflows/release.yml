@@ -31,7 +31,8 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.number }}
 
-      - run: gh release create "$GITHUB_REF_NAME" "build/libs/exchange-bot-${VERSION}.jar" --generate-notes
+      # build/release/, not build/libs/ — see the shadowJar block in build.gradle.kts.
+      - run: gh release create "$GITHUB_REF_NAME" "build/release/exchange-bot-${VERSION}.jar" --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.number }}

@@ -3,6 +3,7 @@ package fxbot
 import com.github.kagkarlsson.scheduler.Scheduler
 import com.github.kagkarlsson.scheduler.task.helper.Tasks
 import com.github.kagkarlsson.scheduler.task.schedule.Schedules
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
 import java.time.Clock
@@ -17,18 +18,51 @@ class Housekeeping(
     private val settings: ChatSettingsRepository,
     private val rates: RateService,
     private val log: MessageLogRepository,
+    private val refusals: DoneRefusalRepository,
+    private val pending: PendingAnnouncementRepository,
     private val clock: Clock = Clock.systemUTC(),
+    /** Hands the lapsed tokens to the message-editing pass. Defaulted so tests need no bot. */
+    private val onClosed: suspend (List<String>) -> Unit = {},
 ) {
-    /** Lapses what is past its time in force, and prunes the message record. Counts only —
-     *  no chat/request identity belongs in this log line. */
-    fun sweep(): Int {
+    /**
+     * Lapses what is past its time in force, prunes the message record, and drops the rows
+     * that only made sense while their requests were resting. Counts and fixed labels only —
+     * no chat, person or request identity belongs in this log line.
+     *
+     * Order matters: the lapsing runs first, so the two `dropClosed` passes below see the
+     * showings that just expired as closed and clean up after them in the same sweep.
+     *
+     * The hook cannot fail the task: what it is told about is already committed by the
+     * time it runs, so a db-scheduler retry would sweep nothing and re-run the whole task
+     * for a message it could not resend anyway.
+     */
+    suspend fun sweep(): Int {
         val expired = requests.expireDue(clock.instant())
         val pruned = log.prune(clock.instant().minus(RETENTION))
-        logger.info("sweep: expired=$expired pruned=$pruned")
-        return expired
+        val staleRefusals = refusals.dropClosed()
+        val stalePending = pending.dropClosed() + pending.dropOlderThan(clock.instant().minus(PENDING_MAX_AGE))
+        logger.info("sweep: expired=${expired.size} pruned=$pruned refusals=$staleRefusals pending=$stalePending")
+        if (expired.isNotEmpty()) fire("closed") { onClosed(expired) }
+        return expired.size
     }
 
-    suspend fun refreshRates() = rates.refresh(settings.allPairs())
+    /** Runs the hook, logging a fixed outcome label if it throws. Cancellation is not a failure. */
+    private suspend fun fire(hook: String, body: suspend () -> Unit) {
+        try {
+            body()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.warn("sweep: hook=$hook outcome=threw cause=${e.javaClass.simpleName}")
+        }
+    }
+
+    /**
+     * Chat pairs AND the pairs resting in the bot — a pair no chat uses would
+     * otherwise never get a reference rate. The feed is per base currency, so the cost is
+     * one GET per distinct base per day, not per pair.
+     */
+    suspend fun refreshRates() = rates.refresh(settings.allPairs() + requests.noChatPairs())
 }
 
 /**
@@ -40,7 +74,7 @@ class Housekeeping(
  */
 fun startScheduler(ds: DataSource, housekeeping: Housekeeping) {
     val sweep = Tasks.recurring("sweep", Schedules.fixedDelay(Duration.ofHours(24)))
-        .execute { _, _ -> housekeeping.sweep() }
+        .execute { _, _ -> runBlocking { housekeeping.sweep() } }
     val refresh = Tasks.recurring("refresh-rates", Schedules.fixedDelay(Duration.ofHours(24)))
         .execute { _, _ -> runBlocking { housekeeping.refreshRates() } }
 

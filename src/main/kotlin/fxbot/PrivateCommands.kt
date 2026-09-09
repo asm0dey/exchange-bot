@@ -1,0 +1,203 @@
+package fxbot
+
+import eu.vendeli.tgbot.TelegramBot
+import eu.vendeli.tgbot.api.chat.getChat
+import eu.vendeli.tgbot.api.chat.getChatMember
+import eu.vendeli.tgbot.api.message.message
+import eu.vendeli.tgbot.types.chat.ChatMember
+import eu.vendeli.tgbot.types.component.ParseMode
+import eu.vendeli.tgbot.types.component.ProcessedUpdate
+import eu.vendeli.tgbot.types.component.getChat
+import eu.vendeli.tgbot.types.component.getOrNull
+import eu.vendeli.tgbot.types.component.getUser
+import org.slf4j.LoggerFactory
+import java.util.concurrent.atomic.AtomicLong
+
+/** `/sell 10 EUR for RUB` — the amount's currency, then `for`, then the other leg. */
+private const val EXAMPLE = "Tell me both currencies, like: /sell 10 EUR for RUB"
+
+/** What a private chat can actually do, in the same shape as the group's [HELP_TEXT]. */
+internal val PRIVATE_HELP_TEXT = """
+    /sell 10 EUR for RUB — you're handing over 10 EUR
+    /buy 10 RUB for EUR — you want to receive 10 RUB
+    /tolerance 5 — how much you'll accept being left with, 1-100
+    /status — your interests and where each still rests
+    /cancel a1 — withdraw an interest, every showing with it
+    /done a1 — you two swapped; I'll ask them to confirm
+    /reopen — bring back the interest that closed last
+    /settings — your size tolerance
+    /forget — erase what I hold about you (add 'all' to reach every group)
+""".trimIndent()
+
+/**
+ * `/sell` and `/buy` in a private chat. Everything the person stated rests the moment
+ * this returns; only the announcements to the chats it is shown in wait for the batch,
+ * so a counterparty is never missed because a message had not gone out yet.
+ */
+internal suspend fun handlePrivatePost(verb: Verb, update: ProcessedUpdate, bot: TelegramBot) {
+    val chat = update.getChat()
+    val user = update.getUser()
+    val args = update.text.trim().split(Regex("\\s+")).drop(1)
+    val command = verb.name.lowercase()
+    if (args.size < 4 || !args[2].equals("for", ignoreCase = true)) {
+        logCommand(command, "missing_args")
+        message { EXAMPLE }.send(chat.id, bot)
+        return
+    }
+    when (val result = Registry.interests.state(user.id, user.username, verb, args[0], args[1], args[3])) {
+        is InterestResult.Rejected -> {
+            logCommand(command, "rejected")
+            message { result.reason }.send(chat.id, bot)
+        }
+        is InterestResult.Stated -> {
+            logCommand(command, "stated")
+            sendStated(chat.id, user.id, result, bot)
+        }
+    }
+}
+
+/** Each interest once, and where it still rests — never a chat's own resting list. */
+internal suspend fun privateStatus(update: ProcessedUpdate, bot: TelegramBot) {
+    val user = update.getUser()
+    logCommand("status", "shown_private")
+    message { renderStandings(Registry.interests.standings(user.id)) }
+        .options { parseMode = ParseMode.HTML }
+        .send(update.getChat().id, bot)
+}
+
+/** The person's own size tolerance, which never overrides a chat's. */
+internal suspend fun privateSettings(update: ProcessedUpdate, bot: TelegramBot) {
+    val user = update.getUser()
+    logCommand("settings", "shown_private")
+    message {
+        "Your size tolerance is ${Registry.people.get(user.id).tolerancePct}%. Change it with /tolerance."
+    }.send(update.getChat().id, bot)
+}
+
+/** `/tolerance` privately is the person's own; in a group it stays the admin command. */
+internal suspend fun privateTolerance(update: ProcessedUpdate, bot: TelegramBot) {
+    val user = update.getUser()
+    val args = update.text.trim().split(Regex("\\s+")).drop(1)
+    logCommand("tolerance", "handled_private")
+    message { Registry.people.setTolerance(user.id, args.firstOrNull().orEmpty()) }.send(update.getChat().id, bot)
+}
+
+private val adapterLogger = LoggerFactory.getLogger("fxbot.adapters")
+
+/** Probe failures, counted rather than identified — never which chat or which person. */
+private val membershipFailures = AtomicLong()
+
+/**
+ * Membership is probed per fan-out and the answer is used and discarded — no record of
+ * which chats a person belongs to is written anywhere. Denies on any failure, like
+ * `AdminCommands.isAdmin`: a network hiccup must never read as "probably a member".
+ * Cancellation is not a failure and is rethrown.
+ *
+ * The failure is logged HERE rather than in [InterestService], which catches a throwing
+ * probe deliberately without a logger: this adapter is the boundary where the I/O
+ * actually happens, so it is the only place that knows a call failed rather than
+ * answering "no".
+ */
+fun telegramMembership(bot: TelegramBot) = MembershipProbe { chatId, userId ->
+    val member = try {
+        getChatMember(userId).sendReturning(chatId, bot).getOrNull()
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        adapterLogger.warn("membership probe: outcome=threw count=${membershipFailures.incrementAndGet()}")
+        null
+    }
+    // A Telegram-side refusal comes back as a null member, not a throw
+    // (`throwExOnActionsFailure` is false everywhere in this codebase), and is
+    // indistinguishable from "not a member" — so it is not counted as a failure.
+    //
+    // Matched on the sealed subtype, not on the status string, because "restricted" alone
+    // does not answer the question: `ChatMember.Restricted` carries `isMember`, and it is
+    // false for somebody who is restricted and NOT in the chat. Reading the string would
+    // fan a showing — with their handle on it — out to a group they do not belong to.
+    when (member) {
+        is ChatMember.Owner, is ChatMember.Administrator, is ChatMember.Member -> true
+        is ChatMember.Restricted -> member.isMember
+        else -> false
+    }
+}
+
+/**
+ * Looked up when a message is about to name somebody who has no stored handle. A private
+ * chat's id IS the person's user id, so `getChat` addressed by user id is their own chat
+ * with the bot; somebody the bot cannot reach comes back null and keeps the label they
+ * always had.
+ */
+fun telegramNames(bot: TelegramBot) = NameLookup { userId ->
+    val chat = try {
+        getChat().sendReturning(userId, bot).getOrNull()
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        null
+    }
+    chat?.let { Handle(it.username, it.firstName ?: it.title ?: "this person") }
+}
+
+/**
+ * Telegram refused a send, so the chat was NOT told. Carries no chat, no person and no
+ * text: [AnnouncementBatcher] logs the class name of whatever escapes a flush, and that
+ * class name is the whole of what this needs to say.
+ */
+class AnnouncementNotSent : RuntimeException("Telegram refused an announcement send")
+
+/**
+ * Sends what a flush produced and records every announcement against every token it
+ * names. Recording is what makes [ButtonService.refreshFor] able to rebuild a batched
+ * message later: it reads the stored text and the stored button list and nothing else, so
+ * an unrecorded message degrades to an all-or-nothing keyboard strip and a token named by
+ * a button but not recorded loses that button on the first refresh.
+ *
+ * A ping is recorded on the same terms, and for the stronger reason: it NAMES people, so
+ * a /forget from either side has to be able to reach it (ADR 0005). Its done buttons name
+ * the counterparty's ref token, and an unrecorded token loses its button on the first
+ * refresh.
+ */
+fun telegramSink(bot: TelegramBot) = AnnouncementSink { announcements, pings ->
+    // Counted here and thrown ONCE below, rather than thrown at the first refusal: a throw
+    // inside the loop abandons every announcement ordered behind the refusing chat, so one
+    // chat the bot has been kicked from would keep the rest pending until they aged out as
+    // stale — and on the startup path, where `flushAllOnStartup` reads every pending row,
+    // one dead chat would starve everybody's. The throw still has to happen, because it is
+    // the only way to tell the batcher a chat was NOT told; retrying the batch whole is the
+    // "told twice rather than never" trade `AnnouncementBatcher` documents.
+    var refused = 0
+    for (a in announcements) {
+        // `.await()` then check, NOT `.getOrNull()`: `throwExOnActionsFailure` is false
+        // everywhere in this codebase, so Telegram refusing the send (bot kicked from the
+        // group, a 429 that outlived its retries) arrives as a `Response.Failure` and
+        // `getOrNull()` would quietly turn it into null. Returning normally after that
+        // tells the batcher the chat was told, and it then deletes the pending row — the
+        // announcement would be lost for good while the showing kept resting there.
+        val sent = message { a.text }
+            .options { parseMode = ParseMode.HTML }
+            .inlineKeyboardMarkup { a.buttons.forEach { b -> b.label callback b.data; br() } }
+            .sendReturning(a.chatId, bot)
+            .await()
+            .getOrNull()
+        if (sent == null) {
+            refused++
+            continue
+        }
+        Registry.messages.record(a.chatId, sent.messageId, a.refTokens, a.userIds, a.text, a.buttons)
+    }
+    for (p in pings) {
+        // Not retried, and deliberately: nothing about a ping is persisted, so a refused send
+        // has nothing to re-render from — the batcher drained the token set before this ran.
+        val sent = message { p.text }
+            .options { parseMode = ParseMode.HTML }
+            .inlineKeyboardMarkup { p.buttons.forEach { b -> b.label callback b.data; br() } }
+            .sendReturning(p.userId, bot)
+            .getOrNull()
+        // Recorded because it NAMES somebody now: a /forget from either person has to reach it.
+        if (sent != null) Registry.messages.record(p.userId, sent.messageId, p.refTokens, p.userIds, p.text, p.buttons)
+    }
+    // After the pings, which are nobody's retry and are independent of any chat that
+    // refused above.
+    if (refused > 0) throw AnnouncementNotSent()
+}

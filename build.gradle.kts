@@ -96,8 +96,15 @@ tasks.register<JavaExec>("keygen") {
 }
 
 tasks.shadowJar {
-    // build/libs/exchange-bot-<version>.jar, not "-all" — this is the release artifact.
+    // exchange-bot-<version>.jar, not "-all" — this is the release artifact.
     archiveClassifier.set("")
+    // ...but in build/release/, not build/libs/. An empty classifier gives this task the
+    // same file name the plain `jar` task produces, and `installDist`, `startScripts`,
+    // `distZip` and `distTar` all consume build/libs/exchange-bot-<version>.jar as `jar`'s
+    // output. Two tasks writing one path is an undeclared dependency, which Gradle 9 fails
+    // the build over. Giving the fat jar its own directory keeps the release file name and
+    // leaves build/libs to `jar` alone; nothing depends on the fat jar's location but the
+    // release workflow, which names this directory.
     destinationDirectory.set(layout.buildDirectory.dir("release"))
     // tinylog, flyway and the JDBC drivers all ship META-INF/services entries; without
     // merging, the last jar in wins and the rest silently disappear.

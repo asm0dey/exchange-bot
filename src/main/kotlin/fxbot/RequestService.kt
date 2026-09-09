@@ -6,7 +6,18 @@ package fxbot
  * extracts arguments from the update and sends what this returns.
  */
 sealed interface PostResult {
-    data class Posted(val request: Request, val found: List<Counterparty>, val status: RateStatus) : PostResult
+    data class Posted(
+        val request: Request,
+        val found: List<Counterparty>,
+        val status: RateStatus,
+        /**
+         * Counterparties who came in privately and must be told there. Somebody who typed
+         * in this chat is told by the message this post produces, in the chat they typed in;
+         * somebody whose showing this matched never typed here and may have it muted.
+         */
+        val appeared: List<CounterpartyAppeared>,
+    ) : PostResult
+
     data class Rejected(val reason: String) : PostResult
 }
 
@@ -36,6 +47,10 @@ class RequestService(
         val request = requests.create(chatId, userId, username, side, currency, amount, chat.pair, chat.tifDays)
         val status = rates.status(chat.pair)
         val found = findCounterparties(request, requests.resting(chatId), status.rate, chat.tolerancePct)
-        return PostResult.Posted(request, found, status)
+        return PostResult.Posted(
+            request, found, status,
+            found.filter { it.request.spokePrivately() }
+                .map { CounterpartyAppeared(it.request.userId, it.request.refToken) },
+        )
     }
 }

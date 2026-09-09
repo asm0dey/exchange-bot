@@ -39,6 +39,10 @@ private val RANDOM = SecureRandom()
  * matching — no exception, just no results. Rotating it is a deliberate
  * one-off job (decrypt each sealed payload, re-derive both refs, rewrite
  * them), not an operation this class performs automatically. See ADR 0002.
+ *
+ * @param dataKeysetJson JSON string representing the Tink keyset containing AES-256-GCM key(s) for data payload encryption.
+ * @param indexKeysetJson JSON string representing the Tink keyset containing HMAC-SHA256 key(s) for identifier indexing.
+ * @throws GeneralSecurityException if either keyset cannot be parsed or contains keys violating algorithm/size mandates.
  */
 class Crypto(dataKeysetJson: String, indexKeysetJson: String) {
     private val aead: Aead
@@ -55,13 +59,34 @@ class Crypto(dataKeysetJson: String, indexKeysetJson: String) {
         mac = indexHandle.getPrimitive(RegistryConfiguration.get(), Mac::class.java)
     }
 
+    /**
+     * Encrypts [plaintext] and authenticates it against [aad] (associated data) using AES-256-GCM.
+     *
+     * @param plaintext The plaintext string to encrypt.
+     * @param aad Associated authenticated data bound to the ciphertext.
+     * @return The encrypted and authenticated ciphertext as a byte array.
+     */
     fun seal(plaintext: String, aad: String): ByteArray =
         aead.encrypt(plaintext.toByteArray(Charsets.UTF_8), aad.toByteArray(Charsets.UTF_8))
 
+    /**
+     * Decrypts [ciphertext] and verifies its authenticity against [aad] (associated data) using AES-256-GCM.
+     *
+     * @param ciphertext The encrypted ciphertext bytes to decrypt.
+     * @param aad Associated authenticated data that must match what was provided during encryption.
+     * @return The decrypted plaintext string.
+     * @throws GeneralSecurityException if decryption or authentication fails (e.g. wrong key, tampered data, or mismatched AAD).
+     */
     fun open(ciphertext: ByteArray, aad: String): String =
         String(aead.decrypt(ciphertext, aad.toByteArray(Charsets.UTF_8)), Charsets.UTF_8)
 
-    /** Deterministic and keyed. Stored in a TEXT column — no width is assumed. */
+    /**
+     * Derives a deterministic, keyed Base64-encoded HMAC-SHA256 representation of [value] for exact-match database queries.
+     * Stored in a TEXT column — no width is assumed.
+     *
+     * @param value The string identifier (e.g. chat ID or user ID) to hash.
+     * @return The Base64-encoded HMAC-SHA256 digest string.
+     */
     fun ref(value: String): String =
         Base64.getEncoder().encodeToString(mac.computeMac(value.toByteArray(Charsets.UTF_8)))
 
@@ -103,7 +128,12 @@ class Crypto(dataKeysetJson: String, indexKeysetJson: String) {
     }
 }
 
-/** 128 bits of randomness, base64url, never shown in a chat. */
+/**
+ * Generates a cryptographically random 128-bit ref token, encoded as unpadded base64url (22 characters).
+ * Used as associated data to bind sealed payloads to rows; never shown in a chat.
+ *
+ * @return A 22-character unpadded Base64URL-encoded random 128-bit token string.
+ */
 fun newRefToken(): String = B64URL.encodeToString(ByteArray(16).also(RANDOM::nextBytes))
 
 /**
@@ -111,11 +141,21 @@ fun newRefToken(): String = B64URL.encodeToString(ByteArray(16).also(RANDOM::nex
  * the `keygen` helper so a first deploy needs no extra tooling.
  */
 object KeysetGen {
+    /**
+     * Generates a fresh AES-256-GCM AEAD keyset serialized as a JSON string.
+     *
+     * @return The JSON-serialized keyset containing a new AES-256-GCM primary key.
+     */
     fun aead(): String {
         AeadConfig.register()
         return serialize(KeysetHandle.generateNew(PredefinedAeadParameters.AES256_GCM))
     }
 
+    /**
+     * Generates a fresh HMAC-SHA256 (256-bit tag) MAC keyset serialized as a JSON string.
+     *
+     * @return The JSON-serialized keyset containing a new HMAC-SHA256 primary key.
+     */
     fun mac(): String {
         MacConfig.register()
         return serialize(KeysetHandle.generateNew(PredefinedMacParameters.HMAC_SHA256_256BITTAG))

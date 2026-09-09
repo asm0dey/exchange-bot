@@ -7,6 +7,8 @@ import kotlinx.serialization.json.Json
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
+import org.jetbrains.exposed.v1.jdbc.upsert
+import java.time.Instant
 
 private fun settingsRepo(name: String): ChatSettingsRepository {
     val ds = memDataSource(name)
@@ -90,5 +92,53 @@ class ChatSettingsRepositoryTest : StringSpec({
         s.tolerancePct shouldBe 9
         s.tifDays shouldBe 3
         r.allPairs() shouldBe setOf(CurrencyPair("CHF", "JPY"))
+    }
+    "fan-out is on unless an admin turned it off" {
+        settingsRepo("fanoutdefault").get(-100L).fanOut shouldBe true
+    }
+    "a payload sealed before the flag existed decodes with fan-out on" {
+        // Built from StoredPayload (the pre-fanOut field set) and sealed by hand, so the
+        // JSON that lands in the row genuinely has no "fanOut" key — SettingsPayload never
+        // touches it. This is the actual shape of every chat row that predates this feature.
+        val ds = memDataSource("fanoutlegacypayload")
+        migrate(ds)
+        val crypto = testCrypto()
+        val chatRef = crypto.ref("-100")
+        val legacyJson = testJson.encodeToString(StoredPayload(-100L, "EUR", "RUB", 20, 7))
+        val db = connectExposed(ds)
+        transaction(db) {
+            ChatSettingsTable.upsert {
+                it[ChatSettingsTable.chatRef] = chatRef
+                it[payload] = crypto.seal(legacyJson, chatRef)
+                it[updatedAt] = Instant.now()
+            }
+        }
+
+        val r = ChatSettingsRepository(ds, crypto)
+        val viaGet = r.get(-100L)
+        viaGet.fanOut shouldBe true
+        viaGet.pair shouldBe CurrencyPair("EUR", "RUB")
+        viaGet.tolerancePct shouldBe 20
+        viaGet.tifDays shouldBe 7
+
+        val viaAllChats = r.allChats().single()
+        viaAllChats.chatId shouldBe -100L
+        viaAllChats.fanOut shouldBe true
+        viaAllChats.pair shouldBe CurrencyPair("EUR", "RUB")
+        viaAllChats.tolerancePct shouldBe 20
+        viaAllChats.tifDays shouldBe 7
+    }
+    "fan-out round-trips when it is turned off" {
+        val r = settingsRepo("fanoutoff")
+        r.save(ChatSettings(-100L, CurrencyPair("EUR", "RUB"), 20, 7, fanOut = false))
+        r.get(-100L).fanOut shouldBe false
+    }
+    "every chat can be enumerated, with its own id, for the fan-out search" {
+        val r = settingsRepo("allchats")
+        r.save(ChatSettings(-100L, CurrencyPair("EUR", "RUB"), 20, 7))
+        r.save(ChatSettings(-200L, CurrencyPair("USD", "GBP"), 5, 30, fanOut = false))
+        r.allChats().map { it.chatId }.toSet() shouldBe setOf(-100L, -200L)
+        r.allChats().single { it.chatId == -200L }.fanOut shouldBe false
+        r.allChats().single { it.chatId == -200L }.pair shouldBe CurrencyPair("USD", "GBP")
     }
 })

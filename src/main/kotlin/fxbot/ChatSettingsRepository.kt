@@ -16,6 +16,8 @@ data class ChatSettings(
     val pair: CurrencyPair,
     val tolerancePct: Int,
     val tifDays: Int,
+    /** Off means no showing is created in this chat at all — see [AdminService.setFanOut]. */
+    val fanOut: Boolean = true,
 )
 
 @Serializable
@@ -25,6 +27,9 @@ private data class SettingsPayload(
     val quote: String,
     val tolerancePct: Int,
     val tifDays: Int,
+    // Defaulted, so a payload sealed before this field existed decodes as fan-out on and
+    // no chat needs a backfill.
+    val fanOut: Boolean = true,
 )
 
 private val DEFAULT_PAIR = CurrencyPair("EUR", "RUB")
@@ -58,28 +63,40 @@ class ChatSettingsRepository(
         val chatRef = crypto.ref(chatId.toString())
         val payload = readIn(chatRef)
         if (payload != null) {
-            return@transaction ChatSettings(chatId, CurrencyPair(payload.base, payload.quote), payload.tolerancePct, payload.tifDays)
+            return@transaction ChatSettings(
+                chatId, CurrencyPair(payload.base, payload.quote),
+                payload.tolerancePct, payload.tifDays, payload.fanOut,
+            )
         }
         val defaults = ChatSettings(chatId, DEFAULT_PAIR, DEFAULT_TOLERANCE, DEFAULT_TIF_DAYS)
-        val body = SettingsPayload(chatId, DEFAULT_PAIR.base, DEFAULT_PAIR.quote, DEFAULT_TOLERANCE, DEFAULT_TIF_DAYS)
+        val body = SettingsPayload(
+            chatId, DEFAULT_PAIR.base, DEFAULT_PAIR.quote, DEFAULT_TOLERANCE, DEFAULT_TIF_DAYS, defaults.fanOut,
+        )
         writeIn(chatRef, crypto.seal(json.encodeToString(body), chatRef))
         defaults
     }
 
     fun save(s: ChatSettings): Unit = transaction(db) {
         val chatRef = crypto.ref(s.chatId.toString())
-        val body = SettingsPayload(s.chatId, s.pair.base, s.pair.quote, s.tolerancePct, s.tifDays)
+        val body = SettingsPayload(s.chatId, s.pair.base, s.pair.quote, s.tolerancePct, s.tifDays, s.fanOut)
         writeIn(chatRef, crypto.seal(json.encodeToString(body), chatRef))
     }
 
-    fun allPairs(): Set<CurrencyPair> = transaction(db) {
+    /**
+     * Every chat the bot has settings for, with its real id out of the sealed payload —
+     * the chat_ref column is a keyed MAC and cannot be reversed. This is what the fan-out
+     * search filters by pair and by the fan-out flag.
+     */
+    fun allChats(): List<ChatSettings> = transaction(db) {
         ChatSettingsTable.selectAll().map { row ->
             val p = json.decodeFromString<SettingsPayload>(
                 crypto.open(row[ChatSettingsTable.payload], row[ChatSettingsTable.chatRef]),
             )
-            CurrencyPair(p.base, p.quote)
-        }.toSet()
+            ChatSettings(p.chatId, CurrencyPair(p.base, p.quote), p.tolerancePct, p.tifDays, p.fanOut)
+        }
     }
+
+    fun allPairs(): Set<CurrencyPair> = allChats().map { it.pair }.toSet()
 
     /**
      * Reads the row under the old ref, reseals the payload — with the NEW chat id

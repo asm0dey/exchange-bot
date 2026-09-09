@@ -19,10 +19,9 @@ class AdminService(
     }
 
     fun setTolerance(chatId: Long, raw: String): String {
-        val pct = raw.toIntOrNull()
-        if (pct == null || pct !in 1..100) return "Give me a percentage between 1 and 100, like /tolerance 20"
+        val pct = parseTolerancePct(raw) ?: return TOLERANCE_HELP
         settings.save(settings.get(chatId).copy(tolerancePct = pct))
-        return "Amounts now match when they're within $pct% of each other."
+        return toleranceSetReply(pct)
     }
 
     fun setTif(chatId: Long, raw: String): String {
@@ -30,5 +29,24 @@ class AdminService(
         if (days == null || days !in 1..365) return "Give me a number of days between 1 and 365, like /tif 7"
         settings.save(settings.get(chatId).copy(tifDays = days))
         return "Requests now wait $days day(s) before they lapse."
+    }
+
+    /**
+     * Off means no showing is created in this chat at all — not merely a suppressed
+     * announcement. A silent-but-matchable showing is exactly what an admin turning this
+     * off would object to. Showings created while it was on live out their time in force.
+     */
+    fun setFanOut(chatId: Long, raw: String): String {
+        val on = when (raw.trim().lowercase()) {
+            "on" -> true
+            "off" -> false
+            else -> return "Tell me on or off, like /fanout on"
+        }
+        settings.save(settings.get(chatId).copy(fanOut = on))
+        return if (on) {
+            "I will show interests here that people have stated to me privately."
+        } else {
+            "I won't show interests here that people have stated to me privately. Anything already waiting stays until it lapses."
+        }
     }
 }

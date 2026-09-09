@@ -51,6 +51,7 @@ object Requests : Table("request") {
     val expiresAt = timestamp("expires_at")
     val closedAt = timestamp("closed_at").nullable()
     val payload = binary("payload")
+    val interestToken = text("interest_token").nullable()
     override val primaryKey = PrimaryKey(rowId)
 }
 
@@ -82,4 +83,27 @@ object SentMessageRefs : Table("sent_message_ref") {
     val messageId = long("message_id")
     val refToken = text("ref_token")
     val userRef = text("user_ref")
+}
+
+object PersonSettingsTable : Table("person_settings") {
+    val userRef = text("user_ref")
+    val payload = binary("payload")
+    val updatedAt = timestamp("updated_at")
+    override val primaryKey = PrimaryKey(userRef)
+}
+
+object DoneRefusals : Table("done_refusal") {
+    val refToken = text("ref_token")
+    val peerRefToken = text("peer_ref_token")
+    val refusals = integer("refusals")
+    val refusedAt = timestamp("refused_at")
+    override val primaryKey = PrimaryKey(refToken, peerRefToken)
+}
+
+object PendingAnnouncements : Table("pending_announcement") {
+    val chatRef = text("chat_ref")
+    val interestToken = text("interest_token")
+    val userRef = text("user_ref")
+    val createdAt = timestamp("created_at")
+    override val primaryKey = PrimaryKey(chatRef, interestToken)
 }

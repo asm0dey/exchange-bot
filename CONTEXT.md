@@ -21,6 +21,18 @@ other. It is an expression of interest — formally an *indication of interest* 
 never a binding instruction.
 _Avoid_: order, ad, listing, position, quote
 
+**Interest**:
+One person's stated willingness, given to the bot once. A request typed in a
+chat is an interest with a single showing; an interest stated to the bot
+privately is shown in several places at once and is also worked against people
+the person shares no chat with.
+_Avoid_: parent request, master request, order
+
+**Showing**:
+The interest as it exists in one chat — a request in its own right, with its own
+short id, matched at that chat's size tolerance.
+_Avoid_: copy, clone, duplicate, mirror
+
 **Side**:
 Which way round a request runs. Exactly two values, always relative to the
 pair's base currency.
@@ -35,8 +47,9 @@ The side that **receives** the base currency and gives the quote currency.
 _Avoid_: buy side
 
 **Counterparty**:
-Someone in the same chat whose request is on the opposite side and close enough
-in notional. Being a counterparty carries no obligation and reserves nothing.
+Someone whose request is on the opposite side and leaves each of them a residual
+they accept — in the same chat, or among the requests resting with no chat
+behind them. Being a counterparty carries no obligation and reserves nothing.
 _Avoid_: counterpart, peer, match, partner
 
 **Suggestion**:
@@ -51,10 +64,16 @@ _Avoid_: pending, queued, listed, in the book
 
 **Done**:
 The state two counterparties reach when they confirm the exchange actually
-happened. Either of them may declare it, and it closes both requests. The word
-is the OTC confirmation term, and deliberately not *filled* — nothing was
-executed by anyone but the two people.
+happened. Either of them may declare it; it takes effect only when the other
+confirms, and it closes both requests. The word is the OTC confirmation term,
+and deliberately not *filled* — nothing was executed by anyone but the two
+people.
 _Avoid_: filled, executed, settled, completed, fulfilled
+
+**Confirmation**:
+The counterparty's answer to a declared done. Until it arrives nothing closes
+and both requests keep resting.
+_Avoid_: approval, acceptance, acknowledgement, verification
 
 ### Size and rate
 
@@ -83,9 +102,17 @@ at the current reference rate. A working figure for comparison only, never
 shown as a price.
 _Avoid_: normalized amount, converted amount, value, volume
 
+**Residual**:
+What is left of one person's size when their counterparty is smaller. Expressed
+in their own stated currency and always relative to their own size, so the
+smaller of two counterparties has none.
+_Avoid_: remainder, leftover, unfilled, balance
+
 **Size tolerance**:
-How far apart two notionals may be and still make the requests counterparties,
-as a percentage of the larger. A chat-level setting.
+How large a residual someone accepts, as a percentage of their own size. Each
+side judges its own, so a smaller counterparty is a counterparty. A chat sets
+one for its showings; a person sets their own for the requests they rest with no
+chat behind them, and it never overrides a chat's.
 _Avoid_: tolerance band, spread, threshold, margin, slippage
 
 **Reference rate**:

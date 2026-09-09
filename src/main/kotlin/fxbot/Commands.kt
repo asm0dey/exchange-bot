@@ -11,8 +11,14 @@ import eu.vendeli.tgbot.types.component.getOrNull
 import eu.vendeli.tgbot.types.component.getUser
 import org.slf4j.LoggerFactory
 
+/**
+ * True for every command that still refuses privately: `/pair`, `/tif` and `/fanout`. It
+ * deliberately does NOT say "for a group chat's admins" — this guard runs BEFORE the admin
+ * check, so it is also what a non-admin sees, and it would be telling them their problem is
+ * a permission they may well have.
+ */
 private const val PRIVATE_HINT =
-    "I introduce people who want to swap currency inside a group chat. Add me to your group to use me."
+    "That one only works in a group chat. Add me to your group and use it there."
 
 private val cmdLogger = LoggerFactory.getLogger("fxbot.commands")
 
@@ -21,13 +27,19 @@ private val cmdLogger = LoggerFactory.getLogger("fxbot.commands")
  *  chat it was sent in, or what they typed. Internal so every command file shares it. */
 internal fun logCommand(command: String, outcome: String) = cmdLogger.debug("command=$command outcome=$outcome")
 
-/** Channels have no per-person sender to match, mention, or authorize. */
-private fun ProcessedUpdate.isGroupChat(): Boolean =
+/** Groups have a per-person sender to match, mention, and authorize; channels do not. */
+internal fun ProcessedUpdate.isGroupChat(): Boolean =
     getChat().type == ChatType.Group || getChat().type == ChatType.Supergroup
 
-/** Every handler runs through this: the private-chat reply is bot behaviour, not a
- *  special case of posting. Returns true when the caller should carry on.
- *  Internal (not private) so every command file in this package shares one guard. */
+/**
+ * Kept for the three admin commands — `/pair`, `/tif` and `/fanout`, all of which reach it
+ * through `AdminCommands.adminOnly` — and for nothing else. Every other command now has a
+ * private meaning, `/reopen` included: a person states an interest to the bot privately and
+ * it is shown in the chats they share with it, so a blanket "add me to a group" refusal
+ * would refuse the whole point. `/forget all` has its own private-chat guard in [forget],
+ * not this one.
+ * Internal (not private) so every command file in this package shares one guard.
+ */
 internal suspend fun inGroupOrExplain(update: ProcessedUpdate, bot: TelegramBot): Boolean {
     if (update.isGroupChat()) return true
     message { PRIVATE_HINT }.send(update.getChat().id, bot)
@@ -41,7 +53,7 @@ suspend fun sell(update: ProcessedUpdate, bot: TelegramBot) = handlePost(Verb.SE
 suspend fun buy(update: ProcessedUpdate, bot: TelegramBot) = handlePost(Verb.BUY, update, bot)
 
 private suspend fun handlePost(verb: Verb, update: ProcessedUpdate, bot: TelegramBot) {
-    if (!inGroupOrExplain(update, bot)) return
+    if (!update.isGroupChat()) return handlePrivatePost(verb, update, bot)
     val chat = update.getChat()
     val user = update.getUser()
     val args = update.text.trim().split(Regex("\\s+")).drop(1)
@@ -58,8 +70,11 @@ private suspend fun handlePost(verb: Verb, update: ProcessedUpdate, bot: Telegra
         }
         is PostResult.Posted -> {
             logCommand(command, "posted")
-            val text = renderSuggestions(result.found, result.status)
-            val buttons = suggestionButtons(result.request, result.found)
+            val book = nameBookFor(
+                listOf(result.request) + result.found.map { it.request }, Registry.names,
+            )
+            val text = renderSuggestions(result.found, result.status, book)
+            val buttons = suggestionButtons(result.request, result.found, book)
             val sent = message { text }
                 .options { parseMode = ParseMode.HTML }
                 .inlineKeyboardMarkup { buttons.forEach { b -> b.label callback b.data; br() } }
@@ -74,33 +89,40 @@ private suspend fun handlePost(verb: Verb, update: ProcessedUpdate, bot: Telegra
                     id,
                     listOf(result.request.refToken) + result.found.map { it.request.refToken },
                     listOf(result.request.userId) + result.found.map { it.request.userId },
+                    text,
+                    buttons,
                 )
             }
+            Registry.batcher.enqueueAppeared(result.appeared)
         }
     }
 }
 
 @CommandHandler(["/status"])
 suspend fun status(update: ProcessedUpdate, bot: TelegramBot) {
-    if (!inGroupOrExplain(update, bot)) return
+    if (!update.isGroupChat()) return privateStatus(update, bot)
     val chat = update.getChat()
     val user = update.getUser()
     logCommand("status", "shown")
-    message { renderStatus(Registry.requests.resting(chat.id), user.id) }
+    val resting = Registry.requests.resting(chat.id)
+    val book = nameBookFor(resting, Registry.names)
+    message { renderStatus(resting, user.id, book = book) }
         .options { parseMode = ParseMode.HTML }
         .send(chat.id, bot)
 }
 
 @CommandHandler(["/settings"])
 suspend fun settings(update: ProcessedUpdate, bot: TelegramBot) {
-    if (!inGroupOrExplain(update, bot)) return
+    if (!update.isGroupChat()) return privateSettings(update, bot)
     val chat = update.getChat()
     val s = Registry.settings.get(chat.id)
     logCommand("settings", "shown")
     message {
-        "This chat swaps ${s.pair}. Amounts match within ${s.tolerancePct}%, " +
-            "and a request waits ${s.tifDays} days before it lapses. " +
-            "Admins can change this with /pair, /tolerance and /tif."
+        "This chat swaps ${s.pair}. A counterparty matches when what they'd leave you is within " +
+            "${s.tolerancePct}% of your own amount, and a request waits ${s.tifDays} days before it lapses. " +
+            (if (s.fanOut) "I also show interests people state to me privately here. "
+             else "I don't show interests people state to me privately here. ") +
+            "Admins can change this with /pair, /tolerance, /tif and /fanout."
     }.send(chat.id, bot)
 }
 
@@ -109,31 +131,30 @@ private val HELP_TEXT = """
     /buy 1000 EUR — you want to receive 1000 EUR
     /status — who's waiting in this chat
     /cancel a1 — withdraw your request
-    /done a1 @someone — you two swapped
+    /done a1 — you two swapped; I'll ask them to confirm
     /reopen — undo your last /done
     /settings — this chat's currencies and limits
     /pair EUR RUB — admins: change what this chat swaps
     /tolerance 20 — admins: how close amounts must be to match
     /tif 7 — admins: how many days a request waits before it lapses
+    /fanout on — admins: whether I show interests stated to me privately here
     /forget — erase your data in this chat (send /forget all to me privately for every chat)
 """.trimIndent()
 
 @CommandHandler(["/help"])
 suspend fun help(update: ProcessedUpdate, bot: TelegramBot) {
-    if (!inGroupOrExplain(update, bot)) return
     logCommand("help", "shown")
-    message { HELP_TEXT }.send(update.getChat().id, bot)
+    message { if (update.isGroupChat()) HELP_TEXT else PRIVATE_HELP_TEXT }.send(update.getChat().id, bot)
 }
 
 /**
  * The spec promises this reply; without it, opening a DM and tapping Start gets
- * silence. Mirrors [inGroupOrExplain]'s split but inverted — a private chat gets
- * the "add me to a group" hint, a group gets straight to [HELP_TEXT], since a
- * `/start` in a group is not asking to be told what a group chat is for.
+ * silence. Each place gets the help for what it can actually do: a private chat can now
+ * state interests, so the old "add me to a group" hint would be the wrong answer there.
  */
 @CommandHandler(["/start"])
 suspend fun start(update: ProcessedUpdate, bot: TelegramBot) {
     val chat = update.getChat()
     logCommand("start", "shown")
-    message { if (update.isGroupChat()) HELP_TEXT else PRIVATE_HINT }.send(chat.id, bot)
+    message { if (update.isGroupChat()) HELP_TEXT else PRIVATE_HELP_TEXT }.send(chat.id, bot)
 }

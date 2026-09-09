@@ -54,4 +54,16 @@ class AdminServiceTest : StringSpec({
         svc.setTif(-100L, "0") shouldContain "between"
         svc.setTif(-100L, "400") shouldContain "between"
     }
+    "fan-out can be turned off and back on" {
+        val (svc, settings) = admin("fanout")
+        svc.setFanOut(-100L, "off") shouldContain "won't"
+        settings.get(-100L).fanOut shouldBe false
+        svc.setFanOut(-100L, "on") shouldContain "will"
+        settings.get(-100L).fanOut shouldBe true
+    }
+    "fan-out refuses anything that isn't on or off" {
+        val (svc, settings) = admin("fanoutbad")
+        svc.setFanOut(-100L, "maybe") shouldContain "/fanout on"
+        settings.get(-100L).fanOut shouldBe true
+    }
 })
