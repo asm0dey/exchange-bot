@@ -145,6 +145,34 @@ class MessageLogRepository(
             .map { hydrate(it) }
     }
 
+    /**
+     * True when some message logged against [refToken] offered a button whose callback data
+     * is exactly [data] — the record that the bot really put that button in front of that
+     * request's owner. Answers [AskLookup] for [LifecycleService].
+     *
+     * Unbounded on purpose, unlike [messagesForToken]: a cap would silently start refusing
+     * an honest answer once enough newer messages had named the same token. The scan is
+     * bounded in practice by the token's own lifetime — a request rests for its chat's time
+     * in force, and [prune] drops everything older than 90 days.
+     *
+     * Button data is sealed inside each message's payload, so this cannot be a WHERE clause;
+     * it opens the same rows [logged] does, which is why it lives here rather than being
+     * assembled from two public calls by a caller that has no key.
+     */
+    fun offered(refToken: String, data: String): Boolean = transaction(db) {
+        messagesWithRefs
+            .select(SentMessages.chatRef, SentMessages.messageId, SentMessages.payload)
+            .where { SentMessageRefs.refToken eq refToken }
+            .withDistinct()
+            .any { row ->
+                val chatRef = row[SentMessages.chatRef]
+                val messageId = row[SentMessages.messageId]
+                val aad = "$chatRef:$messageId"
+                val p = json.decodeFromString<MessagePayload>(crypto.open(row[SentMessages.payload], aad))
+                p.buttons.any { it.data == data }
+            }
+    }
+
     /** Every message naming [userId], scoped to [chatId] when given, across every chat otherwise. */
     fun messagesForUser(userId: Long, chatId: Long?): List<TrackedMessage> = transaction(db) {
         val userRef = crypto.ref(userId.toString())

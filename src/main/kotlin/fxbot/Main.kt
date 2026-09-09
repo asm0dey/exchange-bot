@@ -82,6 +82,9 @@ suspend fun main(): Unit = coroutineScope {
     Registry.lifecycle = LifecycleService(
         Registry.requests, Registry.settings, Registry.rates,
         Registry.people, Registry.refusals, Registry.names,
+        // The message log is the ask record: `sendAsk` writes every question there with the
+        // exact buttons it offered, so a Yes or No is honoured only if one of them is found.
+        AskLookup { token, payload -> Registry.messages.offered(token, payload) },
     )
     Registry.batcher = AnnouncementBatcher(
         Registry.requests, Registry.settings, Registry.pending, Registry.interests, Registry.rates,

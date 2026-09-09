@@ -100,7 +100,10 @@ private class PrivateFixture(name: String) {
         // Above `Registry.lifecycle`, which now takes the lookup: a done names the
         // counterparty it asks, and somebody with no handle only has a name through this.
         Registry.names = NameLookup { handles[it] }
-        Registry.lifecycle = LifecycleService(requests, chats, rates, people, refusals, Registry.names)
+        Registry.lifecycle = LifecycleService(
+            requests, chats, rates, people, refusals, Registry.names,
+            AskLookup { token, payload -> messages.offered(token, payload) },
+        )
         Registry.buttons = ButtonService(messages, requests)
         Registry.forget = ForgetService(requests, messages, people, refusals, pending)
         Registry.admin = AdminService(chats, client)
@@ -263,8 +266,9 @@ class PrivateCommandTest : StringSpec({
         // The chatless row, its showing, and the counterparty found against the chatless row.
         logged.refTokens shouldContainExactlyInAnyOrder
             listOf(mine.refToken, showing.refToken, peer.refToken)
-        logged.buttons.map { it.data } shouldContain Cb.done(mine.refToken, peer.refToken)
-        // Every token a button names is recorded, or ButtonService.refreshFor drops it.
+        logged.buttons.map { it.data } shouldContain Cb.done(mine.refToken, peer.userId)
+        // A done never carries the counterparty's token now, only their user id — so it is
+        // the presser's OWN token that every button spells out, and that must be recorded.
         logged.buttons.forEach { b -> logged.refTokens.any { it in b.data } shouldBe true }
     }
 
@@ -408,10 +412,10 @@ class PrivateCommandTest : StringSpec({
         val a = f.requests.create(GROUP, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
         val b = f.requests.create(GROUP, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
         val buttons = listOf(
-            Button("✅ Done with ann", Cb.done(a.refToken, b.refToken)),
+            Button("✅ Done with ann", Cb.done(a.refToken, b.userId)),
             Button("✖️ Cancel ${a.shortId}", Cb.cancel(a.refToken)),
         )
-        val pingButtons = listOf(Button("✅ Done with bob", Cb.done(b.refToken, a.refToken)))
+        val pingButtons = listOf(Button("✅ Done with bob", Cb.done(b.refToken, a.userId)))
         val sent = mutableListOf<Call>()
         telegramSink(recordingBot(sent)).deliver(
             listOf(
@@ -700,6 +704,10 @@ class PrivateCommandTest : StringSpec({
             NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2",
         )
         val sent = mutableListOf<Call>()
+
+        // Bob declares it first, in his own chat: a Yes is honoured only for a question
+        // really asked, and `sendAsk` is what records that it was.
+        done(mentionUpdate(DM, ChatType.Private, "/done ${mine.shortId} @ann"), recordingBot(mutableListOf<Call>()))
 
         // Ann presses Yes from the group — nowhere near either of their own chats. The
         // notice to bob must still land in HIS own chat, his user id (1), never the

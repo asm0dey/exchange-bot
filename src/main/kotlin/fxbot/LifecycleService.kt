@@ -110,8 +110,8 @@ private const val NOT_A_PAIR = "Those two requests aren't a pair I can close tog
  * stops asking. A first No is usually an honest mix-up — the wrong short id, the wrong
  * person, a misremembered swap. A second is a pattern.
  *
- * It gates ASKS and nothing else. A Yes is not checked against it — see the residual
- * paragraph on [LifecycleService.confirm] for why, and for what that leaves open.
+ * It gates ASKS and nothing else. A Yes is not checked against it — see
+ * [LifecycleService.refuse] for why.
  */
 const val MAX_REFUSALS = 2
 
@@ -119,6 +119,23 @@ private const val REFUSED_TWICE =
     "They've said no to that twice, so I won't ask them again."
 
 private const val NOT_ASKED = "That isn't a question I asked you."
+
+/**
+ * Whether the bot ever put this exact button in front of the person whose request
+ * [myToken] names — the record that an ask actually happened, without a table recording
+ * an outstanding one (the design spec forbids that). The Telegram layer answers from the
+ * message log, where `sendAsk` writes every question against both ref tokens with its
+ * exact button list; a test answers with a lambda.
+ *
+ * CONSEQUENCE, by design: `/forget` and the 90-day message prune both delete logged
+ * messages, so either one invalidates an ask that has not been answered yet, and the Yes
+ * or No that follows is refused as one nobody was asked. That is the behaviour we want —
+ * a forgotten question must not stay actionable — but it is a real way for an honest
+ * counterparty's Yes to stop working, so it is stated here rather than discovered.
+ */
+fun interface AskLookup {
+    fun wasAsked(myToken: String, payload: String): Boolean
+}
 
 /**
  * Authorization is decided here, from the acting user id — never from anything a
@@ -136,6 +153,8 @@ class LifecycleService(
     private val refusals: DoneRefusalRepository,
     /** The one thing a stored row cannot supply: a display name for somebody with no handle. */
     private val names: NameLookup,
+    /** Proof that the button being pressed was one the bot actually offered this person. */
+    private val asks: AskLookup,
 ) {
 
     /** Text sent with HTML parse mode — see [mention] — so callers must send it that way. */
@@ -171,7 +190,8 @@ class LifecycleService(
      * two must be a pairing the bot could plausibly have suggested — same chat, opposite
      * sides, different people. The third guard this used to carry, a consent lookup for the
      * chatless side, is gone: the confirmation replaces it with something stronger, because
-     * the person who would have been wronged by a force close is the person now being asked.
+     * the person who would have been wronged by a force close is the person now being asked,
+     * and [confirm] honours their answer only if this ask was really made.
      *
      * The size tolerance is deliberately NOT re-checked: two people are free to agree a swap
      * the bot would not have introduced them for, and this only records that they did.
@@ -206,6 +226,27 @@ class LifecycleService(
         )
     }
 
+    /**
+     * The button form: `a` is the request the message was about and `b` names the
+     * counterparty by user id, so the second request is looked up rather than carried
+     * (see [Cb.done] for why a token there was a capability handed to the reader).
+     *
+     * Resolution is [doneByShortId]'s, exactly: whoever is resting something in the same
+     * scope. Its refusal is [doneByShortId]'s too — the shared [NOT_A_PAIR], never a
+     * distinct "nobody by that id rests anything", which would answer for any user id a
+     * stranger cares to try whether that person is resting anything with the bot.
+     *
+     * Ownership is [done]'s and is not re-decided here: a group announcement's Done button
+     * is in front of both people, so either of them may press it, and [done] is what
+     * requires the presser to own one of the two.
+     */
+    suspend fun doneWithPerson(userId: Long, mineToken: String, peerUserId: Long): ActionResult {
+        val mine = requests.byRefToken(mineToken) ?: return ActionResult.Gone("That request is gone.")
+        val theirs = requests.resting(mine.chatId).firstOrNull { it.userId == peerUserId }
+            ?: return ActionResult.Denied(NOT_A_PAIR)
+        return done(userId, mine.refToken, theirs.refToken)
+    }
+
     /** Same chat, opposite sides, two different people — the shape a suggestion always has. */
     private fun pairable(mine: Request, theirs: Request): Boolean =
         theirs.chatId == mine.chatId && theirs.side != mine.side && theirs.userId != mine.userId
@@ -215,18 +256,22 @@ class LifecycleService(
      * user id, both rows from the database, the pairing structurally. A payload claiming a Yes
      * on somebody else's behalf achieves nothing, because [peerToken] must be the presser's own.
      *
-     * A known-accepted residual survives here, inherited from the `done` this replaced:
-     * nothing records that an ask was ever made, so somebody who owns an opposite-side
-     * request in the same chat can pair it with a harvested token and close that request
-     * without its owner having declared anything. The mitigations are the ones that always
-     * applied — the outcome names BOTH people, and the person closed out gets the [Notice]
-     * with its own Reopen. Closing it properly would need the pressed button checked
-     * against the recorded message, which is out of scope here.
+     * Owning [peerToken] is necessary and NOT sufficient: the ask itself must have happened.
+     * `askButtons` necessarily sends the person being asked the declarer's token in `a`, so
+     * without this check somebody holding two opposite-side requests could pair a token they
+     * were legitimately given with their second request and close a request whose owner
+     * declared nothing at all — on the chatless surface, where every row shares one chat id,
+     * against anyone the bot had ever suggested to them. [asks] closes that: the exact
+     * payload must appear in the buttons of a message logged against the presser's OWN
+     * request, and only `sendAsk` ever writes one.
      */
     suspend fun confirm(userId: Long, declarerToken: String, peerToken: String): ActionResult {
         val theirs = requests.byRefToken(declarerToken) ?: return ActionResult.Gone("That request is gone.")
         val mine = requests.byRefToken(peerToken) ?: return ActionResult.Gone("That request is gone.")
         if (mine.userId != userId) return ActionResult.Denied(NOT_ASKED)
+        if (!asks.wasAsked(peerToken, Cb.confirm(declarerToken, peerToken))) {
+            return ActionResult.Denied(NOT_ASKED)
+        }
         if (!pairable(mine, theirs)) return ActionResult.Denied(NOT_A_PAIR)
         if (mine.state != RequestState.OPEN) return ActionResult.Gone("Your own request is already closed.")
         val book = nameBookFor(listOf(mine, theirs), names)
@@ -258,14 +303,21 @@ class LifecycleService(
      * about this pairing, and nobody else's.
      *
      * Stops the ASKING, not the closing: [confirm] does not consult the count, so a blocked
-     * declarer holding both tokens can still press Yes. That is the residual [confirm]
-     * documents, not a second one — checking the count there would refuse an honest
-     * counterparty's Yes once both directions had been asked and refused.
+     * declarer who was legitimately asked in the other direction can still press Yes there.
+     * Checking the count in [confirm] would refuse an honest counterparty's Yes once both
+     * directions had been asked and refused.
+     *
+     * The same [asks] guard [confirm] carries applies here, and for the same reason: a No
+     * records a refusal against the declarer, and a refusal nobody was asked for is a way
+     * to spend somebody else's two asks without ever being their counterparty.
      */
     fun refuse(userId: Long, declarerToken: String, peerToken: String): ActionResult {
         val theirs = requests.byRefToken(declarerToken) ?: return ActionResult.Gone("That request is gone.")
         val mine = requests.byRefToken(peerToken) ?: return ActionResult.Gone("That request is gone.")
         if (mine.userId != userId) return ActionResult.Denied(NOT_ASKED)
+        if (!asks.wasAsked(peerToken, Cb.refuse(declarerToken, peerToken))) {
+            return ActionResult.Denied(NOT_ASKED)
+        }
         if (!pairable(mine, theirs)) return ActionResult.Denied(NOT_A_PAIR)
         refusals.record(theirs.refToken, mine.refToken)
         return ActionResult.Ok("Noted — nothing's closed. Your request is still waiting.", emptyList())

@@ -59,8 +59,9 @@ class RenderTest : StringSpec({
     "callback data stays inside Telegram's 64 bytes" {
         val a = "a".repeat(22)
         val b = "b".repeat(22)
-        Cb.done(a, b).toByteArray().size shouldBe 54
-        (Cb.done(a, b).toByteArray().size <= 64) shouldBe true
+        // "done?a=" + 22 + "&b=" + a user id, at the widest Telegram issues (13 digits).
+        Cb.done(a, 9_999_999_999_999L).toByteArray().size shouldBe 45
+        (Cb.done(a, 9_999_999_999_999L).toByteArray().size <= 64) shouldBe true
         (Cb.cancel(a).toByteArray().size <= 64) shouldBe true
         (Cb.reopen(a).toByteArray().size <= 64) shouldBe true
         // The longest payload of the lot: "restate?a=" + 22 + "&b=" + 22.
@@ -71,7 +72,20 @@ class RenderTest : StringSpec({
     }
     "callback data uses the framework's query syntax" {
         Cb.cancel("tok") shouldBe "cancel?t=tok"
-        Cb.done("x", "y") shouldBe "done?a=x&b=y"
+        Cb.done("x", 42L) shouldBe "done?a=x&b=42"
+    }
+    // A ref token is a bearer capability and callback data reaches the client, so a done
+    // that carried the counterparty's token handed the reader the means to close that
+    // person's whole interest. Their user id carries no such power, and `mention` already
+    // puts it in front of the same reader as a tg://user?id= link.
+    "a done names its counterparty by user id, never by their ref token" {
+        val subject = r(Verb.SELL, "1000", "EUR", 1, "bob", token = "s".repeat(22))
+        val peer = r(Verb.BUY, "900", "EUR", 2, "alice", token = "c".repeat(22))
+        val data = suggestionButtons(subject, listOf(Counterparty(peer, BigDecimal("900"), BigDecimal.ZERO)))[0].data
+        data shouldBe "done?a=${subject.refToken}&b=2"
+        data shouldNotContain peer.refToken
+        Cb.doneNames(data, 2L) shouldBe true
+        Cb.doneNames(data, 3L) shouldBe false
     }
     "confirm and refuse reverse done's ownership: a is the declarer, b the person asked" {
         Cb.confirm("declarer", "asked") shouldBe "yes?a=declarer&b=asked"
@@ -117,7 +131,7 @@ class RenderTest : StringSpec({
         val buttons = suggestionButtons(subject, found)
         buttons.size shouldBe 2
         buttons[0].label shouldContain "alice"
-        buttons[0].data shouldBe Cb.done("s".repeat(22), "c".repeat(22))
+        buttons[0].data shouldBe Cb.done("s".repeat(22), 2L)
         buttons[1].data shouldBe Cb.cancel("s".repeat(22))
     }
 
@@ -129,9 +143,9 @@ class RenderTest : StringSpec({
         val buttons = chooseButtons(result)
         buttons.size shouldBe 2
         buttons[0].label shouldContain "alice"
-        buttons[0].data shouldBe Cb.done(mine.refToken, alice.refToken)
+        buttons[0].data shouldBe Cb.done(mine.refToken, alice.userId)
         buttons[1].label shouldContain "carol"
-        buttons[1].data shouldBe Cb.done(mine.refToken, carol.refToken)
+        buttons[1].data shouldBe Cb.done(mine.refToken, carol.userId)
     }
 
     "askButtons offers exactly Yes and No, built from myToken and peerToken" {
@@ -181,7 +195,7 @@ class RenderTest : StringSpec({
         )
         renderStated(stated) shouldContain "@ann"
         renderStated(stated) shouldNotContain "no names"
-        statedButtons(stated).map { it.data } shouldContain Cb.done(mine.refToken, theirs.refToken)
+        statedButtons(stated).map { it.data } shouldContain Cb.done(mine.refToken, theirs.userId)
     }
 
     "a stored handle beats a looked-up display name, and no lookup is made for it" {

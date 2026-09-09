@@ -16,7 +16,26 @@ object Cb {
     const val CONFIRM = "yes"
     const val REFUSE = "no"
 
-    fun done(mine: String, theirs: String) = "$DONE?a=$mine&b=$theirs"
+    /**
+     * A done offered to whoever reads the message. `a` is the request the message is
+     * about; `b` names the counterparty by USER ID, never by their ref token.
+     *
+     * A ref token is a bearer capability — owning one is what proves a press is authorized
+     * — and callback data is delivered to the client, so a token in `b` handed the reader
+     * the other person's capability. A user id hands over nothing: [mention] already
+     * renders a handle-less person as a literal `tg://user?id=` link in the very same
+     * message, so the id is already in front of the same reader.
+     */
+    fun done(mine: String, peerUserId: Long) = "$DONE?a=$mine&b=$peerUserId"
+
+    /**
+     * True when [data] is a done offered against [userId] — the one payload slot in any
+     * builder here that is not a ref token, and so the one [ButtonService] cannot find by
+     * token when the person behind it stops resting anything.
+     */
+    fun doneNames(data: String, userId: Long): Boolean =
+        data.startsWith("$DONE?a=") && data.endsWith("&b=$userId")
+
     fun cancel(token: String) = "$CANCEL?t=$token"
     fun reopen(token: String) = "$REOPEN?t=$token"
     fun restate(mine: String, theirs: String) = "$RESTATE?a=$mine&b=$theirs"
@@ -25,6 +44,12 @@ object Cb {
      * Answering a done. `a` is the DECLARER's request and `b` the request of the person
      * being asked — the reverse of [done]'s ownership, and checked as such: a press is
      * honoured only when the presser owns `b`.
+     *
+     * BOTH slots stay ref tokens, deliberately, and must not follow [done] to a user id.
+     * `b` is the proof of ownership itself. And `a` by user id would be worse than the
+     * token it replaced: a forged Yes today needs the declarer's 22 random characters,
+     * which only reach a presser the bot actually paired them with, whereas a user id is
+     * public and could name anyone at all.
      */
     fun confirm(declarer: String, mine: String) = "$CONFIRM?a=$declarer&b=$mine"
     fun refuse(declarer: String, mine: String) = "$REFUSE?a=$declarer&b=$mine"
@@ -120,13 +145,13 @@ fun renderSuggestions(found: List<Counterparty>, status: RateStatus, book: NameB
 
 fun suggestionButtons(subject: Request, found: List<Counterparty>, book: NameBook = NameBook.EMPTY): List<Button> =
     found.map { c ->
-        Button("✅ Done with ${plainName(c.request, book)}", Cb.done(subject.refToken, c.request.refToken))
+        Button("✅ Done with ${plainName(c.request, book)}", Cb.done(subject.refToken, c.request.userId))
     } + Button("✖️ Cancel my request", Cb.cancel(subject.refToken))
 
 /** One button per person the declarer could have meant; pressing one is an ordinary done. */
 fun chooseButtons(r: ActionResult.Choose, book: NameBook = NameBook.EMPTY): List<Button> =
     r.candidates.map { c ->
-        Button("✅ Done with ${plainName(c, book)}", Cb.done(r.mineToken, c.refToken))
+        Button("✅ Done with ${plainName(c, book)}", Cb.done(r.mineToken, c.userId))
     }
 
 fun renderStatus(requests: List<Request>, viewerId: Long, limit: Int = 20, book: NameBook = NameBook.EMPTY): String {
@@ -164,7 +189,7 @@ fun renderAnnouncement(person: String, shown: List<ShownInterest>, status: RateS
 
 fun announcementButtons(shown: List<ShownInterest>, book: NameBook = NameBook.EMPTY): List<Button> =
     shown.flatMap { s ->
-        s.found.map { c -> Button("✅ Done with ${plainName(c.request, book)}", Cb.done(s.request.refToken, c.request.refToken)) } +
+        s.found.map { c -> Button("✅ Done with ${plainName(c.request, book)}", Cb.done(s.request.refToken, c.request.userId)) } +
             Button("✖️ Cancel ${s.request.shortId}", Cb.cancel(s.request.refToken))
     }
 
@@ -237,7 +262,7 @@ fun renderStated(r: InterestResult.Stated, book: NameBook = NameBook.EMPTY): Str
 fun statedButtons(r: InterestResult.Stated, book: NameBook = NameBook.EMPTY): List<Button> =
     r.shown.flatMap { s ->
         s.found.map { c ->
-            Button("✅ Done with ${plainName(c.request, book)}", Cb.done(s.request.refToken, c.request.refToken))
+            Button("✅ Done with ${plainName(c.request, book)}", Cb.done(s.request.refToken, c.request.userId))
         }
     } + Button("✖️ Cancel ${r.interest.shortId}", Cb.cancel(r.interest.refToken))
 
@@ -257,7 +282,7 @@ fun renderAppeared(mine: List<ShownInterest>, book: NameBook = NameBook.EMPTY): 
 fun appearedButtons(mine: List<ShownInterest>, book: NameBook = NameBook.EMPTY): List<Button> =
     mine.flatMap { s ->
         s.found.map { c ->
-            Button("✅ Done with ${plainName(c.request, book)}", Cb.done(s.request.refToken, c.request.refToken))
+            Button("✅ Done with ${plainName(c.request, book)}", Cb.done(s.request.refToken, c.request.userId))
         }
     }
 

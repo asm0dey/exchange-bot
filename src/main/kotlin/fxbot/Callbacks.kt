@@ -24,13 +24,20 @@ private const val BROKEN_BUTTON = "That button looks broken — try the /command
  * emits a plain `parameters["a"]` lookup (no `!!`) for a nullable parameter —
  * confirmed by inspecting the generated `ActivitiesData.kt` — so a missing key
  * arrives here as `null` instead of throwing before the handler body even runs.
+ *
+ * On this handler `b` is the counterparty's USER ID, not their ref token — see [Cb.done].
+ * It is bound as a `String?` and parsed here, like every other parameter, so a payload
+ * carrying something that is not a number answers the presser with [BROKEN_BUTTON].
+ * Resolving the id to a request, and refusing when it resolves to nothing, belongs to
+ * [LifecycleService.doneWithPerson] — authorization is decided there, never here.
  */
 @CommandHandler.CallbackQuery(["done"], autoAnswer = false)
 suspend fun doneCallback(a: String?, b: String?, update: ProcessedUpdate, bot: TelegramBot) {
-    val result = if (a == null || b == null) {
+    val peerUserId = b?.toLongOrNull()
+    val result = if (a == null || peerUserId == null) {
         ActionResult.Denied(BROKEN_BUTTON)
     } else {
-        Registry.lifecycle.done(update.getUser().id, a, b)
+        Registry.lifecycle.doneWithPerson(update.getUser().id, a, peerUserId)
     }
     logCommand("done_button", result.outcomeLabel())
     respond(result, update, bot)
@@ -129,7 +136,8 @@ private suspend fun respond(
 /**
  * The counterparty's answer. Nothing here is trusted: the presser is re-derived from
  * `callback_query.from.id`, both rows are re-read, and [LifecycleService.confirm] honours
- * the press only when the presser owns the request `b` names.
+ * the press only when the presser owns the request `b` names AND the bot really offered
+ * them this exact button.
  */
 @CommandHandler.CallbackQuery(["yes"], autoAnswer = false)
 suspend fun confirmDoneCallback(a: String?, b: String?, update: ProcessedUpdate, bot: TelegramBot) {

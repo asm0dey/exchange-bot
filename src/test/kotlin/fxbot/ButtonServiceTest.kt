@@ -77,8 +77,8 @@ class ButtonServiceTest : StringSpec({
         f.log.record(
             -100L, 10L, listOf(mine.refToken, gone.refToken, here.refToken), listOf(1L, 2L, 3L), "2 people match:",
             listOf(
-                Button("✅ Done with ann", Cb.done(mine.refToken, gone.refToken)),
-                Button("✅ Done with cat", Cb.done(mine.refToken, here.refToken)),
+                Button("✅ Done with ann", Cb.done(mine.refToken, gone.userId)),
+                Button("✅ Done with cat", Cb.done(mine.refToken, here.userId)),
                 Button("✖️ Cancel my request", Cb.cancel(mine.refToken)),
             ),
         )
@@ -86,8 +86,10 @@ class ButtonServiceTest : StringSpec({
         val calls = mutableListOf<Call>()
         f.svc.refreshFor(listOf(gone.refToken), recordingBot(calls))
         val edit = calls.single { it.path == "editMessageText" }
-        edit.body shouldNotContain gone.refToken // the button that named the departed side is gone
-        edit.body shouldContain here.refToken // the other pairing is still pressable
+        // The button that named the departed side is gone. It never carried her token — a done
+        // names its counterparty by user id now — so the payload itself is what must be absent.
+        edit.body shouldNotContain Cb.done(mine.refToken, gone.userId)
+        edit.body shouldContain Cb.done(mine.refToken, here.userId) // the other pairing is still pressable
         edit.body shouldContain Cb.cancel(mine.refToken) // and so is the presser's own cancel
     }
     "a reopened request gets its buttons back and its status line dropped" {

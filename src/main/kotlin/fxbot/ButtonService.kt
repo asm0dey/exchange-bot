@@ -47,10 +47,17 @@ class ButtonService(
             val statuses = logged.refTokens.mapNotNull { live[it]?.let(::statusLine) }
             // Drop a button whose callback data names any request that is no longer resting
             // (or has been erased). Every Cb builder spells its tokens out verbatim
-            // (`done?a=X&b=Y`, `cancel?t=X`), so this needs no structural knowledge of the
-            // keyboard it is filtering.
+            // (`cancel?t=X`, `restate?a=X&b=Y`), so a token match needs no structural
+            // knowledge of the keyboard. A done's counterparty is the one slot that is not a
+            // token — it names the person by user id (see `Cb.done`) — so that one is found
+            // by [Cb.doneNames] instead, and a Done offered against somebody who has stopped
+            // resting anything still goes.
             val keep = logged.buttons.filter { button ->
-                logged.refTokens.none { it in button.data && live[it]?.state?.isTerminal != false }
+                logged.refTokens.none { token ->
+                    val r = live[token]
+                    r?.state?.isTerminal != false &&
+                        (token in button.data || (r != null && Cb.doneNames(button.data, r.userId)))
+                }
             }
             val text = (listOf(storedText) + statuses).joinToString("\n")
             // HTML, like every message this bot stores: the text can carry a mention link.

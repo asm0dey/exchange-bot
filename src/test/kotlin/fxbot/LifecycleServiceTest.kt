@@ -52,23 +52,53 @@ private fun deadRateService(ds: javax.sql.DataSource, clock: Clock) =
         clock,
     )
 
+/**
+ * The questions the bot has actually put in front of somebody, in exactly the shape the
+ * message log records them: the payload of a button, against the ref token of the request
+ * it was offered under. [record] writes what `sendAsk` writes; a test about a forged press
+ * simply never calls it, and no bot is needed either way.
+ */
+private class Asks {
+    private val offered = mutableSetOf<Pair<String, String>>()
+    val lookup = AskLookup { token, payload -> (token to payload) in offered }
+    fun record(r: ActionResult.Asked) {
+        for (b in askButtons(r)) offered += r.peerToken to b.data
+    }
+}
+
+/**
+ * Destructures as the `(svc, repo)` pair every older test here expects, and additionally
+ * offers [ask] — the done that really reached its counterparty, question recorded.
+ */
+private class Lifecycle(val svc: LifecycleService, val repo: RequestRepository, private val asks: Asks) {
+    operator fun component1() = svc
+    operator fun component2() = repo
+
+    /** A done, plus the record `sendAsk` writes when it sends the question out. */
+    suspend fun ask(userId: Long, mineToken: String, theirsToken: String): ActionResult =
+        svc.done(userId, mineToken, theirsToken).also { if (it is ActionResult.Asked) asks.record(it) }
+}
+
 private fun lifecycle(
     name: String,
     clock: Clock = Clock.fixed(T0, ZoneOffset.UTC),
-): Pair<LifecycleService, RequestRepository> {
+): Lifecycle {
     val ds = memDataSource(name)
     migrate(ds)
     val crypto = testCrypto()
     val repo = RequestRepository(ds, crypto, clock)
     val settings = ChatSettingsRepository(ds, crypto, clock)
-    return LifecycleService(
+    val asks = Asks()
+    val svc = LifecycleService(
         repo,
         settings,
         deadRateService(ds, Clock.fixed(T0, ZoneOffset.UTC)),
         PersonSettingsRepository(ds, crypto, clock),
         DoneRefusalRepository(ds, clock),
         NameLookup { null },
-    ) to repo
+        asks.lookup,
+    )
+    return Lifecycle(svc, repo, asks)
 }
 
 private fun RequestRepository.put(chatId: Long, userId: Long, name: String, side: Side) =
@@ -81,6 +111,7 @@ private class AskFixture(name: String) {
     private val crypto = testCrypto()
     val requests = RequestRepository(ds, crypto, clock)
     val refusals = DoneRefusalRepository(ds, clock)
+    private val asks = Asks()
     val svc = LifecycleService(
         requests,
         ChatSettingsRepository(ds, crypto, clock),
@@ -88,7 +119,12 @@ private class AskFixture(name: String) {
         PersonSettingsRepository(ds, crypto, clock),
         refusals,
         NameLookup { null },
+        asks.lookup,
     )
+
+    /** A done, plus the record `sendAsk` writes when it sends the question out. */
+    suspend fun ask(userId: Long, mineToken: String, theirsToken: String): ActionResult =
+        svc.done(userId, mineToken, theirsToken).also { if (it is ActionResult.Asked) asks.record(it) }
 
     fun rest(chatId: Long, userId: Long, name: String?, side: Side, interest: String? = null) =
         requests.create(chatId, userId, name, side, "EUR", BigDecimal("1000"), EURRUB, 7, interest)
@@ -113,10 +149,11 @@ class LifecycleServiceTest : StringSpec({
     }
 
     "a done asks, and the counterparty's Yes closes both sides" {
-        val (svc, repo) = lifecycle("done")
+        val f = lifecycle("done")
+        val (svc, repo) = f
         val a = repo.put(-100L, 1L, "bob", Side.OFFER)
         val b = repo.put(-100L, 2L, "alice", Side.BID)
-        svc.done(1L, a.refToken, b.refToken).shouldBeInstanceOf<ActionResult.Asked>()
+        f.ask(1L, a.refToken, b.refToken).shouldBeInstanceOf<ActionResult.Asked>()
         // Nothing yet: the declaration alone closes neither side.
         repo.byRefToken(a.refToken)!!.state shouldBe RequestState.OPEN
         repo.byRefToken(b.refToken)!!.state shouldBe RequestState.OPEN
@@ -125,10 +162,11 @@ class LifecycleServiceTest : StringSpec({
         repo.byRefToken(b.refToken)!!.state shouldBe RequestState.DONE
     }
     "either counterparty may declare it, and the other one answers" {
-        val (svc, repo) = lifecycle("doneeither")
+        val f = lifecycle("doneeither")
+        val (svc, repo) = f
         val a = repo.put(-100L, 1L, "bob", Side.OFFER)
         val b = repo.put(-100L, 2L, "alice", Side.BID)
-        val asked = svc.done(2L, a.refToken, b.refToken)
+        val asked = f.ask(2L, a.refToken, b.refToken)
         asked.shouldBeInstanceOf<ActionResult.Asked>()
         // Alice declared, so bob is the one asked — and the tokens come back the way he answers them.
         asked.peerUserId shouldBe 1L
@@ -144,10 +182,11 @@ class LifecycleServiceTest : StringSpec({
         repo.byRefToken(a.refToken)!!.state shouldBe RequestState.OPEN
     }
     "a done about a pairing that has already closed reports it was already closed" {
-        val (svc, repo) = lifecycle("donetwice")
+        val f = lifecycle("donetwice")
+        val (svc, repo) = f
         val a = repo.put(-100L, 1L, "bob", Side.OFFER)
         val b = repo.put(-100L, 2L, "alice", Side.BID)
-        svc.done(1L, a.refToken, b.refToken)
+        f.ask(1L, a.refToken, b.refToken)
         svc.confirm(2L, a.refToken, b.refToken)
         val again = svc.done(2L, a.refToken, b.refToken)
         again.shouldBeInstanceOf<ActionResult.Gone>()
@@ -201,10 +240,11 @@ class LifecycleServiceTest : StringSpec({
         repo.byRefToken(other.refToken)!!.state shouldBe RequestState.OPEN
     }
     "a legitimate pair declared by the second counterparty still closes both, with each message phrased for its reader" {
-        val (svc, repo) = lifecycle("secondpresser")
+        val f = lifecycle("secondpresser")
+        val (svc, repo) = f
         val a = repo.put(-100L, 1L, "bob", Side.OFFER)
         val b = repo.put(-100L, 2L, "alice", Side.BID)
-        val asked = svc.done(2L, a.refToken, b.refToken)
+        val asked = f.ask(2L, a.refToken, b.refToken)
         asked.shouldBeInstanceOf<ActionResult.Asked>()
         // Phrased for alice, who declared it: the person named is the one being asked.
         asked.text shouldBe "Asked @bob to confirm. Nothing's closed yet."
@@ -275,12 +315,13 @@ class LifecycleServiceTest : StringSpec({
         repo.byRefToken(noChat.refToken)!!.state shouldBe RequestState.CANCELLED
     }
     "a done closes both interests whole" {
-        val (svc, repo) = lifecycle("doneinterest")
+        val f = lifecycle("doneinterest")
+        val (svc, repo) = f
         val mineHere = repo.create(-100L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
         val mineThere = repo.create(-200L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
         val theirs = repo.create(-100L, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
         val theirsThere = repo.create(-200L, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
-        svc.done(1L, mineHere.refToken, theirs.refToken).shouldBeInstanceOf<ActionResult.Asked>()
+        f.ask(1L, mineHere.refToken, theirs.refToken).shouldBeInstanceOf<ActionResult.Asked>()
         svc.confirm(2L, mineHere.refToken, theirs.refToken).shouldBeInstanceOf<ActionResult.Ok>()
         // The two sides are separate interests: closing the presser's does not close the peer's.
         mineHere.interestToken shouldBe "i1"
@@ -297,9 +338,11 @@ class LifecycleServiceTest : StringSpec({
     }
     "both sides of a confirmation close in one transaction, or neither does" {
         val clock = BreakableClock(T0)
-        val (svc, repo) = lifecycle("doneatomic", clock)
+        val f = lifecycle("doneatomic", clock)
+        val (svc, repo) = f
         val mine = repo.create(-100L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
         val theirs = repo.create(-100L, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
+        f.ask(1L, mine.refToken, theirs.refToken).shouldBeInstanceOf<ActionResult.Asked>()
         // The confirmation is where both interests close now, so that is where the seam is.
         // One read through: the confirmer's interest closes, the declarer's blows up.
         clock.breakAfter(1)
@@ -335,11 +378,12 @@ class LifecycleServiceTest : StringSpec({
         svc.reopen(-100L, 1L, 7, here.refToken).shouldBeInstanceOf<ActionResult.Gone>()
     }
     "a done that leaves the confirmer a residual offers it back to them" {
-        val (svc, repo) = lifecycle("residualoffered")
+        val f = lifecycle("residualoffered")
+        val (svc, repo) = f
         val mine = repo.create(-100L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7)
         val theirs = repo.create(-100L, 2L, "ann", Side.BID, "EUR", BigDecimal("600"), EURRUB, 7)
         // Ann declares it, bob answers — so the residual on the Ok is bob's, the answerer's.
-        svc.done(2L, theirs.refToken, mine.refToken).shouldBeInstanceOf<ActionResult.Asked>()
+        f.ask(2L, theirs.refToken, mine.refToken).shouldBeInstanceOf<ActionResult.Asked>()
         val r = svc.confirm(1L, theirs.refToken, mine.refToken)
         r.shouldBeInstanceOf<ActionResult.Ok>()
         val offer = r.restate.shouldNotBeNull()
@@ -351,10 +395,11 @@ class LifecycleServiceTest : StringSpec({
         repo.byRefToken(mine.refToken)!!.statedAmount shouldBe BigDecimal("1000")
     }
     "the smaller side is offered nothing" {
-        val (svc, repo) = lifecycle("noresidual")
+        val f = lifecycle("noresidual")
+        val (svc, repo) = f
         val mine = repo.create(-100L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("600"), EURRUB, 7)
         val theirs = repo.create(-100L, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7)
-        svc.done(2L, theirs.refToken, mine.refToken).shouldBeInstanceOf<ActionResult.Asked>()
+        f.ask(2L, theirs.refToken, mine.refToken).shouldBeInstanceOf<ActionResult.Asked>()
         val r = svc.confirm(1L, theirs.refToken, mine.refToken)
         r.shouldBeInstanceOf<ActionResult.Ok>()
         r.restate shouldBe null
@@ -422,6 +467,7 @@ class LifecycleServiceTest : StringSpec({
         val f = AskFixture("confirm_authorized")
         val mine = f.rest(-100L, 1L, "bob", Side.OFFER)
         val theirs = f.rest(-100L, 2L, "ann", Side.BID)
+        f.ask(1L, mine.refToken, theirs.refToken).shouldBeInstanceOf<ActionResult.Asked>()
         f.svc.confirm(3L, mine.refToken, theirs.refToken).shouldBeInstanceOf<ActionResult.Denied>()
         f.requests.byRefToken(mine.refToken)!!.state shouldBe RequestState.OPEN
         val ok = f.svc.confirm(2L, mine.refToken, theirs.refToken)
@@ -439,6 +485,7 @@ class LifecycleServiceTest : StringSpec({
         val f = AskFixture("confirm_gone")
         val mine = f.rest(-100L, 1L, "bob", Side.OFFER)
         val theirs = f.rest(-100L, 2L, "ann", Side.BID)
+        f.ask(1L, mine.refToken, theirs.refToken).shouldBeInstanceOf<ActionResult.Asked>()
         f.requests.transition(mine.refToken, RequestState.OPEN, RequestState.CANCELLED)
         val r = f.svc.confirm(2L, mine.refToken, theirs.refToken)
         r.shouldBeInstanceOf<ActionResult.Gone>()
@@ -450,6 +497,7 @@ class LifecycleServiceTest : StringSpec({
         val f = AskFixture("confirm_mine_gone")
         val mine = f.rest(-100L, 1L, "bob", Side.OFFER)
         val theirs = f.rest(-100L, 2L, "ann", Side.BID)
+        f.ask(1L, mine.refToken, theirs.refToken).shouldBeInstanceOf<ActionResult.Asked>()
         // Ann withdrew after bob declared it; his is still waiting.
         f.requests.transition(theirs.refToken, RequestState.OPEN, RequestState.CANCELLED)
         val r = f.svc.confirm(2L, mine.refToken, theirs.refToken)
@@ -474,6 +522,7 @@ class LifecycleServiceTest : StringSpec({
         val f = AskFixture("refuse_nothing")
         val mine = f.rest(-100L, 1L, "bob", Side.OFFER)
         val theirs = f.rest(-100L, 2L, "ann", Side.BID)
+        f.ask(1L, mine.refToken, theirs.refToken).shouldBeInstanceOf<ActionResult.Asked>()
         val r = f.svc.refuse(2L, mine.refToken, theirs.refToken)
         r.shouldBeInstanceOf<ActionResult.Ok>()
         r.touchedTokens.shouldBeEmpty()
@@ -486,7 +535,9 @@ class LifecycleServiceTest : StringSpec({
         val f = AskFixture("refuse_twice")
         val mine = f.rest(-100L, 1L, "bob", Side.OFFER)
         val theirs = f.rest(-100L, 2L, "ann", Side.BID)
+        f.ask(1L, mine.refToken, theirs.refToken).shouldBeInstanceOf<ActionResult.Asked>()
         f.svc.refuse(2L, mine.refToken, theirs.refToken)
+        f.ask(1L, mine.refToken, theirs.refToken).shouldBeInstanceOf<ActionResult.Asked>()
         f.svc.refuse(2L, mine.refToken, theirs.refToken)
         val blocked = f.svc.done(1L, mine.refToken, theirs.refToken)
         blocked.shouldBeInstanceOf<ActionResult.Denied>()
@@ -497,19 +548,101 @@ class LifecycleServiceTest : StringSpec({
         val f = AskFixture("refuse_one_way")
         val mine = f.rest(-100L, 1L, "bob", Side.OFFER)
         val theirs = f.rest(-100L, 2L, "ann", Side.BID)
+        f.ask(1L, mine.refToken, theirs.refToken).shouldBeInstanceOf<ActionResult.Asked>()
         f.svc.refuse(2L, mine.refToken, theirs.refToken)
+        f.ask(1L, mine.refToken, theirs.refToken).shouldBeInstanceOf<ActionResult.Asked>()
         f.svc.refuse(2L, mine.refToken, theirs.refToken)
         f.svc.done(2L, theirs.refToken, mine.refToken).shouldBeInstanceOf<ActionResult.Asked>()
     }
 
-    "a forged Yes claiming somebody else's request as the presser's own closes nothing, but one naming their own is an ordinary done" {
+    "a forged Yes claiming somebody else's request as the presser's own closes nothing" {
         val f = AskFixture("confirm_forged")
         val mine = f.rest(-100L, 1L, "bob", Side.OFFER)
         val theirs = f.rest(-100L, 2L, "ann", Side.BID)
-        val bystander = f.rest(-100L, 3L, "cat", Side.BID)
+        f.ask(1L, mine.refToken, theirs.refToken).shouldBeInstanceOf<ActionResult.Asked>()
         f.svc.confirm(3L, mine.refToken, theirs.refToken).shouldBeInstanceOf<ActionResult.Denied>()
-        f.svc.confirm(3L, mine.refToken, bystander.refToken).shouldBeInstanceOf<ActionResult.Ok>()
         f.requests.byRefToken(theirs.refToken)!!.state shouldBe RequestState.OPEN
+    }
+
+    // --- The ask must have HAPPENED. `askButtons` necessarily hands the person being asked
+    // the declarer's ref token in `a`, so owning `b` is not enough on its own: without this,
+    // anybody holding two opposite-side requests could pair a token they were legitimately
+    // given with their second one and close a request whose owner declared nothing. On the
+    // chatless surface every row shares one chat id, so the pairing check does not see it.
+
+    "a Yes built from a token the presser was given, about a request nobody asked them about, closes nothing" {
+        val f = AskFixture("confirm_never_asked")
+        val declarer = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
+        val asked = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
+        val second = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i3")
+        // Bob asks ann about her first interest; her Yes button carries HIS token in `a`.
+        val r = f.ask(1L, declarer.refToken, asked.refToken)
+        r.shouldBeInstanceOf<ActionResult.Asked>()
+        r.peerToken shouldBe asked.refToken
+
+        // She pairs that token with her OTHER interest instead. She owns it, it is opposite
+        // side, and on this surface it shares bob's chat id — every structural guard passes.
+        val forged = f.svc.confirm(2L, declarer.refToken, second.refToken)
+        forged.shouldBeInstanceOf<ActionResult.Denied>()
+        forged.text shouldBe "That isn't a question I asked you."
+        f.requests.byRefToken(declarer.refToken)!!.state shouldBe RequestState.OPEN
+        f.requests.byRefToken(second.refToken)!!.state shouldBe RequestState.OPEN
+        // The question really asked still works, so this refuses the forgery and nothing else.
+        f.svc.confirm(2L, declarer.refToken, asked.refToken).shouldBeInstanceOf<ActionResult.Ok>()
+    }
+
+    "a No about a question nobody asked records no refusal" {
+        val f = AskFixture("refuse_never_asked")
+        val declarer = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
+        val asked = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
+        val second = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i3")
+        f.ask(1L, declarer.refToken, asked.refToken).shouldBeInstanceOf<ActionResult.Asked>()
+
+        val forged = f.svc.refuse(2L, declarer.refToken, second.refToken)
+        forged.shouldBeInstanceOf<ActionResult.Denied>()
+        forged.text shouldBe "That isn't a question I asked you."
+        // A refusal is counted against the DECLARER and two of them stop him asking at all,
+        // so an unasked No is a way to spend somebody else's asks — it must not be recorded.
+        f.refusals.count(declarer.refToken, second.refToken) shouldBe 0
+        f.refusals.count(declarer.refToken, asked.refToken) shouldBe 0
+        // The question really asked still records one.
+        f.svc.refuse(2L, declarer.refToken, asked.refToken).shouldBeInstanceOf<ActionResult.Ok>()
+        f.refusals.count(declarer.refToken, asked.refToken) shouldBe 1
+    }
+
+    // --- The Done button names its counterparty by user id now, not by their ref token,
+    // so the second request is resolved rather than carried. See `Cb.done`.
+
+    "the done button resolves its counterparty by user id, in a chat" {
+        val f = AskFixture("done_by_person_chat")
+        val mine = f.rest(-100L, 1L, "bob", Side.OFFER)
+        val theirs = f.rest(-100L, 2L, "ann", Side.BID)
+        f.rest(-100L, 3L, "cat", Side.BID)
+        val r = f.svc.doneWithPerson(1L, mine.refToken, 2L)
+        r.shouldBeInstanceOf<ActionResult.Asked>()
+        r.peerUserId shouldBe 2L
+        r.peerToken shouldBe theirs.refToken
+    }
+
+    "the done button resolves its counterparty by user id with no chat behind it too" {
+        val f = AskFixture("done_by_person_nochat")
+        val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
+        val theirs = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
+        val r = f.svc.doneWithPerson(1L, mine.refToken, 2L)
+        r.shouldBeInstanceOf<ActionResult.Asked>()
+        r.peerToken shouldBe theirs.refToken
+    }
+
+    "a user id nothing here belongs to gets the same refusal a name nothing belongs to gets" {
+        val f = AskFixture("done_by_person_unknown")
+        val mine = f.rest(-100L, 1L, "bob", Side.OFFER)
+        f.rest(-100L, 2L, "ann", Side.BID)
+        val byId = f.svc.doneWithPerson(1L, mine.refToken, 404L)
+        val byName = f.svc.doneByShortId(-100L, 1L, mine.shortId, NamedPeer.Unplaceable)
+        byId.shouldBeInstanceOf<ActionResult.Denied>()
+        byName.shouldBeInstanceOf<ActionResult.Denied>()
+        // Said once, so neither answers whether somebody with that id rests anything at all.
+        byId.text shouldBe byName.text
     }
 
     "the same-chat force close now only asks its victim" {
