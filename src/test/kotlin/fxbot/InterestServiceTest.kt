@@ -88,7 +88,7 @@ class InterestServiceTest : StringSpec({
             .chat(-400L, EURRUB, fanOut = false)              // fan-out turned off
         val r = f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
         r.shouldBeInstanceOf<InterestResult.Stated>()
-        r.interest.chatId shouldBe NO_NAMES_CHAT_ID
+        r.interest.chatId shouldBe NO_CHAT_ID
         r.showings.map { it.chatId }.toSet() shouldBe setOf(-100L, -200L)
         r.showings.map { it.interestToken }.toSet() shouldBe setOf(r.interest.interestToken)
     }
@@ -127,12 +127,12 @@ class InterestServiceTest : StringSpec({
     }
 
     "the no-names row and each showing take their time in force from different places" {
-        // Every other fixture chat uses 7, which is also NO_NAMES_TIF_DAYS, so nothing
+        // Every other fixture chat uses 7, which is also NO_CHAT_TIF_DAYS, so nothing
         // else here can tell the two sources apart. This chat uses 3.
         val f = InterestFixture("tif").withRate().chat(-100L, tif = 3)
         val r = f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
         r.shouldBeInstanceOf<InterestResult.Stated>()
-        r.interest.expiresAt shouldBe T0.plus(NO_NAMES_TIF_DAYS.toLong(), ChronoUnit.DAYS)
+        r.interest.expiresAt shouldBe T0.plus(NO_CHAT_TIF_DAYS.toLong(), ChronoUnit.DAYS)
         r.showings.single().expiresAt shouldBe T0.plus(3L, ChronoUnit.DAYS)
     }
 
@@ -231,7 +231,7 @@ class InterestServiceTest : StringSpec({
         f.svc.state(1L, "bob", Verb.SELL, "1000", "EUR", "RUB")
         val r = f.svc.state(2L, "ann", Verb.BUY, "1000", "EUR", "RUB") as InterestResult.Stated
         r.appeared.map { it.userId } shouldBe listOf(1L)
-        r.appeared.single().refToken shouldBe f.requests.resting(NO_NAMES_CHAT_ID).single { it.userId == 1L }.refToken
+        r.appeared.single().refToken shouldBe f.requests.resting(NO_CHAT_ID).single { it.userId == 1L }.refToken
     }
 
     "a sixth resting interest is refused, naming the cap and how to make room" {
@@ -250,7 +250,7 @@ class InterestServiceTest : StringSpec({
     "the cap counts only what is resting" {
         val f = InterestFixture("capfree").withRate().chat(-100L)
         repeat(5) { f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB") }
-        val token = f.requests.resting(NO_NAMES_CHAT_ID).first { it.userId == 1L }.interestToken!!
+        val token = f.requests.resting(NO_CHAT_ID).first { it.userId == 1L }.interestToken!!
         f.requests.closeInterest(token, RequestState.CANCELLED)
         f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB").shouldBeInstanceOf<InterestResult.Stated>()
     }
@@ -267,7 +267,7 @@ class InterestServiceTest : StringSpec({
         r.shouldBeInstanceOf<InterestResult.Rejected>()
         r.reason shouldContain "EUR/RUB"
         f.feedCalls shouldBe 1
-        f.requests.resting(NO_NAMES_CHAT_ID).shouldBeEmpty()
+        f.requests.resting(NO_CHAT_ID).shouldBeEmpty()
     }
     "a pair is accepted when the feed cannot be reached at all" {
         // Refusing a legitimate pair during an outage is the harder failure to explain.

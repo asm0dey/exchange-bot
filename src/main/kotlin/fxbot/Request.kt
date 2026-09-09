@@ -10,10 +10,10 @@ enum class RequestState {
 }
 
 /**
- * The chat id a no-names request carries. Telegram never issues 0, and `Matcher`
- * already filters on `chatId ==`, so the two surfaces cannot meet by accident.
+ * The chat id a request with no chat behind it carries. Telegram never issues 0, and
+ * `Matcher` already filters on `chatId ==`, so the two surfaces cannot meet by accident.
  */
-const val NO_NAMES_CHAT_ID = 0L
+const val NO_CHAT_ID = 0L
 
 /**
  * Someone's stated willingness to exchange. Amounts are held exactly as typed;

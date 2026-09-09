@@ -48,7 +48,7 @@ class ResidualTest : StringSpec({
     }
 
     "a residual of a privately stated interest is restated privately" {
-        restateGoesPrivate(req(Verb.SELL, "1000", "EUR", chatId = NO_NAMES_CHAT_ID, interest = "i1")) shouldBe true
+        restateGoesPrivate(req(Verb.SELL, "1000", "EUR", chatId = NO_CHAT_ID, interest = "i1")) shouldBe true
         restateGoesPrivate(req(Verb.SELL, "1000", "EUR", chatId = -100L, interest = "i1")) shouldBe true
     }
     "a residual of a request typed in a group stays in that group" {

@@ -93,7 +93,7 @@ fun renderStatus(requests: List<Request>, viewerId: Long, limit: Int = 20): Stri
     return text.toString()
 }
 
-/** One showing (or one no-names request) as it is about to be announced, with what it found. */
+/** One showing (or one bot-side request) as it is about to be announced, with what it found. */
 data class ShownInterest(val request: Request, val found: List<Counterparty>)
 
 /**
@@ -120,7 +120,7 @@ fun announcementButtons(shown: List<ShownInterest>): List<Button> =
     }
 
 /**
- * The no-names ping: side and stated amount, nothing else. No handle, no name, no user
+ * The bot-side ping: side and stated amount, nothing else. No handle, no name, no user
  * id, no chat, no hint of which chats are shared (ADR 0007).
  */
 fun renderAppeared(mine: List<ShownInterest>): String {
@@ -134,7 +134,7 @@ fun renderAppeared(mine: List<ShownInterest>): String {
 }
 
 /**
- * The two choices a no-names pairing offers, in one place: every message that puts a
+ * The two choices a pairing offers, in one place: every message that puts a
  * pairing in front of somebody offers exactly this pair, with exactly these words.
  */
 internal fun nameGiveUpButtons(mine: Request, theirs: Request): List<Button> = listOf(
@@ -168,7 +168,7 @@ fun appearedButtons(mine: List<ShownInterest>): List<Button> =
 fun renderStated(r: InterestResult.Stated): String {
     val text = StringBuilder("Noted: ${describe(r.interest)} (${r.interest.shortId}).")
     if (r.found.isEmpty()) {
-        text.append("\nNobody matches yet on a no-names basis — you're waiting.")
+        text.append("\nNobody matches yet — you're waiting.")
     } else {
         text.append(
             if (r.found.size == 1) "\n1 person matches, no names either way:"
@@ -204,9 +204,9 @@ fun renderStandings(standings: List<InterestStanding>): String {
         text.append("\n• ").append(s.interest.shortId).append(' ').append(describe(s.interest))
         text.append(
             when (s.chatIds.size) {
-                0 -> " — on a no-names basis only"
-                1 -> " — on a no-names basis and in 1 group"
-                else -> " — on a no-names basis and in ${s.chatIds.size} groups"
+                0 -> " — waiting with me"
+                1 -> " — waiting with me and in 1 group"
+                else -> " — waiting with me and in ${s.chatIds.size} groups"
             },
         )
     }

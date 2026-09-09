@@ -39,7 +39,7 @@ private fun residualFraction(mine: BigDecimal, theirs: BigDecimal): BigDecimal =
  *
  * Each side is judged separately against its own number: [tolerancePct] is the
  * subject's, [peerTolerancePct] answers for a candidate. In a chat both are that
- * chat's setting and this reduces to the old test exactly; on a no-names basis each
+ * chat's setting and this reduces to the old test exactly; with no chat each
  * person brings their own. Counterparties are strictly pairwise — the bot never
  * searches for a set that together covers a size (ADR 0006).
  *

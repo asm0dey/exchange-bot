@@ -56,7 +56,7 @@ suspend fun cancelCallback(t: String?, update: ProcessedUpdate, bot: TelegramBot
 @CommandHandler.CallbackQuery(["reopen"], autoAnswer = false)
 suspend fun reopenCallback(t: String?, update: ProcessedUpdate, bot: TelegramBot) {
     val chat = update.getChat()
-    val tif = if (update.isGroupChat()) Registry.settings.get(chat.id).tifDays else NO_NAMES_TIF_DAYS
+    val tif = if (update.isGroupChat()) Registry.settings.get(chat.id).tifDays else NO_CHAT_TIF_DAYS
     val result = if (t == null) ActionResult.Denied(BROKEN_BUTTON)
         else Registry.lifecycle.reopen(chat.id, update.getUser().id, tif, t)
     logCommand("reopen_button", result.outcomeLabel())
@@ -189,8 +189,8 @@ private const val RESTATE_NOTHING_LEFT =
  * rather than editing anything.
  *
  * Where it goes is [restateGoesPrivate]'s decision, and the reply follows it: a residual
- * of a privately stated interest is a new interest, so its reply names counterparties on a
- * no-names basis and must go to the presser privately even when the button was pressed in
+ * of a privately stated interest is a new interest, so its reply names counterparties found
+ * with no chat and must go to the presser privately even when the button was pressed in
  * a group. A residual of a request typed in a group is restated in that group, and
  * answered there like any other post.
  */
@@ -236,7 +236,7 @@ private fun otherLeg(r: Request): String =
  * A new interest, which fans out like any other and joins the current batch rather than
  * being refused — it pays the same cap and the same window as anything else the person
  * states. The reply goes to the presser's own chat with the bot, never to the chat the
- * button was pressed in: it lists counterparties found on a no-names basis, and those are
+ * button was pressed in: it lists counterparties found with no chat, and those are
  * the presser's business alone.
  */
 private suspend fun restatePrivately(
@@ -279,7 +279,7 @@ private suspend fun restatePrivately(
 
 /**
  * A request typed in a group is restated in that group alone: fanning it out bot-wide
- * would put somebody on the no-names side who never asked, and consent is what puts them
+ * would put somebody on the bot-side who never asked, and consent is what puts them
  * there (ADR 0007).
  */
 private suspend fun restateInChat(

@@ -28,7 +28,7 @@ class ForgetService(
      * still means that group alone.
      *
      * [messageChatId] scopes the MESSAGE cleanup, which is not always the same scope as
-     * the requests. The private form erases requests resting under [NO_NAMES_CHAT_ID],
+     * the requests. The private form erases requests resting under [NO_CHAT_ID],
      * but nothing is ever RECORDED under that sentinel — a private reply, and the message
      * a completed give-up leaves behind, are recorded under the person's real private chat
      * id. Passing that id here is what makes the give-up message actually get redacted;

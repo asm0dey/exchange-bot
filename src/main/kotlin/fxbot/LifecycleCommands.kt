@@ -54,11 +54,11 @@ private suspend fun replyToDecision(
 }
 
 /**
- * Privately, the short ids on offer are the ones the person's own interests carry on a
- * no-names basis — [NO_NAMES_CHAT_ID] is where those rest, and withdrawing one withdraws
+ * Privately, the short ids on offer are the ones the person's own interests carry in the bot —
+ * [NO_CHAT_ID] is where those rest, and withdrawing one withdraws
  * every showing with it. In a group it is that chat's own short ids, as before.
  */
-private fun ProcessedUpdate.scopeId(): Long = if (isGroupChat()) getChat().id else NO_NAMES_CHAT_ID
+private fun ProcessedUpdate.scopeId(): Long = if (isGroupChat()) getChat().id else NO_CHAT_ID
 
 @CommandHandler(["/cancel"])
 suspend fun cancel(update: ProcessedUpdate, bot: TelegramBot) {
@@ -79,14 +79,14 @@ suspend fun cancel(update: ProcessedUpdate, bot: TelegramBot) {
  * Privately this brings back the interest that closed most recently, every showing with
  * it — the recovery a wrongly closed interest otherwise has no command for, since the Undo
  * button only ever reaches whoever pressed, who may not be the person whose interest was
- * closed. The time in force passed here is the no-names default and is not what the
+ * closed. The time in force passed here is the bot default and is not what the
  * showings come back on: [LifecycleService.reopen] gives each one its own chat's number.
  */
 @CommandHandler(["/reopen"])
 suspend fun reopen(update: ProcessedUpdate, bot: TelegramBot) {
     val chat = update.getChat()
     val scopeId = update.scopeId()
-    val tif = if (scopeId == NO_NAMES_CHAT_ID) NO_NAMES_TIF_DAYS else Registry.settings.get(chat.id).tifDays
+    val tif = if (scopeId == NO_CHAT_ID) NO_CHAT_TIF_DAYS else Registry.settings.get(chat.id).tifDays
     val result = Registry.lifecycle.reopen(scopeId, update.getUser().id, tif)
     logCommand("reopen", result.outcomeLabel())
     replyToDecision(chat.id, bot, result, undoable = false)
@@ -115,7 +115,7 @@ private const val REDACTED = "(a message was edited at someone's request)"
  * Erases a person's data, in one of three shapes:
  *  - in a group, that group alone — which may remove one showing of an interest whose
  *    siblings live on, because forgetting removes a RECORD, it does not withdraw an interest;
- *  - privately and plain, the person's own side of the bot: their no-names requests, their
+ *  - privately and plain, the person's own side of the bot: their bot-side requests, their
  *    size tolerance, their give-up consents, their pending announcements, and the messages
  *    in that private chat (a completed give-up named somebody there, so it is redacted
  *    rather than deleted — ADR 0005);
@@ -143,8 +143,8 @@ suspend fun forget(update: ProcessedUpdate, bot: TelegramBot) {
 
     logCommand("forget", if (global) "erased_global" else if (private) "erased_private" else "erased_chat")
     val scope = when {
-        global -> null                       // every chat, plus the no-names side
-        private -> NO_NAMES_CHAT_ID          // the person's own side of the bot
+        global -> null                       // every chat, plus the bot-side
+        private -> NO_CHAT_ID          // the person's own side of the bot
         else -> chat.id                      // this group alone
     }
     // Requests rest under the sentinel; messages are recorded under the real chat. Only
@@ -185,8 +185,8 @@ suspend fun forget(update: ProcessedUpdate, bot: TelegramBot) {
  * Counterparties come from message entities (a reply, or a Telegram-recognized
  * @mention), never from a typed display name matched by hand, and only from
  * people who actually have something waiting in [chatId] — which privately is the
- * no-names space, so an `@username` there is matched against the handles on the requests
- * resting on a no-names basis. Somebody with no `@username` cannot be addressed by the
+ * bot-side space, so an `@username` there is matched against the handles on the requests
+ * resting with no chat. Somebody with no `@username` cannot be addressed by the
  * typed form at all; the Done button on the give-up message is the reliable path, and no
  * second identifier scheme is invented to make them typeable.
  *

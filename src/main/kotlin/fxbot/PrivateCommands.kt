@@ -210,7 +210,7 @@ class AnnouncementNotSent : RuntimeException("Telegram refused an announcement s
  *
  * A ping is deliberately NOT recorded. Its give-up buttons name the COUNTERPARTY's ref
  * token, so recording it would store that person's user ref against the recipient's
- * private chat — a stored link between two people on a no-names basis, before either of
+ * private chat — a stored link between two people with no chat, before either of
  * them pressed anything. A give-up button that later goes dead instead degrades to
  * `GiveUpService`'s existing "no longer waiting" refusal, which names nobody.
  */

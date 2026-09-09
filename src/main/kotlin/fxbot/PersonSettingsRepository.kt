@@ -11,7 +11,7 @@ import org.jetbrains.exposed.v1.jdbc.upsert
 import java.time.Clock
 import javax.sql.DataSource
 
-/** One person's own size tolerance, used only for no-names working. It never overrides a chat's. */
+/** One person's own size tolerance, used only for working with the bot. It never overrides a chat's. */
 data class PersonSettings(val userId: Long, val tolerancePct: Int)
 
 @Serializable

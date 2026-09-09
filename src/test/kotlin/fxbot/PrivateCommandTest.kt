@@ -254,14 +254,14 @@ class PrivateCommandTest : StringSpec({
         val sent = mutableListOf<Call>()
         sell(updateFor(DM, ChatType.Private, "/sell 10 EUR"), recordingBot(sent))
         sent.single().body shouldContain "/sell 10 EUR for RUB"
-        f.requests.resting(NO_NAMES_CHAT_ID).shouldBeEmpty()
+        f.requests.resting(NO_CHAT_ID).shouldBeEmpty()
     }
 
     "a private /sell with 'for' states an interest and replies at once" {
         val f = PrivateFixture("privsell")
         val sent = mutableListOf<Call>()
         sell(updateFor(DM, ChatType.Private, "/sell 10 EUR for RUB"), recordingBot(sent))
-        f.requests.resting(NO_NAMES_CHAT_ID) shouldHaveSize 1
+        f.requests.resting(NO_CHAT_ID) shouldHaveSize 1
         // Fan-out reached the configured group, and the showing rests there immediately.
         f.requests.resting(GROUP) shouldHaveSize 1
         sent.last().path shouldBe "sendMessage"
@@ -272,11 +272,11 @@ class PrivateCommandTest : StringSpec({
         val f = PrivateFixture("privrecord")
         // Somebody to be found, so the reply carries give-up buttons naming THEIR token.
         val peer = f.requests.create(
-            NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i2",
+            NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i2",
         )
         val sent = mutableListOf<Call>()
         sell(updateFor(DM, ChatType.Private, "/sell 10 EUR for RUB"), recordingBot(sent))
-        val mine = f.requests.resting(NO_NAMES_CHAT_ID).single { it.userId == 1L }
+        val mine = f.requests.resting(NO_CHAT_ID).single { it.userId == 1L }
         // recordingBot answers every send with message_id 1.
         val logged = f.messages.logged(DM, 1L).shouldNotBeNull()
         logged.refTokens shouldContainExactlyInAnyOrder listOf(mine.refToken, peer.refToken)
@@ -290,7 +290,7 @@ class PrivateCommandTest : StringSpec({
         val sent = mutableListOf<Call>()
         sell(updateFor(GROUP, ChatType.Group, "/sell 1000 EUR"), recordingBot(sent))
         f.requests.resting(GROUP) shouldHaveSize 1
-        f.requests.resting(NO_NAMES_CHAT_ID).shouldBeEmpty()
+        f.requests.resting(NO_CHAT_ID).shouldBeEmpty()
         f.pending.all().shouldBeEmpty()
     }
 
@@ -320,9 +320,9 @@ class PrivateCommandTest : StringSpec({
         val sent = mutableListOf<Call>()
         sell(updateFor(DM, ChatType.Private, "/sell 10 EUR for RUB"), recordingBot(sent))
         f.requests.resting(GROUP) shouldHaveSize 1 // the showing exists before the cancel
-        val shortId = f.requests.resting(NO_NAMES_CHAT_ID).single().shortId
+        val shortId = f.requests.resting(NO_CHAT_ID).single().shortId
         cancel(updateFor(DM, ChatType.Private, "/cancel $shortId"), recordingBot(sent))
-        f.requests.resting(NO_NAMES_CHAT_ID).shouldBeEmpty()
+        f.requests.resting(NO_CHAT_ID).shouldBeEmpty()
         f.requests.resting(GROUP).shouldBeEmpty()
     }
 
@@ -350,8 +350,8 @@ class PrivateCommandTest : StringSpec({
 
     "a give-up press discloses nothing until the other side presses too" {
         val f = PrivateFixture("givepress")
-        val a = f.requests.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
-        val b = f.requests.create(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
+        val a = f.requests.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
+        val b = f.requests.create(NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
         val sent = mutableListOf<Call>()
         giveUpCallback(a.refToken, b.refToken, callbackFrom(1L), recordingBot(sent))
         sent.joinToString { it.body } shouldNotContain "@ann"
@@ -367,8 +367,8 @@ class PrivateCommandTest : StringSpec({
 
     "a forged give-up payload, pressed by someone who owns neither request, discloses nothing" {
         val f = PrivateFixture("giveforged")
-        val a = f.requests.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
-        val b = f.requests.create(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
+        val a = f.requests.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
+        val b = f.requests.create(NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
         f.giveUps.record(b.refToken, a.refToken, 2L, Stance.OFFERED)
         val sent = mutableListOf<Call>()
         giveUpCallback(a.refToken, b.refToken, callbackFrom(99L), recordingBot(sent))
@@ -380,8 +380,8 @@ class PrivateCommandTest : StringSpec({
 
     "both sides pressing passes each the other's handle, and both messages are recorded" {
         val f = PrivateFixture("givedisclose")
-        val a = f.requests.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
-        val b = f.requests.create(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
+        val a = f.requests.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
+        val b = f.requests.create(NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
         val sent = mutableListOf<Call>()
         giveUpCallback(a.refToken, b.refToken, callbackFrom(1L), recordingBot(sent))
         sent.clear()
@@ -398,8 +398,8 @@ class PrivateCommandTest : StringSpec({
 
     "a decline by the owner is recorded, and the pairing is suppressed for both" {
         val f = PrivateFixture("declinepress")
-        val a = f.requests.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
-        val b = f.requests.create(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
+        val a = f.requests.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
+        val b = f.requests.create(NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
         val sent = mutableListOf<Call>()
         declineCallback(a.refToken, b.refToken, callbackFrom(1L), recordingBot(sent))
         f.giveUps.stanceOf(a.refToken, b.refToken) shouldBe Stance.DECLINED
@@ -410,8 +410,8 @@ class PrivateCommandTest : StringSpec({
 
     "a decline pressed by someone who owns neither request writes nothing" {
         val f = PrivateFixture("declineforged")
-        val a = f.requests.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
-        val b = f.requests.create(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
+        val a = f.requests.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
+        val b = f.requests.create(NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
         val sent = mutableListOf<Call>()
         declineCallback(a.refToken, b.refToken, callbackFrom(99L), recordingBot(sent))
         f.giveUps.stanceOf(a.refToken, b.refToken) shouldBe null
@@ -437,22 +437,22 @@ class PrivateCommandTest : StringSpec({
         f.requests.byRefToken(mine.refToken)!!.statedAmount shouldBe BigDecimal("1000")
         f.requests.byRefToken(mine.refToken)!!.state shouldBe RequestState.DONE
         // A request typed in a group is restated in that group alone (ADR 0007).
-        f.requests.resting(NO_NAMES_CHAT_ID).shouldBeEmpty()
+        f.requests.resting(NO_CHAT_ID).shouldBeEmpty()
     }
 
     "restating a privately stated interest states it again privately, and it fans out" {
         val f = PrivateFixture("restatepriv")
         val mine = f.requests.create(
-            NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1",
+            NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1",
         )
         val theirs = f.requests.create(
-            NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("600"), EURRUB, 7, "i2",
+            NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("600"), EURRUB, 7, "i2",
         )
         f.requests.transition(mine.refToken, RequestState.OPEN, RequestState.DONE)
         f.requests.transition(theirs.refToken, RequestState.OPEN, RequestState.DONE)
         val sent = mutableListOf<Call>()
         restateCallback(mine.refToken, theirs.refToken, callbackFrom(1L), recordingBot(sent))
-        f.requests.resting(NO_NAMES_CHAT_ID).single().statedAmount shouldBe BigDecimal("400")
+        f.requests.resting(NO_CHAT_ID).single().statedAmount shouldBe BigDecimal("400")
         f.requests.resting(GROUP) shouldHaveSize 1
     }
 
@@ -465,7 +465,7 @@ class PrivateCommandTest : StringSpec({
         val sent = mutableListOf<Call>()
         restateCallback(mine.refToken, theirs.refToken, callbackFrom(99L, chatId = GROUP), recordingBot(sent))
         f.requests.resting(GROUP).shouldBeEmpty()
-        f.requests.resting(NO_NAMES_CHAT_ID).shouldBeEmpty()
+        f.requests.resting(NO_CHAT_ID).shouldBeEmpty()
         sent.none { it.path == "sendMessage" } shouldBe true
     }
 
@@ -671,8 +671,8 @@ class PrivateCommandTest : StringSpec({
 
     "a disclosure that could not be delivered is not reported as delivered" {
         val f = PrivateFixture("disclosefail")
-        val a = f.requests.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
-        val b = f.requests.create(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
+        val a = f.requests.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
+        val b = f.requests.create(NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
         // Both sides have agreed, so the second press discloses.
         f.giveUps.record(b.refToken, a.refToken, 2L, Stance.OFFERED)
         val sent = mutableListOf<Call>()
@@ -687,8 +687,8 @@ class PrivateCommandTest : StringSpec({
 
     "a disclosure that lands is still reported as delivered" {
         val f = PrivateFixture("discloseok")
-        val a = f.requests.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
-        val b = f.requests.create(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
+        val a = f.requests.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
+        val b = f.requests.create(NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
         f.giveUps.record(b.refToken, a.refToken, 2L, Stance.OFFERED)
         val sent = mutableListOf<Call>()
         giveUpCallback(a.refToken, b.refToken, callbackFrom(1L), recordingBot(sent))
@@ -712,10 +712,10 @@ class PrivateCommandTest : StringSpec({
         val f = PrivateFixture("donestranger")
         // Mallory states one interest of her own, purely to have a short id to type.
         val mine = f.requests.create(
-            NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1",
+            NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1",
         )
         val victim = f.requests.create(
-            NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2",
+            NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2",
         )
         val showing = f.requests.create(GROUP, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
         val sent = mutableListOf<Call>()
@@ -733,9 +733,9 @@ class PrivateCommandTest : StringSpec({
     "the two private /done refusals are word for word the same, so neither is an oracle" {
         val f = PrivateFixture("doneoracle")
         val mine = f.requests.create(
-            NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1",
+            NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1",
         )
-        f.requests.create(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
+        f.requests.create(NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
         val toResting = mutableListOf<Call>()
         val toNobody = mutableListOf<Call>()
 
@@ -751,10 +751,10 @@ class PrivateCommandTest : StringSpec({
     "a private /done closes both interests once both sides have passed names" {
         val f = PrivateFixture("doneconsented")
         val mine = f.requests.create(
-            NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1",
+            NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1",
         )
         val theirs = f.requests.create(
-            NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2",
+            NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2",
         )
         val showing = f.requests.create(GROUP, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
         // Both agreed, which is what the spec means by the typed form being used after a
@@ -818,7 +818,7 @@ class PrivateCommandTest : StringSpec({
     "a private Undo writes no chat_settings row for the person's own chat" {
         val f = PrivateFixture("undoprivate")
         val mine = f.requests.create(
-            NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1",
+            NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1",
         )
         val showing = f.requests.create(GROUP, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
         f.requests.transition(mine.refToken, RequestState.OPEN, RequestState.CANCELLED)
@@ -840,14 +840,14 @@ class PrivateCommandTest : StringSpec({
         val f = PrivateFixture("privreopen")
         val sent = mutableListOf<Call>()
         sell(updateFor(DM, ChatType.Private, "/sell 10 EUR for RUB"), recordingBot(sent))
-        val shortId = f.requests.resting(NO_NAMES_CHAT_ID).single().shortId
+        val shortId = f.requests.resting(NO_CHAT_ID).single().shortId
         cancel(updateFor(DM, ChatType.Private, "/cancel $shortId"), recordingBot(sent))
-        f.requests.resting(NO_NAMES_CHAT_ID).shouldBeEmpty()
+        f.requests.resting(NO_CHAT_ID).shouldBeEmpty()
         sent.clear()
 
         reopen(updateFor(DM, ChatType.Private, "/reopen"), recordingBot(sent))
 
-        f.requests.resting(NO_NAMES_CHAT_ID) shouldHaveSize 1
+        f.requests.resting(NO_CHAT_ID) shouldHaveSize 1
         f.requests.resting(GROUP) shouldHaveSize 1
         sent.first { it.path == "sendMessage" }.body shouldContain "Resting again"
         // And the same phantom row I-2 is about: reading a chat's settings for a DM writes one.

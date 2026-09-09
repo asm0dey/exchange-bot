@@ -42,7 +42,7 @@ internal fun ActionResult.outcomeLabel(): String = when (this) {
 
 /**
  * Who a typed `/done` named, as far as the command surface could resolve them. Three
- * cases, not two, because on the no-names side "somebody I can't place" and "somebody who
+ * cases, not two, because on the bot-side "somebody I can't place" and "somebody who
  * never agreed to pass names" MUST read as one refusal: if they read differently, the
  * command answers, for any handle a stranger cares to type, whether that person is resting
  * anything with the bot at all.
@@ -80,9 +80,9 @@ class LifecycleService(
     /** Text sent with HTML parse mode — see [mention] — so callers must send it that way. */
     private fun nameOf(r: Request) = mention(r.username, r.userId, r.username ?: "this person")
 
-    /** Each chat's own time in force, and the no-names default for the row with no chat. */
+    /** Each chat's own time in force, and the bot default for the row with no chat. */
     private fun tifFor(chatId: Long): Int =
-        if (chatId == NO_NAMES_CHAT_ID) NO_NAMES_TIF_DAYS else settings.get(chatId).tifDays
+        if (chatId == NO_CHAT_ID) NO_CHAT_TIF_DAYS else settings.get(chatId).tifDays
 
     fun cancel(chatId: Long, userId: Long, shortId: String): ActionResult {
         val r = requests.byShortId(chatId, shortId)
@@ -112,7 +112,7 @@ class LifecycleService(
      *
      * Those two are the whole of the authorization in a CHAT, where every member can
      * already read every name, a wrongful close is publicly visible, and `/reopen` undoes
-     * it. On the no-names side none of that holds, and the structural check passes
+     * it. On the bot-side none of that holds, and the structural check passes
      * trivially there — both rows carry `chatId = 0`, and the opposite side is arranged by
      * stating it. So a third check applies to a sentinel-scoped pairing: the two must have
      * actually passed names, read from the give-up table rather than from anything a
@@ -123,7 +123,7 @@ class LifecycleService(
      * The check belongs HERE, not only in [doneByShortId]: this is what a Done button
      * reaches, and the give-up button the bot hands a presser already carries the peer's
      * sentinel ref token, so rewriting `giveup?a=X&b=Y` into `done?a=X&b=Y` is one word of
-     * work. The only legitimate no-names Done button is minted by `discloseTo`, which runs
+     * work. The only legitimate bot-side Done button is minted by `discloseTo`, which runs
      * only once `bothOffered` is already true, so nothing legitimate is refused.
      *
      * The refusal is [NOT_A_PAIR] — the same words a structurally impossible pairing gets.
@@ -161,7 +161,7 @@ class LifecycleService(
         // always the presser's OWN row, so "already closed" tells them nothing they did not
         // put there themselves, and a second press of a legitimate Done button keeps saying
         // so even after housekeeping has swept the consent rows the close made spent.
-        if (theirs != null && mine.chatId == NO_NAMES_CHAT_ID &&
+        if (theirs != null && mine.chatId == NO_CHAT_ID &&
             !giveUps.bothOffered(mine.refToken, theirs.refToken)
         ) {
             return ActionResult.Denied(NOT_A_PAIR)
@@ -205,7 +205,7 @@ class LifecycleService(
     }
 
     /**
-     * The typed form. Consent on the no-names side is enforced by [done] itself, so that
+     * The typed form. Consent on the bot-side is enforced by [done] itself, so that
      * every route in is covered rather than this one alone — see its own comment.
      *
      * What is left here is the part [done] cannot see: a typed name resolves to a PERSON,
@@ -226,7 +226,7 @@ class LifecycleService(
             // ever sent under an HTML parse mode by some future caller.
             ?: return ActionResult.Gone("I can't find a waiting request called ${escapeHtml(shortId)} here.")
         if (mine.userId != userId) return ActionResult.Denied("That's not your request.")
-        val noNames = chatId == NO_NAMES_CHAT_ID
+        val noNames = chatId == NO_CHAT_ID
         // In a chat an unplaceable name stays what it has always been — nobody was named,
         // and the caller's own request closes alone.
         if (noNames && peer is NamedPeer.Unplaceable) return ActionResult.Denied(NOT_A_PAIR)

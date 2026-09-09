@@ -237,7 +237,7 @@ class LifecycleServiceTest : StringSpec({
 
     "cancelling one showing withdraws the whole interest" {
         val (svc, repo) = lifecycle("cancelinterest")
-        val noNames = repo.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
+        val noNames = repo.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
         val here = repo.create(-100L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
         val there = repo.create(-200L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
         val r = svc.cancel(-100L, 1L, here.shortId)
@@ -340,10 +340,10 @@ class LifecycleServiceTest : StringSpec({
 
     "a no-names peer who never agreed to pass names closes nothing" {
         val f = ConsentFixture("donenogiveup")
-        val mine = f.rest(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
-        val theirs = f.rest(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "i2")
+        val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
+        val theirs = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
         val showing = f.rest(-100L, 2L, "ann", Side.BID, "i2")
-        val r = f.svc.doneByShortId(NO_NAMES_CHAT_ID, 1L, mine.shortId, NamedPeer.Somebody(2L))
+        val r = f.svc.doneByShortId(NO_CHAT_ID, 1L, mine.shortId, NamedPeer.Somebody(2L))
         r.shouldBeInstanceOf<ActionResult.Denied>()
         // Not a word about whether that person exists or rests anything.
         r.text shouldNotContain "ann"
@@ -354,22 +354,22 @@ class LifecycleServiceTest : StringSpec({
 
     "one side's consent is not enough on the no-names side" {
         val f = ConsentFixture("donehalfgiveup")
-        val mine = f.rest(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
-        val theirs = f.rest(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "i2")
+        val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
+        val theirs = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
         f.giveUps.record(mine.refToken, theirs.refToken, 1L, Stance.OFFERED)
-        f.svc.doneByShortId(NO_NAMES_CHAT_ID, 1L, mine.shortId, NamedPeer.Somebody(2L))
+        f.svc.doneByShortId(NO_CHAT_ID, 1L, mine.shortId, NamedPeer.Somebody(2L))
             .shouldBeInstanceOf<ActionResult.Denied>()
         f.stateOf(theirs) shouldBe RequestState.OPEN
     }
 
     "a mutual give-up is what lets a no-names /done close both" {
         val f = ConsentFixture("donegiveup")
-        val mine = f.rest(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
-        val theirs = f.rest(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "i2")
+        val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
+        val theirs = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
         val showing = f.rest(-100L, 2L, "ann", Side.BID, "i2")
         f.giveUps.record(mine.refToken, theirs.refToken, 1L, Stance.OFFERED)
         f.giveUps.record(theirs.refToken, mine.refToken, 2L, Stance.OFFERED)
-        f.svc.doneByShortId(NO_NAMES_CHAT_ID, 1L, mine.shortId, NamedPeer.Somebody(2L))
+        f.svc.doneByShortId(NO_CHAT_ID, 1L, mine.shortId, NamedPeer.Somebody(2L))
             .shouldBeInstanceOf<ActionResult.Ok>()
         f.stateOf(mine) shouldBe RequestState.DONE
         f.stateOf(theirs) shouldBe RequestState.DONE
@@ -378,10 +378,10 @@ class LifecycleServiceTest : StringSpec({
 
     "naming somebody unplaceable is refused in the same words on the no-names side" {
         val f = ConsentFixture("doneunplaceable")
-        val mine = f.rest(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
-        f.rest(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "i2")
-        val unplaceable = f.svc.doneByShortId(NO_NAMES_CHAT_ID, 1L, mine.shortId, NamedPeer.Unplaceable)
-        val noConsent = f.svc.doneByShortId(NO_NAMES_CHAT_ID, 1L, mine.shortId, NamedPeer.Somebody(2L))
+        val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
+        f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
+        val unplaceable = f.svc.doneByShortId(NO_CHAT_ID, 1L, mine.shortId, NamedPeer.Unplaceable)
+        val noConsent = f.svc.doneByShortId(NO_CHAT_ID, 1L, mine.shortId, NamedPeer.Somebody(2L))
         unplaceable.shouldBeInstanceOf<ActionResult.Denied>()
         noConsent.shouldBeInstanceOf<ActionResult.Denied>()
         unplaceable.text shouldBe noConsent.text
@@ -405,9 +405,9 @@ class LifecycleServiceTest : StringSpec({
 
     "a private /done with nobody named still closes only the caller's own interest" {
         val f = ConsentFixture("donenobody")
-        val mine = f.rest(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
-        val theirs = f.rest(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "i2")
-        f.svc.doneByShortId(NO_NAMES_CHAT_ID, 1L, mine.shortId, NamedPeer.Nobody)
+        val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
+        val theirs = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
+        f.svc.doneByShortId(NO_CHAT_ID, 1L, mine.shortId, NamedPeer.Nobody)
             .shouldBeInstanceOf<ActionResult.Ok>()
         f.stateOf(mine) shouldBe RequestState.DONE
         f.stateOf(theirs) shouldBe RequestState.OPEN
@@ -420,8 +420,8 @@ class LifecycleServiceTest : StringSpec({
 
     "the Done button cannot close a no-names pairing that never passed names" {
         val f = ConsentFixture("donebuttonnogiveup")
-        val mine = f.rest(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
-        val theirs = f.rest(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "i2")
+        val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
+        val theirs = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
         val showing = f.rest(-100L, 2L, "ann", Side.BID, "i2")
         // Exactly what a rewritten give-up payload reaches: the presser's own token, and
         // the peer's sentinel token the give-up button published to them.
@@ -437,11 +437,11 @@ class LifecycleServiceTest : StringSpec({
 
     "the button refusal reads exactly like every other no-names refusal" {
         val f = ConsentFixture("donebuttonsamewords")
-        val mine = f.rest(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
-        val theirs = f.rest(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "i2")
+        val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
+        val theirs = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
         val button = f.svc.done(1L, mine.refToken, theirs.refToken)
-        val typed = f.svc.doneByShortId(NO_NAMES_CHAT_ID, 1L, mine.shortId, NamedPeer.Somebody(2L))
-        val unplaceable = f.svc.doneByShortId(NO_NAMES_CHAT_ID, 1L, mine.shortId, NamedPeer.Unplaceable)
+        val typed = f.svc.doneByShortId(NO_CHAT_ID, 1L, mine.shortId, NamedPeer.Somebody(2L))
+        val unplaceable = f.svc.doneByShortId(NO_CHAT_ID, 1L, mine.shortId, NamedPeer.Unplaceable)
         button.shouldBeInstanceOf<ActionResult.Denied>()
         typed.shouldBeInstanceOf<ActionResult.Denied>()
         unplaceable.shouldBeInstanceOf<ActionResult.Denied>()
@@ -453,8 +453,8 @@ class LifecycleServiceTest : StringSpec({
 
     "one side's consent does not arm the Done button either" {
         val f = ConsentFixture("donebuttonhalfgiveup")
-        val mine = f.rest(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
-        val theirs = f.rest(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "i2")
+        val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
+        val theirs = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
         f.giveUps.record(mine.refToken, theirs.refToken, 1L, Stance.OFFERED)
         f.svc.done(1L, mine.refToken, theirs.refToken).shouldBeInstanceOf<ActionResult.Denied>()
         f.stateOf(mine) shouldBe RequestState.OPEN
@@ -463,8 +463,8 @@ class LifecycleServiceTest : StringSpec({
 
     "the Done button handed out after a mutual give-up still closes both, either way round" {
         val f = ConsentFixture("donebuttongiveup")
-        val mine = f.rest(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
-        val theirs = f.rest(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "i2")
+        val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
+        val theirs = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
         val showing = f.rest(-100L, 2L, "ann", Side.BID, "i2")
         f.giveUps.record(mine.refToken, theirs.refToken, 1L, Stance.OFFERED)
         f.giveUps.record(theirs.refToken, mine.refToken, 2L, Stance.OFFERED)
@@ -478,8 +478,8 @@ class LifecycleServiceTest : StringSpec({
 
     "a second press of a legitimate Done button still says already closed, consent swept or not" {
         val f = ConsentFixture("donebuttonstale")
-        val mine = f.rest(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
-        val theirs = f.rest(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "i2")
+        val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
+        val theirs = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
         f.giveUps.record(mine.refToken, theirs.refToken, 1L, Stance.OFFERED)
         f.giveUps.record(theirs.refToken, mine.refToken, 2L, Stance.OFFERED)
         f.svc.done(1L, mine.refToken, theirs.refToken).shouldBeInstanceOf<ActionResult.Ok>()

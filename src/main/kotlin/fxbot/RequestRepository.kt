@@ -214,7 +214,7 @@ class RequestRepository(
 
     /**
      * Revives the siblings a done or a cancel closed, each with a fresh expiry from its
-     * own chat's time in force ([tifFor] answers for a chat id; the no-names row uses the
+     * own chat's time in force ([tifFor] answers for a chat id; the bot-side row uses the
      * 7-day default its caller passes). A sibling that merely LAPSED is left closed —
      * reopen undoes a decision, and an expiry was never one.
      */
@@ -235,14 +235,14 @@ class RequestRepository(
         }
 
     /**
-     * How many interests this person has resting on a no-names basis — the figure the
+     * How many interests this person has resting in the bot — the figure the
      * five-interest cap is judged against. Counts interests, not showings: one statement
      * shown in four chats is one. Requests typed in a chat carry no token and are uncapped.
      */
     fun countOpenInterests(userId: Long): Int = transaction(db) {
         Requests.selectAll()
             .where {
-                (Requests.chatRef eq crypto.ref(NO_NAMES_CHAT_ID.toString())) and
+                (Requests.chatRef eq crypto.ref(NO_CHAT_ID.toString())) and
                     (Requests.userRef eq crypto.ref(userId.toString())) and
                     (Requests.state eq RequestState.OPEN.name)
             }
@@ -252,14 +252,14 @@ class RequestRepository(
     }
 
     /**
-     * The pairs resting on a no-names basis. `Housekeeping.refreshRates` enumerates chat
+     * The pairs resting in the bot. `Housekeeping.refreshRates` enumerates chat
      * pairs from `chat_settings`; without this, a pair no chat uses would never get a
      * reference rate and could never be compared across denominations.
      */
-    fun noNamesPairs(): Set<CurrencyPair> = transaction(db) {
+    fun noChatPairs(): Set<CurrencyPair> = transaction(db) {
         Requests.selectAll()
             .where {
-                (Requests.chatRef eq crypto.ref(NO_NAMES_CHAT_ID.toString())) and
+                (Requests.chatRef eq crypto.ref(NO_CHAT_ID.toString())) and
                     (Requests.state eq RequestState.OPEN.name)
             }
             .map { hydrate(it).pair }

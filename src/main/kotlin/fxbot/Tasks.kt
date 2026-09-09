@@ -62,11 +62,11 @@ class Housekeeping(
     }
 
     /**
-     * Chat pairs AND the pairs resting on a no-names basis — a pair no chat uses would
+     * Chat pairs AND the pairs resting in the bot — a pair no chat uses would
      * otherwise never get a reference rate. The feed is per base currency, so the cost is
      * one GET per distinct base per day, not per pair.
      */
-    suspend fun refreshRates() = rates.refresh(settings.allPairs() + requests.noNamesPairs())
+    suspend fun refreshRates() = rates.refresh(settings.allPairs() + requests.noChatPairs())
 }
 
 /**

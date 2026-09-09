@@ -92,7 +92,7 @@ class TasksTest : StringSpec({
         val crypto = testCrypto()
         val clock = Clock.fixed(T0, ZoneOffset.UTC)
         val requests = RequestRepository(ds, crypto, clock)
-        requests.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "CHF", BigDecimal("10"), CurrencyPair("CHF", "JPY"), 7, "i1")
+        requests.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "CHF", BigDecimal("10"), CurrencyPair("CHF", "JPY"), 7, "i1")
         val rateRepo = RateRepository(ds)
         val bases = mutableListOf<String>()
         val client = RateClient(HttpClient(MockEngine { request ->
@@ -137,8 +137,8 @@ class TasksTest : StringSpec({
         val crypto = testCrypto()
         val clock = Clock.fixed(T0, ZoneOffset.UTC)
         val requests = RequestRepository(ds, crypto, clock)
-        val mine = requests.create(NO_NAMES_CHAT_ID, 7L, "bob", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
-        val theirs = requests.create(NO_NAMES_CHAT_ID, 8L, "ann", Side.BID, "EUR", BigDecimal("1"), EURRUB, 7, "i2")
+        val mine = requests.create(NO_CHAT_ID, 7L, "bob", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
+        val theirs = requests.create(NO_CHAT_ID, 8L, "ann", Side.BID, "EUR", BigDecimal("1"), EURRUB, 7, "i2")
         val giveUps = NameGiveUpRepository(ds, crypto, clock).also {
             it.record(mine.refToken, theirs.refToken, 7L, Stance.OFFERED)
         }
@@ -167,8 +167,8 @@ class TasksTest : StringSpec({
         // A give-up whose peer closed, whose offerer is still resting: onGiveUpDied fires
         // AFTER the throwing hook, and its rows are already gone by then.
         val requests = RequestRepository(ds, crypto, clock)
-        val mine = requests.create(NO_NAMES_CHAT_ID, 7L, "bob", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
-        val theirs = requests.create(NO_NAMES_CHAT_ID, 8L, "ann", Side.BID, "EUR", BigDecimal("1"), EURRUB, 7, "i2")
+        val mine = requests.create(NO_CHAT_ID, 7L, "bob", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
+        val theirs = requests.create(NO_CHAT_ID, 8L, "ann", Side.BID, "EUR", BigDecimal("1"), EURRUB, 7, "i2")
         val giveUps = NameGiveUpRepository(ds, crypto, clock).also {
             it.record(mine.refToken, theirs.refToken, 7L, Stance.OFFERED)
         }
@@ -189,8 +189,8 @@ class TasksTest : StringSpec({
         val crypto = testCrypto()
         val clock = Clock.fixed(T0, ZoneOffset.UTC)
         val requests = RequestRepository(ds, crypto, clock)
-        val mine = requests.create(NO_NAMES_CHAT_ID, 7L, "bob", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
-        val theirs = requests.create(NO_NAMES_CHAT_ID, 8L, "ann", Side.BID, "EUR", BigDecimal("1"), EURRUB, 7, "i2")
+        val mine = requests.create(NO_CHAT_ID, 7L, "bob", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
+        val theirs = requests.create(NO_CHAT_ID, 8L, "ann", Side.BID, "EUR", BigDecimal("1"), EURRUB, 7, "i2")
         val giveUps = NameGiveUpRepository(ds, crypto, clock).also {
             it.record(mine.refToken, theirs.refToken, 7L, Stance.OFFERED)
         }

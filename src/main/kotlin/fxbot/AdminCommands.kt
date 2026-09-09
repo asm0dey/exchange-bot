@@ -75,7 +75,7 @@ suspend fun pair(update: ProcessedUpdate, bot: TelegramBot) = adminOnly("pair", 
 /**
  * The one command that means two different things in the two places, exactly as
  * `/forget` already does: in a group it is the admin setting for that chat, privately it
- * is the person's own size tolerance for no-names working. Branching BEFORE [adminOnly]
+ * is the person's own size tolerance for working with the bot. Branching BEFORE [adminOnly]
  * is what keeps the private form out of the admin check, which would otherwise refuse it.
  */
 @CommandHandler(["/tolerance"])

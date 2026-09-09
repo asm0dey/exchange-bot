@@ -182,7 +182,7 @@ class RequestRepositoryTest : StringSpec({
     "rows born of one interest share its token, and siblings finds them all, in every state, in creation order" {
         val (r, _) = repo("siblings")
         val tok = "int-1"
-        val noNames = r.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
+        val noNames = r.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
         val showing = r.create(-100L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
         val closed = r.create(-200L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
         r.create(-300L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7) // a different interest
@@ -206,7 +206,7 @@ class RequestRepositoryTest : StringSpec({
     "closing an interest closes every open row on its token, in one go" {
         val (r, _) = repo("closeinterest")
         val tok = "int-2"
-        val a = r.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
+        val a = r.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
         val b = r.create(-100L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
         val closed = r.closeInterest(tok, RequestState.CANCELLED)
         closed.toSet() shouldBe setOf(a.refToken, b.refToken)
@@ -217,7 +217,7 @@ class RequestRepositoryTest : StringSpec({
     "closing an interest leaves an already-closed sibling alone and does not report it" {
         val (r, _) = repo("closeidempotent")
         val tok = "int-3"
-        val a = r.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
+        val a = r.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
         val b = r.create(-100L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
         r.transition(b.refToken, RequestState.OPEN, RequestState.EXPIRED)
         r.closeInterest(tok, RequestState.DONE) shouldBe listOf(a.refToken)
@@ -227,7 +227,7 @@ class RequestRepositoryTest : StringSpec({
     "reopening an interest revives only the siblings closed the same way" {
         val (r, _) = repo("reopeninterest")
         val tok = "int-4"
-        val a = r.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
+        val a = r.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
         val b = r.create(-100L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
         val c = r.create(-200L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, tok)
         r.transition(c.refToken, RequestState.OPEN, RequestState.EXPIRED) // one chat's housekeeping, not a decision
@@ -240,40 +240,40 @@ class RequestRepositoryTest : StringSpec({
 
     "the cap counts a person's resting no-names interests, not their showings" {
         val (r, _) = repo("countinterests")
-        r.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
+        r.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
         r.create(-100L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
         r.create(-200L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
-        r.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i2")
-        r.create(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i3")
+        r.create(NO_CHAT_ID, 1L, "bob", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i2")
+        r.create(NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i3")
         r.create(-100L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7) // typed in a chat: uncapped
         r.countOpenInterests(1L) shouldBe 2
     }
 
     "countOpenInterests deduplicates by token even when two no-names rows share one" {
         // The test above never separates the WHERE-clause filter from the .distinct()
-        // call: interest i1 there has 3 rows but only 1 with chatId == NO_NAMES_CHAT_ID,
+        // call: interest i1 there has 3 rows but only 1 with chatId == NO_CHAT_ID,
         // so the WHERE clause alone already reduces it to 1 before distinct() ever runs.
         // This constructs the case only .distinct() can resolve: two rows that BOTH
         // satisfy the no-names predicate and share one token.
         val (r, _) = repo("countdistinct")
-        r.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
-        r.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
+        r.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
+        r.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
         r.countOpenInterests(1L) shouldBe 1
     }
 
     "a cancelled interest stops counting against the cap" {
         val (r, _) = repo("countafterclose")
-        r.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
+        r.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
         r.closeInterest("i1", RequestState.CANCELLED)
         r.countOpenInterests(1L) shouldBe 0
     }
 
     "the pairs resting on a no-names basis can be enumerated for the rate refresh" {
         val (r, _) = repo("nonamespairs")
-        r.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
-        r.create(NO_NAMES_CHAT_ID, 2L, "ann", Side.OFFER, "CHF", BigDecimal("10"), CurrencyPair("CHF", "JPY"), 7, "i2")
+        r.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
+        r.create(NO_CHAT_ID, 2L, "ann", Side.OFFER, "CHF", BigDecimal("10"), CurrencyPair("CHF", "JPY"), 7, "i2")
         r.create(-100L, 3L, "cat", Side.OFFER, "USD", BigDecimal("10"), CurrencyPair("USD", "GBP"), 7)
-        r.noNamesPairs() shouldBe setOf(EURRUB, CurrencyPair("CHF", "JPY"))
+        r.noChatPairs() shouldBe setOf(EURRUB, CurrencyPair("CHF", "JPY"))
     }
 
     "the sweep reports which requests lapsed, so their messages can be edited" {

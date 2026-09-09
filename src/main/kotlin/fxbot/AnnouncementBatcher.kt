@@ -29,7 +29,7 @@ data class Announcement(
     val userIds: List<Long>,
 )
 
-/** One "a counterparty appeared" message the bot owes one person on the no-names side. */
+/** One "a counterparty appeared" message the bot owes one person on the bot-side. */
 data class Ping(val userId: Long, val text: String, val buttons: List<Button>)
 
 /**
@@ -219,7 +219,7 @@ class AnnouncementBatcher(
             // the chat this row is owed to.
             val chatId = requests.siblings(row.interestToken)
                 .map { it.chatId }
-                .firstOrNull { it != NO_NAMES_CHAT_ID && pending.isFor(row, it) }
+                .firstOrNull { it != NO_CHAT_ID && pending.isFor(row, it) }
             if (chatId == null) {
                 // The interest is gone entirely; there is nothing left to announce.
                 pending.remove(row.chatRef, row.interestToken)

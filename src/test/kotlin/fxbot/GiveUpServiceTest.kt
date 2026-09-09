@@ -18,11 +18,11 @@ private class GiveUpFixture(name: String, private val handles: Map<Long, Handle>
     val svc = GiveUpService(requests, giveUps, NameLookup { id -> lookups++; handles[id] })
 
     fun rest(userId: Long, side: Side) =
-        requests.create(NO_NAMES_CHAT_ID, userId, null, side, "EUR", BigDecimal("1000"), EURRUB, 7, "i$userId")
+        requests.create(NO_CHAT_ID, userId, null, side, "EUR", BigDecimal("1000"), EURRUB, 7, "i$userId")
 
     /** Like [rest], but with the stored `username` populated — private interests carry one (InterestService). */
     fun restNamed(userId: Long, side: Side, username: String) =
-        requests.create(NO_NAMES_CHAT_ID, userId, username, side, "EUR", BigDecimal("1000"), EURRUB, 7, "i$userId")
+        requests.create(NO_CHAT_ID, userId, username, side, "EUR", BigDecimal("1000"), EURRUB, 7, "i$userId")
 }
 
 private fun handled(vararg pairs: Pair<Long, Handle>) = pairs.toMap()
@@ -297,7 +297,7 @@ class GiveUpServiceTest : StringSpec({
         val f = GiveUpFixture("otherpair", handled(1L to Handle("bob", "Bob"), 2L to Handle("ann", "Ann")))
         val a = f.rest(1L, Side.OFFER)
         val b = f.requests.create(
-            NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "USD", BigDecimal("1000"), CurrencyPair("RUB", "USD"), 7, "i2",
+            NO_CHAT_ID, 2L, "ann", Side.BID, "USD", BigDecimal("1000"), CurrencyPair("RUB", "USD"), 7, "i2",
         )
         f.svc.offer(1L, a.refToken, b.refToken).shouldBeInstanceOf<GiveUpResult.Refused>()
         f.giveUps.stanceOf(a.refToken, b.refToken) shouldBe null
@@ -307,7 +307,7 @@ class GiveUpServiceTest : StringSpec({
         val f = GiveUpFixture("ownboth", handled(1L to Handle("bob", "Bob")))
         val a = f.rest(1L, Side.OFFER)
         val b = f.requests.create(
-            NO_NAMES_CHAT_ID, 1L, "bob", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i1b",
+            NO_CHAT_ID, 1L, "bob", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i1b",
         )
         f.svc.offer(1L, a.refToken, b.refToken).shouldBeInstanceOf<GiveUpResult.Refused>()
         f.giveUps.stanceOf(a.refToken, b.refToken) shouldBe null

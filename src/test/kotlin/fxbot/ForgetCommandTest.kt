@@ -137,7 +137,7 @@ class ForgetCommandTest : StringSpec({
 
     "plain /forget in a private chat erases the no-names side and everything personal" {
         val f = CommandFixture("privforget")
-        f.requests.create(NO_NAMES_CHAT_ID, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
+        f.requests.create(NO_CHAT_ID, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
         f.requests.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
         f.people.save(PersonSettings(1L, 40))
         f.giveUps.record("tokA", "tokB", 1L, Stance.OFFERED)
@@ -149,7 +149,7 @@ class ForgetCommandTest : StringSpec({
         val sent = mutableListOf<Sent>()
         forget(updateFor(555L, ChatType.Private, "/forget"), recordingBot(sent))
 
-        f.requests.resting(NO_NAMES_CHAT_ID) shouldHaveSize 0
+        f.requests.resting(NO_CHAT_ID) shouldHaveSize 0
         f.people.get(1L).tolerancePct shouldBe 20
         f.giveUps.stanceOf("tokA", "tokB") shouldBe null
         f.pending.allFor(1L) shouldHaveSize 0
@@ -164,7 +164,7 @@ class ForgetCommandTest : StringSpec({
         val f = CommandFixture("privforgetredact")
         // What a completed give-up leaves behind: a message in the person's OWN private
         // chat, naming them and the counterparty. It is recorded under the private chat
-        // id, never under NO_NAMES_CHAT_ID, so a plan scoped to the sentinel misses it.
+        // id, never under NO_CHAT_ID, so a plan scoped to the sentinel misses it.
         f.log.record(555L, 10L, listOf("tokA", "tokB"), listOf(1L, 2L))
         // Named only them, in the same private chat: deleted outright, not redacted.
         f.log.record(555L, 11L, listOf("tokA"), listOf(1L))
@@ -182,20 +182,20 @@ class ForgetCommandTest : StringSpec({
     }
     "/forget all reaches the groups too, and still erases everything personal" {
         val f = CommandFixture("allforget")
-        f.requests.create(NO_NAMES_CHAT_ID, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
+        f.requests.create(NO_CHAT_ID, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
         f.requests.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
         f.people.save(PersonSettings(1L, 40))
         f.people.save(PersonSettings(2L, 40))
         val sent = mutableListOf<Sent>()
         forget(updateFor(555L, ChatType.Private, "/forget all"), recordingBot(sent))
-        f.requests.resting(NO_NAMES_CHAT_ID) shouldHaveSize 0
+        f.requests.resting(NO_CHAT_ID) shouldHaveSize 0
         f.requests.resting(-100L) shouldHaveSize 0
         f.people.get(1L).tolerancePct shouldBe 20
         f.people.get(2L).tolerancePct shouldBe 40
     }
     "/forget in a group leaves the person's own settings and no-names side alone" {
         val f = CommandFixture("groupforgetscope")
-        f.requests.create(NO_NAMES_CHAT_ID, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
+        f.requests.create(NO_CHAT_ID, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
         f.requests.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
         f.people.save(PersonSettings(1L, 40))
         f.giveUps.record("tokA", "tokB", 1L, Stance.OFFERED)
@@ -203,7 +203,7 @@ class ForgetCommandTest : StringSpec({
         val sent = mutableListOf<Sent>()
         forget(updateFor(-100L, ChatType.Group, "/forget"), recordingBot(sent))
         f.requests.resting(-100L) shouldHaveSize 0
-        f.requests.resting(NO_NAMES_CHAT_ID) shouldHaveSize 1
+        f.requests.resting(NO_CHAT_ID) shouldHaveSize 1
         f.people.get(1L).tolerancePct shouldBe 40
         // `/forget` typed in a group means that group alone: nothing personal is touched.
         f.giveUps.stanceOf("tokA", "tokB") shouldBe Stance.OFFERED

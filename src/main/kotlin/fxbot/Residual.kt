@@ -34,9 +34,9 @@ fun residualOf(mine: Request, theirs: Request, rate: BigDecimal?): BigDecimal? {
 
 /**
  * Where a restated residual goes. A request born of an interest stated privately — the
- * no-names row itself, or any of its showings — is restated as a new interest and fans
+ * bot-side row itself, or any of its showings — is restated as a new interest and fans
  * out like any other. A request TYPED in a group is restated in that group alone:
- * fanning it out bot-wide would put someone on the no-names side who never asked, and
+ * fanning it out bot-wide would put someone on the bot-side who never asked, and
  * consent is what puts them there (ADR 0007).
  */
-fun restateGoesPrivate(mine: Request): Boolean = mine.interestToken != null || mine.chatId == NO_NAMES_CHAT_ID
+fun restateGoesPrivate(mine: Request): Boolean = mine.interestToken != null || mine.chatId == NO_CHAT_ID

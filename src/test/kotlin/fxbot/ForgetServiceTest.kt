@@ -61,7 +61,7 @@ class ForgetServiceTest : StringSpec({
         f.giveUps.record("tokC", "tokD", 2L, Stance.OFFERED)
         f.pending.add(-100L, "i2", 2L)
 
-        f.svc.plan(1L, NO_NAMES_CHAT_ID, personal = true)
+        f.svc.plan(1L, NO_CHAT_ID, personal = true)
 
         f.people.get(1L).tolerancePct shouldBe DEFAULT_PERSON_TOLERANCE
         f.giveUps.stanceOf("tokA", "tokB") shouldBe null
@@ -87,11 +87,11 @@ class ForgetServiceTest : StringSpec({
         // The private form: requests are erased on the no-names side, but the messages to
         // clean up are the ones in the person's real private chat — nothing is ever
         // recorded under the sentinel.
-        f.requests.create(NO_NAMES_CHAT_ID, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
+        f.requests.create(NO_CHAT_ID, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
         f.log.record(555L, 10L, listOf("tokA", "tokB"), listOf(1L, 2L))
         f.log.record(-100L, 11L, listOf("tokA"), listOf(1L))
 
-        val plan = f.svc.plan(1L, NO_NAMES_CHAT_ID, personal = true, messageChatId = 555L)
+        val plan = f.svc.plan(1L, NO_CHAT_ID, personal = true, messageChatId = 555L)
 
         plan.deletedRequests shouldBe 1
         plan.toRedact.map { it.messageId } shouldBe listOf(10L)

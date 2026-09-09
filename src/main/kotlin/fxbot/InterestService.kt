@@ -18,18 +18,18 @@ fun interface MembershipProbe {
 }
 
 /**
- * The cap on interests one person may have resting on a no-names basis. It exists to
+ * The cap on interests one person may have resting in the bot. It exists to
  * bound fan-out, so requests typed in a chat are not counted against it. The sixth is
  * REFUSED rather than the oldest being dropped: silently cancelling something a person
  * deliberately stated is the one outcome they cannot undo by knowing the rule.
  */
 const val MAX_RESTING_INTERESTS = 5
 
-/** No-names working has no chat behind it to set a time in force, so it uses the default. */
-const val NO_NAMES_TIF_DAYS = 7
+/** An interest worked with no chat behind it has no chat to set a time in force, so it uses the default. */
+const val NO_CHAT_TIF_DAYS = 7
 
 /**
- * The pair a no-names request carries: the two codes sorted, so `EUR/RUB` whichever way
+ * The canonical pair: the two codes sorted, so `EUR/RUB` whichever way
  * round it was stated. `Matcher` compares pairs by equality, and this is what puts the
  * two orientations of one pair in the same space.
  */
@@ -108,8 +108,8 @@ class InterestService(
 
         val interestToken = newRefToken()
         val interest = requests.create(
-            NO_NAMES_CHAT_ID, userId, username, sideFor(verb, mine, pair), mine, amount, pair,
-            NO_NAMES_TIF_DAYS, interestToken,
+            NO_CHAT_ID, userId, username, sideFor(verb, mine, pair), mine, amount, pair,
+            NO_CHAT_TIF_DAYS, interestToken,
         )
         val showings = fanOutChats(userId, pair).map { chat ->
             // The chat's own orientation, so the side reads correctly to everyone there.
@@ -132,14 +132,14 @@ class InterestService(
     }
 
     /**
-     * The counterparties resting on a no-names basis for [subject]. Each side is judged at
+     * The counterparties resting in the bot for [subject]. Each side is judged at
      * its own tolerance, and a pairing is hidden while the two can already see each other
      * by name, or while one of them has declined. Nothing about the suppression is stored:
      * it is re-evaluated here every time.
      */
     fun counterparties(subject: Request): List<Counterparty> = findCounterparties(
         subject = subject,
-        resting = requests.resting(NO_NAMES_CHAT_ID),
+        resting = requests.resting(NO_CHAT_ID),
         rate = rates.status(subject.pair).rate,
         tolerancePct = people.get(subject.userId).tolerancePct,
         peerTolerancePct = { people.get(it.userId).tolerancePct },
@@ -148,7 +148,7 @@ class InterestService(
 
     /** Each interest once, with the chats where a showing still rests — where someone can still find you. */
     fun standings(userId: Long): List<InterestStanding> =
-        requests.resting(NO_NAMES_CHAT_ID)
+        requests.resting(NO_CHAT_ID)
             .filter { it.userId == userId }
             .map { interest -> InterestStanding(interest, liveShowings(interest).map { it.chatId }) }
 
@@ -208,10 +208,10 @@ class InterestService(
         }
     }
 
-    /** The rows of [interest] still resting in a chat — its no-names row is not one of them. */
+    /** The rows of [interest] still resting in a chat — its bot-side row is not one of them. */
     private fun liveShowings(interest: Request): List<Request> =
         interest.interestToken
             ?.let { requests.siblings(it) }
             .orEmpty()
-            .filter { it.state == RequestState.OPEN && it.chatId != NO_NAMES_CHAT_ID }
+            .filter { it.state == RequestState.OPEN && it.chatId != NO_CHAT_ID }
 }

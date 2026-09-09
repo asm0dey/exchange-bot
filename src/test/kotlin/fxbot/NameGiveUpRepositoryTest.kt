@@ -44,8 +44,8 @@ class NameGiveUpRepositoryTest : StringSpec({
     }
     "rows die with their requests" {
         val (g, requests) = giveUps("dropclosed")
-        val a = requests.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
-        val b = requests.create(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i2")
+        val a = requests.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
+        val b = requests.create(NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i2")
         g.record(a.refToken, b.refToken, 1L, Stance.OFFERED)
         g.record("gone-1", "gone-2", 3L, Stance.OFFERED) // neither request exists at all
         // Nobody is named: the row whose own request is gone has nobody left to tell.
@@ -61,8 +61,8 @@ class NameGiveUpRepositoryTest : StringSpec({
     }
     "when the offerer's own showing closed too there is nobody to tell" {
         val (g, requests) = giveUps("dropclosedsilent")
-        val a = requests.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
-        val b = requests.create(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i2")
+        val a = requests.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
+        val b = requests.create(NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i2")
         g.record(a.refToken, b.refToken, 1L, Stance.OFFERED)
         requests.closeInterest("i1", RequestState.CANCELLED)
         requests.closeInterest("i2", RequestState.DONE)
@@ -71,8 +71,8 @@ class NameGiveUpRepositoryTest : StringSpec({
     }
     "a give-up both sides already answered is dropped without telling anybody" {
         val (g, requests) = giveUps("dropcloseddisclosed")
-        val a = requests.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
-        val b = requests.create(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i2")
+        val a = requests.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
+        val b = requests.create(NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i2")
         // Both sides pressed, so the names were passed. Nothing deletes these rows at
         // disclosure — they live on as OFFERED until one of the requests closes.
         g.record(a.refToken, b.refToken, 1L, Stance.OFFERED)
@@ -89,8 +89,8 @@ class NameGiveUpRepositoryTest : StringSpec({
     }
     "a decline that dies with its requests tells nobody" {
         val (g, requests) = giveUps("dropclosedeclined")
-        val a = requests.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
-        val b = requests.create(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i2")
+        val a = requests.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
+        val b = requests.create(NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i2")
         g.record(a.refToken, b.refToken, 1L, Stance.DECLINED)
         requests.closeInterest("i2", RequestState.DONE)
         // Their own "no" is what ended it; there is nothing they are still waiting on.
@@ -99,9 +99,9 @@ class NameGiveUpRepositoryTest : StringSpec({
     }
     "one person is told once however many of their agreements died at the same time" {
         val (g, requests) = giveUps("dropcloseddedupe")
-        val a = requests.create(NO_NAMES_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
-        val b = requests.create(NO_NAMES_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i2")
-        val c = requests.create(NO_NAMES_CHAT_ID, 3L, "cat", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i3")
+        val a = requests.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("10"), EURRUB, 7, "i1")
+        val b = requests.create(NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i2")
+        val c = requests.create(NO_CHAT_ID, 3L, "cat", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i3")
         g.record(a.refToken, b.refToken, 1L, Stance.OFFERED)
         g.record(a.refToken, c.refToken, 1L, Stance.OFFERED)
         requests.closeInterest("i2", RequestState.DONE)
