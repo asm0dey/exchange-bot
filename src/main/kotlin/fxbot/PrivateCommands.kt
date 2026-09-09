@@ -23,7 +23,7 @@ internal val PRIVATE_HELP_TEXT = """
     /tolerance 5 — how much you'll accept being left with, 1-100
     /status — your interests and where each still rests
     /cancel a1 — withdraw an interest, every showing with it
-    /done a1 @anna — you two swapped
+    /done a1 — you two swapped; I'll ask them to confirm
     /reopen — bring back the interest that closed last
     /settings — your size tolerance
     /forget — erase what I hold about you (add 'all' to reach every group)

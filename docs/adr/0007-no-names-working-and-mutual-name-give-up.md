@@ -1,5 +1,8 @@
 # Interests stated privately are worked on a no-names basis, and identities pass only by mutual give-up
 
+> **Superseded** by ADR 0008 and ADR 0009 (2026-09-07), before either half of it
+> shipped. Kept because the reasoning it records is what ADR 0008 argues against.
+
 An interest stated to the bot privately is shown in the chats the person shares
 with it, and also worked bot-wide against people who share no chat with them at
 all. That second surface introduces strangers, which the chat surface never

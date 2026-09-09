@@ -131,7 +131,7 @@ private val HELP_TEXT = """
     /buy 1000 EUR — you want to receive 1000 EUR
     /status — who's waiting in this chat
     /cancel a1 — withdraw your request
-    /done a1 @someone — you two swapped
+    /done a1 — you two swapped; I'll ask them to confirm
     /reopen — undo your last /done
     /settings — this chat's currencies and limits
     /pair EUR RUB — admins: change what this chat swaps

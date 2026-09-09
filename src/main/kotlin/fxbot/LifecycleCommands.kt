@@ -188,7 +188,7 @@ suspend fun done(update: ProcessedUpdate, bot: TelegramBot) {
     val shortId = parts.getOrNull(1)
     if (shortId == null) {
         logCommand("done", "missing_args")
-        message { "Which one? Try /done a1 @someone" }.send(chat.id, bot)
+        message { "Which one? Try /done a1 — /status lists them." }.send(chat.id, bot)
         return
     }
     val scopeId = update.scopeId()

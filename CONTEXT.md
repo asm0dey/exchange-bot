@@ -24,24 +24,14 @@ _Avoid_: order, ad, listing, position, quote
 **Interest**:
 One person's stated willingness, given to the bot once. A request typed in a
 chat is an interest with a single showing; an interest stated to the bot
-privately is shown in several places at once and may also be worked on a
-no-names basis.
+privately is shown in several places at once and is also worked against people
+the person shares no chat with.
 _Avoid_: parent request, master request, order
 
 **Showing**:
 The interest as it exists in one chat — a request in its own right, with its own
 short id, matched at that chat's size tolerance.
 _Avoid_: copy, clone, duplicate, mirror
-
-**No-names basis**:
-Said of an interest worked with no chat behind it. Side and stated amount are
-disclosed to a possible counterparty; identity is not, until a name give-up.
-_Avoid_: pool, book, market, venue, dark pool
-
-**Name give-up**:
-Identities passing between two counterparties once both have agreed to it.
-Nothing before it names anyone, and either side may decline by never agreeing.
-_Avoid_: reveal, introduction, connect, match
 
 **Side**:
 Which way round a request runs. Exactly two values, always relative to the
@@ -58,8 +48,8 @@ _Avoid_: buy side
 
 **Counterparty**:
 Someone whose request is on the opposite side and leaves each of them a residual
-they accept — in the same chat, or on a no-names basis. Being a counterparty
-carries no obligation and reserves nothing.
+they accept — in the same chat, or among the requests resting with no chat
+behind them. Being a counterparty carries no obligation and reserves nothing.
 _Avoid_: counterpart, peer, match, partner
 
 **Suggestion**:
@@ -74,10 +64,16 @@ _Avoid_: pending, queued, listed, in the book
 
 **Done**:
 The state two counterparties reach when they confirm the exchange actually
-happened. Either of them may declare it, and it closes both requests. The word
-is the OTC confirmation term, and deliberately not *filled* — nothing was
-executed by anyone but the two people.
+happened. Either of them may declare it; it takes effect only when the other
+confirms, and it closes both requests. The word is the OTC confirmation term,
+and deliberately not *filled* — nothing was executed by anyone but the two
+people.
 _Avoid_: filled, executed, settled, completed, fulfilled
+
+**Confirmation**:
+The counterparty's answer to a declared done. Until it arrives nothing closes
+and both requests keep resting.
+_Avoid_: approval, acceptance, acknowledgement, verification
 
 ### Size and rate
 
@@ -115,8 +111,8 @@ _Avoid_: remainder, leftover, unfilled, balance
 **Size tolerance**:
 How large a residual someone accepts, as a percentage of their own size. Each
 side judges its own, so a smaller counterparty is a counterparty. A chat sets
-one for its showings; a person sets their own for no-names working, and it
-never overrides a chat's.
+one for its showings; a person sets their own for the requests they rest with no
+chat behind them, and it never overrides a chat's.
 _Avoid_: tolerance band, spread, threshold, margin, slippage
 
 **Reference rate**:
