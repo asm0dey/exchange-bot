@@ -93,6 +93,7 @@ private suspend fun handlePost(verb: Verb, update: ProcessedUpdate, bot: Telegra
                     buttons,
                 )
             }
+            Registry.batcher.enqueueAppeared(result.appeared)
         }
     }
 }

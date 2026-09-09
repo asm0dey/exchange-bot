@@ -123,7 +123,7 @@ class InterestService(
         val botWide = counterparties(interest)
         val shown = named(
             listOf(ShownInterest(interest, botWide)) +
-                shownIn.map { (chat, showing) -> ShownInterest(showing, counterpartiesIn(showing, chat)) },
+                shownIn.map { (_, showing) -> ShownInterest(showing, counterparties(showing)) },
         )
         return InterestResult.Stated(
             interest = interest,
@@ -146,31 +146,28 @@ class InterestService(
         return shown.map { s -> s.copy(found = s.found.filter { seen.add(it.request.userId) }) }
     }
 
-    /**
-     * The counterparties a showing has in ITS OWN chat, judged at that chat's tolerance —
-     * the same reading [AnnouncementBatcher] will announce there.
-     */
-    private fun counterpartiesIn(showing: Request, chat: ChatSettings): List<Counterparty> =
-        findCounterparties(
-            showing,
-            requests.resting(showing.chatId),
-            rates.status(showing.pair).rate,
-            chat.tolerancePct,
-        )
-
     // A pairing is no longer suppressed while a showing already pairs the two people. With
     // names everywhere the anonymous route is gone, and the rule that replaced it delivers
     // each person one message where they spoke — a chat that may be muted must never be
     // allowed to stand in for a message that was actually delivered.
 
-    /** The counterparties resting for [subject], each side judged at its own tolerance. */
-    fun counterparties(subject: Request): List<Counterparty> = findCounterparties(
-        subject = subject,
-        resting = requests.resting(NO_CHAT_ID),
-        rate = rates.status(subject.pair).rate,
-        tolerancePct = people.get(subject.userId).tolerancePct,
-        peerTolerancePct = { people.get(it.userId).tolerancePct },
-    )
+    /**
+     * The counterparties resting for [subject], judged the way its own scope judges: each
+     * person's own size tolerance for a request with no chat behind it, the chat's own for a
+     * showing or a request typed there.
+     */
+    fun counterparties(subject: Request): List<Counterparty> {
+        val rate = rates.status(subject.pair).rate
+        val resting = requests.resting(subject.chatId)
+        return if (subject.chatId == NO_CHAT_ID) {
+            findCounterparties(
+                subject, resting, rate, people.get(subject.userId).tolerancePct,
+                peerTolerancePct = { people.get(it.userId).tolerancePct },
+            )
+        } else {
+            findCounterparties(subject, resting, rate, chats.get(subject.chatId).tolerancePct)
+        }
+    }
 
     /** Each interest once, with the chats where a showing still rests — where someone can still find you. */
     fun standings(userId: Long): List<InterestStanding> =

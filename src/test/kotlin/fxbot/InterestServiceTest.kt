@@ -107,6 +107,14 @@ class InterestServiceTest : StringSpec({
         showing.statedAmount shouldBe BigDecimal("10")
     }
 
+    "a showing's counterparties are judged at its chat's tolerance, not the person's" {
+        val f = InterestFixture("counterparties_showing")
+        f.chats.save(ChatSettings(GROUP, EURRUB, 20, 7, fanOut = true))
+        val showing = f.requests.create(GROUP, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
+        val peer = f.requests.create(GROUP, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7)
+        f.svc.counterparties(showing).map { it.request.refToken } shouldBe listOf(peer.refToken)
+    }
+
     "a chat the person is not in is dropped" {
         val f = InterestFixture("notmember", membership = MembershipProbe { chatId, _ -> chatId == -100L })
             .withRate().chat(-100L).chat(-200L)
