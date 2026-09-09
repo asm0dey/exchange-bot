@@ -51,33 +51,7 @@ internal suspend fun handlePrivatePost(verb: Verb, update: ProcessedUpdate, bot:
         }
         is InterestResult.Stated -> {
             logCommand(command, "stated")
-            // At once, and never waiting for the batch: the counterparties found, and
-            // where this is about to be shown.
-            // Every row for `record` — the buttons name the stater's own rows too, and an
-            // unrecorded token loses its button. Only the COUNTERPARTIES for the book: they
-            // are the only people either the text or a button label ever names, and a lookup
-            // is a live round-trip to Telegram.
-            val everyone = result.shown.flatMap { s -> listOf(s.request) + s.found.map { it.request } }
-            val book = nameBookFor(result.shown.flatMap { s -> s.found.map { it.request } }, Registry.names)
-            val text = renderStated(result, book)
-            val buttons = statedButtons(result, book)
-            val sent = message { text }
-                .options { parseMode = ParseMode.HTML }
-                .inlineKeyboardMarkup { buttons.forEach { b -> b.label callback b.data; br() } }
-                .sendReturning(chat.id, bot)
-                .getOrNull()
-            // Every ref token the buttons name, not just the subject: ButtonService
-            // rebuilds a message's keyboard only from what was recorded, so a token
-            // named by a button but missing here silently loses that button.
-            sent?.messageId?.let { id ->
-                Registry.messages.record(
-                    chat.id, id,
-                    everyone.map { it.refToken }, everyone.map { it.userId },
-                    text, buttons,
-                )
-            }
-            Registry.batcher.enqueueAnnouncement(user.id)
-            Registry.batcher.enqueueAppeared(result.appeared)
+            sendStated(chat.id, user.id, result, bot)
         }
     }
 }

@@ -142,6 +142,51 @@ internal suspend fun sendChoice(chatId: Long, r: ActionResult.Choose, bot: Teleg
 }
 
 /**
+ * The private reply a statement earns, sent at once and never waiting for the batch: the
+ * counterparties found, and where this is about to be shown. Both routes in — the typed
+ * `/sell`/`/buy` and the Restate button — send exactly this, so the recording contract below
+ * is written once rather than twice.
+ *
+ * [chatId] is where the reply goes and what the message is recorded under; [userId] is whose
+ * announcements are queued. Telegram makes a private chat's id the person's own user id, so
+ * these are the same number in production — they are kept apart because the message log is
+ * keyed by chat and the batcher by person, and collapsing them would silently re-key one of
+ * the two.
+ *
+ * Two different sets of people, deliberately:
+ *  - **`record` gets every row.** The buttons name the stater's own rows too, and
+ *    `ButtonService` rebuilds a keyboard only from what was recorded, so a token named by a
+ *    button but missing here silently loses that button.
+ *  - **the book gets only the COUNTERPARTIES.** They are the only people either the text or a
+ *    button label ever names, and a lookup is a live round-trip to Telegram.
+ */
+internal suspend fun sendStated(
+    chatId: Long,
+    userId: Long,
+    result: InterestResult.Stated,
+    bot: TelegramBot,
+) {
+    val everyone = result.shown.flatMap { s -> listOf(s.request) + s.found.map { it.request } }
+    val book = nameBookFor(result.shown.flatMap { s -> s.found.map { it.request } }, Registry.names)
+    val text = renderStated(result, book)
+    val buttons = statedButtons(result, book)
+    val sent = message { text }
+        .options { parseMode = ParseMode.HTML }
+        .inlineKeyboardMarkup { buttons.forEach { b -> b.label callback b.data; br() } }
+        .sendReturning(chatId, bot)
+        .getOrNull()
+    sent?.messageId?.let { id ->
+        Registry.messages.record(
+            chatId, id,
+            everyone.map { it.refToken }, everyone.map { it.userId },
+            text, buttons,
+        )
+    }
+    Registry.batcher.enqueueAnnouncement(userId)
+    Registry.batcher.enqueueAppeared(result.appeared)
+}
+
+/**
  * Privately, the short ids on offer are the ones the person's own interests carry in the bot —
  * [NO_CHAT_ID] is where those rest, and withdrawing one withdraws
  * every showing with it. In a group it is that chat's own short ids, as before.
