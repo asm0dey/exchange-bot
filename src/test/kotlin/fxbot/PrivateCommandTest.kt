@@ -352,7 +352,8 @@ class PrivateCommandTest : StringSpec({
         fresh.state shouldBe RequestState.OPEN
         f.requests.byRefToken(mine.refToken)!!.statedAmount shouldBe BigDecimal("1000")
         f.requests.byRefToken(mine.refToken)!!.state shouldBe RequestState.DONE
-        // A request typed in a group is restated in that group alone (ADR 0007).
+        // A request typed in a group was stated to that group, so it is restated there
+        // alone rather than published somewhere its author never spoke (ADR 0008).
         f.requests.resting(NO_CHAT_ID).shouldBeEmpty()
     }
 

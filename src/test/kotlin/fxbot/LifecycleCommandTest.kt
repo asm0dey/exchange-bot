@@ -95,6 +95,30 @@ private class LifecycleCommandFixture(name: String) {
     /** A `/done ...`-shaped update, typed by [userId] in the fixture's one group. */
     fun groupUpdate(userId: Long, text: String): MessageUpdate = updateFor(GROUP, ChatType.Group, text, userId)
 
+    /**
+     * A bot whose every send gets its OWN message id, the way Telegram's does. [recordingBot]
+     * answers 1 to everything, which is fine when a test looks at what was sent — but two
+     * messages recorded under one id are one row in the log, so a test about WHICH messages
+     * were recorded cannot use it. The counter is per fixture, so ids stay predictable
+     * within a test and cannot collide across the two bots one test may build.
+     */
+    fun countingBot(sink: MutableList<Call>): TelegramBot {
+        val client = HttpClient(MockEngine { request ->
+            val bytes = (request.body as? OutgoingContent.ByteArrayContent)?.bytes() ?: ByteArray(0)
+            val path = request.url.encodedPath.substringAfterLast('/')
+            sink += Call(path, bytes.decodeToString())
+            val id = nextMessageId++
+            respond(
+                content = """{"ok":true,"result":{"message_id":$id,"date":0,"chat":{"id":$GROUP,"type":"group"}}}""",
+                status = HttpStatusCode.OK,
+                headers = headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        })
+        return TelegramBot(token = "000:fake-token-for-lifecycle-test", httpClient = client)
+    }
+
+    private var nextMessageId = 1L
+
     /** A press, in the fixture's one group — the shape `PrivateCommandTest`'s `callbackFrom` uses. */
     fun callback(userId: Long, chatId: Long = GROUP): CallbackQueryUpdate {
         val chat = Chat(id = chatId, type = ChatType.Group)
@@ -313,19 +337,90 @@ class LifecycleCommandTest : StringSpec({
         f.messages.messagesForUser(3L, GROUP) shouldHaveSize 1
     }
 
-    "sendNotice records the reopen token and the restate offer's counterparty token" {
+    /**
+     * The notice names BOTH people — "@ann confirmed. Marked done: @ann and @bob." — so
+     * both must be recorded against it (ADR 0005). It used to derive its tokens from its
+     * own keyboard, which carries the confirmer's token only when the swap left the
+     * recipient something over. These two amounts are equal, the modal case for this bot,
+     * so the keyboard offers a Reopen and nothing else, and @ann was named in a message
+     * her own `/forget` could not reach.
+     */
+    "the notice about an exactly equal swap is recorded against the confirmer it names" {
         val f = LifecycleCommandFixture("cmd_notice_recorded")
         val mine = f.rest(GROUP, 1L, "bob", Side.OFFER)
         val theirs = f.rest(GROUP, 2L, "ann", Side.BID)
-        done(f.groupUpdate(1L, "/done ${mine.shortId}"), recordingBot(mutableListOf<Call>()))
-        // Ann confirms — Task 7's Ok.notify is what sendNotice sends, addressed to bob.
-        confirmDoneCallback(mine.refToken, theirs.refToken, f.callback(2L), recordingBot(mutableListOf<Call>()))
+        done(f.groupUpdate(1L, "/done ${mine.shortId}"), f.countingBot(mutableListOf()))
+        val calls = mutableListOf<Call>()
+        // Ann confirms — Ok.notify is what sendNotice sends, addressed to bob where he spoke.
+        confirmDoneCallback(mine.refToken, theirs.refToken, f.callback(2L), f.countingBot(calls))
 
-        // Both closed with no residual (equal amounts), so the notice names only bob's own
-        // (reopen) token — still one real person, still recordable.
-        val logged = f.messages.logged(GROUP, 1L)
-        logged.shouldNotBeNull()
-        logged.refTokens shouldContainExactlyInAnyOrder listOf(mine.refToken)
-        f.messages.messagesForUser(1L, GROUP) shouldHaveSize 1
+        // Equal amounts leave nothing over, so the notice's keyboard is a Reopen alone —
+        // it names ann nowhere, which is exactly why her token has to be carried instead.
+        val notice = calls.single { it.path == "sendMessage" && it.body.contains("confirmed. Marked done") }
+        notice.body shouldContain Cb.reopen(mine.refToken)
+        notice.body shouldNotContain Cb.RESTATE
+
+        val reachableByAnn = f.messages.messagesForUser(2L, GROUP)
+            .mapNotNull { f.messages.logged(it.chatId, it.messageId)?.text }
+        reachableByAnn.any { it.contains("confirmed. Marked done") } shouldBe true
+        val reachableByBob = f.messages.messagesForUser(1L, GROUP)
+            .mapNotNull { f.messages.logged(it.chatId, it.messageId)?.text }
+        reachableByBob.any { it.contains("confirmed. Marked done") } shouldBe true
+    }
+
+    /**
+     * `refuse` closes nothing, so nothing triggers the refresh pass and the ask keeps its
+     * live keyboard. Two refusals are meant to be two separate asks — a first No is an
+     * honest mix-up, a second is a pattern — so one ask must not be able to supply both.
+     */
+    "a No comes off the ask it answered, and a second tap cannot spend the declarer's last chance" {
+        val f = LifecycleCommandFixture("cmd_no_strips_itself")
+        val mine = f.rest(GROUP, 1L, "bob", Side.OFFER)
+        val theirs = f.rest(GROUP, 2L, "ann", Side.BID)
+        done(f.groupUpdate(1L, "/done ${mine.shortId}"), f.countingBot(mutableListOf()))
+        val calls = mutableListOf<Call>()
+
+        refuseDoneCallback(mine.refToken, theirs.refToken, f.callback(2L), f.countingBot(calls))
+
+        // The ask is rewritten with the Yes alone — never stripped bare, because a change
+        // of mind must still work.
+        val edit = calls.single { it.path == "editMessageReplyMarkup" }
+        edit.body shouldContain Cb.confirm(mine.refToken, theirs.refToken)
+        edit.body shouldNotContain Cb.refuse(mine.refToken, theirs.refToken)
+        val asked = f.messages.messagesForToken(theirs.refToken, 10)
+            .mapNotNull { f.messages.logged(it.chatId, it.messageId) }
+            .single { m -> m.buttons.any { it.data == Cb.confirm(mine.refToken, theirs.refToken) } }
+        asked.buttons.map { it.data } shouldBe listOf(Cb.confirm(mine.refToken, theirs.refToken))
+
+        // A second tap on that same No is a question nobody was asked, so it counts nothing.
+        refuseDoneCallback(mine.refToken, theirs.refToken, f.callback(2L), f.countingBot(mutableListOf()))
+        f.refusals.count(mine.refToken, theirs.refToken) shouldBe 1
+
+        // And the Yes still closes both, which is the whole reason it was left in place.
+        confirmDoneCallback(mine.refToken, theirs.refToken, f.callback(2L), f.countingBot(mutableListOf()))
+        f.requests.byRefToken(mine.refToken)!!.state shouldBe RequestState.DONE
+        f.requests.byRefToken(theirs.refToken)!!.state shouldBe RequestState.DONE
+    }
+
+    /**
+     * The declarer's own reply names the counterparty ("Asked @ann to confirm…"), so it is
+     * a message about her and her `/forget` has to reach it (ADR 0005) — same contract
+     * `sendAsk` one function up already meets for the question itself.
+     */
+    "the declarer's 'asked' reply is recorded against both people, not just sent" {
+        val f = LifecycleCommandFixture("cmd_asked_reply_recorded")
+        val mine = f.rest(GROUP, 1L, "bob", Side.OFFER)
+        val theirs = f.rest(GROUP, 2L, "ann", Side.BID)
+
+        done(f.groupUpdate(1L, "/done ${mine.shortId}"), f.countingBot(mutableListOf()))
+
+        // Two messages went out — the declarer's reply and the question — and both name
+        // both people, so both are reachable from either side.
+        f.messages.messagesForUser(1L, GROUP) shouldHaveSize 2
+        f.messages.messagesForUser(2L, GROUP) shouldHaveSize 2
+        val reply = f.messages.logged(GROUP, 1L)
+        reply.shouldNotBeNull()
+        reply.text!! shouldContain "Nothing's closed yet"
+        reply.refTokens shouldContainExactlyInAnyOrder listOf(mine.refToken, theirs.refToken)
     }
 })

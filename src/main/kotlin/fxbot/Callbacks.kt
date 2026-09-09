@@ -150,12 +150,22 @@ suspend fun confirmDoneCallback(a: String?, b: String?, update: ProcessedUpdate,
 /**
  * Saying no. Nothing closes, both requests keep resting, and the refusal is counted
  * against the declarer — never against the person refusing.
+ *
+ * The answered No is then taken off the ask itself. A refusal changes no request's state,
+ * so [ButtonService.refreshFor] never runs for it, and without this the ask would keep a
+ * live No that a second tap could spend the declarer's second refusal on — turning one
+ * mis-tap into a permanent block. The Yes stays, so a change of mind still works.
+ * [LifecycleService.refuse] is where the answer is decided and it has no bot to edit with;
+ * the editing is this layer's, as it is for every other keyboard the bot rewrites.
  */
 @CommandHandler.CallbackQuery(["no"], autoAnswer = false)
 suspend fun refuseDoneCallback(a: String?, b: String?, update: ProcessedUpdate, bot: TelegramBot) {
     val result = if (a == null || b == null) ActionResult.Denied(BROKEN_BUTTON)
         else Registry.lifecycle.refuse(update.getUser().id, a, b)
     logCommand("refuse_button", result.outcomeLabel())
+    if (result is ActionResult.Ok && a != null && b != null) {
+        Registry.buttons.withdrawButton(b, Cb.refuse(a, b), bot)
+    }
     // An empty `touchedTokens` means `respond` answers the press without a keyboard and
     // without a refresh pass — which is exactly right: nothing changed state.
     respond(result, update, bot)
@@ -249,9 +259,8 @@ private suspend fun restatePrivately(
 }
 
 /**
- * A request typed in a group is restated in that group alone: fanning it out bot-wide
- * would put somebody on the bot-side who never asked, and consent is what puts them
- * there (ADR 0007).
+ * A request typed in a group is restated in that group alone: it was stated to that group,
+ * and fanning it out bot-wide would publish it somewhere its author never spoke (ADR 0008).
  */
 private suspend fun restateInChat(
     userId: Long,

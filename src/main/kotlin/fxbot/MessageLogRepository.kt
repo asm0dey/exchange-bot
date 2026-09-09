@@ -135,6 +135,31 @@ class MessageLogRepository(
         LoggedMessage(p.chatId, messageId, p.text, p.buttons.map { Button(it.label, it.data) }, tokens)
     }
 
+    /**
+     * Takes one button off a message's stored keyboard and reseals the payload, leaving the
+     * message's text and every ref token it names exactly as they were. Answers the buttons
+     * that survive, or null when this message never offered [data] — so a caller can edit
+     * the message on screen only when the record actually changed.
+     *
+     * Narrower than [record] on purpose: a re-record rewrites `sent_message_ref` too, and it
+     * would need the user ids back, which this row cannot give (they are stored hashed). A
+     * withdrawn button changes what the message OFFERS and nothing about whom it names.
+     */
+    fun dropButton(chatId: Long, messageId: Long, data: String): List<Button>? = transaction(db) {
+        val chatRef = crypto.ref(chatId.toString())
+        val aad = "$chatRef:$messageId"
+        val row = SentMessages.selectAll()
+            .where { (SentMessages.chatRef eq chatRef) and (SentMessages.messageId eq messageId) }
+            .singleOrNull() ?: return@transaction null
+        val p = json.decodeFromString<MessagePayload>(crypto.open(row[SentMessages.payload], aad))
+        if (p.buttons.none { it.data == data }) return@transaction null
+        val keep = p.buttons.filterNot { it.data == data }
+        SentMessages.update({ (SentMessages.chatRef eq chatRef) and (SentMessages.messageId eq messageId) }) {
+            it[payload] = crypto.seal(json.encodeToString(p.copy(buttons = keep)), aad)
+        }
+        keep.map { Button(it.label, it.data) }
+    }
+
     /** Every message whose buttons named [refToken], newest first, capped at [limit]. */
     fun messagesForToken(refToken: String, limit: Int): List<TrackedMessage> = transaction(db) {
         messagesWithRefs

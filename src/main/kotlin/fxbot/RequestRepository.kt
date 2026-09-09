@@ -329,10 +329,10 @@ class RequestRepository(
      * [theirs] is left untouched when the presser's own side turns out to be closed
      * already: holding one live token must not close somebody else's request on its own.
      */
-    fun closeBothWhole(mine: Request, theirs: Request?, to: RequestState): ClosedPair = transaction(db) {
+    fun closeBothWhole(mine: Request, theirs: Request, to: RequestState): ClosedPair = transaction(db) {
         val closedMine = closeWhole(mine, to)
         if (closedMine.isEmpty()) ClosedPair(emptyList(), emptyList())
-        else ClosedPair(closedMine, theirs?.let { closeWhole(it, to) }.orEmpty())
+        else ClosedPair(closedMine, closeWhole(theirs, to))
     }
 
     /** Puts a closed request back with a fresh expiry; clears `closed_at`, like every reopen via [transition] does. */

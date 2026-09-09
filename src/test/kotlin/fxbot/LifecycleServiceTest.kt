@@ -7,7 +7,6 @@ import io.kotest.matchers.collections.shouldContainExactlyInAnyOrder
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
-import io.kotest.matchers.string.shouldNotContain
 import io.kotest.matchers.types.shouldBeInstanceOf
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
@@ -105,7 +104,7 @@ private fun RequestRepository.put(chatId: Long, userId: Long, name: String, side
     create(chatId, userId, name, side, "EUR", BigDecimal("1000"), EURRUB, 7)
 
 /** The wiring a done needs now: person tolerances for the candidate search, and the refusal count. */
-private class AskFixture(name: String) {
+private class AskFixture(name: String, names: NameLookup = NameLookup { null }) {
     private val ds = memDataSource(name).also { migrate(it) }
     private val clock: Clock = Clock.fixed(T0, ZoneOffset.UTC)
     private val crypto = testCrypto()
@@ -118,7 +117,7 @@ private class AskFixture(name: String) {
         deadRateService(ds, clock),
         PersonSettingsRepository(ds, crypto, clock),
         refusals,
-        NameLookup { null },
+        names,
         asks.lookup,
     )
 
@@ -206,7 +205,9 @@ class LifecycleServiceTest : StringSpec({
         val result = svc.done(1L, a.refToken, b.refToken)
         result.shouldBeInstanceOf<ActionResult.Gone>()
         // Says WHICH side is gone, so the declarer can tell their own request from the other's.
-        result.text shouldBe "@alice's request isn't waiting anymore."
+        // Named plainly, not as a `mention`: this text is sent with no parse mode and shown
+        // in a callback toast, and neither reads markup.
+        result.text shouldBe "alice's request isn't waiting anymore."
         repo.byRefToken(a.refToken)!!.state shouldBe RequestState.OPEN
     }
 
@@ -267,7 +268,7 @@ class LifecycleServiceTest : StringSpec({
         // Names bob, whose request is the gone one — proving the message is built from
         // `mine`/`theirs` as re-derived for the presser, not from which slot each token sits
         // in. A naive `mine = a` would have told alice her OWN request was the gone one.
-        result.text shouldBe "@bob's request isn't waiting anymore."
+        result.text shouldBe "bob's request isn't waiting anymore."
         repo.byRefToken(b.refToken)!!.state shouldBe RequestState.OPEN
     }
 
@@ -489,7 +490,7 @@ class LifecycleServiceTest : StringSpec({
         f.requests.transition(mine.refToken, RequestState.OPEN, RequestState.CANCELLED)
         val r = f.svc.confirm(2L, mine.refToken, theirs.refToken)
         r.shouldBeInstanceOf<ActionResult.Gone>()
-        r.text shouldContain "@bob"
+        r.text shouldContain "bob"
         f.requests.byRefToken(theirs.refToken)!!.state shouldBe RequestState.OPEN
     }
 
@@ -705,5 +706,34 @@ class LifecycleServiceTest : StringSpec({
         f.rest(-100L, 2L, "ann", Side.BID)
         f.svc.doneByShortId(-100L, 1L, mine.shortId, NamedPeer.Unplaceable)
             .shouldBeInstanceOf<ActionResult.Denied>()
+    }
+
+    // ---- A Denied/Gone text is sent as PLAIN text and shown in an `answerCallbackQuery`
+    // toast, and neither parses markup. So the counterparty named in one is named with
+    // `plainName`, not `mention` — otherwise the person a name lookup exists to serve, the
+    // one with no @username, is named to the reader as a literal `<a href="tg://user?id=…">`.
+
+    "a Gone about a counterparty who is no longer waiting names them without markup" {
+        val f = AskFixture("gone_plain_done", NameLookup { Handle(null, if (it == 1L) "Bob" else "Ann") })
+        val mine = f.rest(-100L, 1L, null, Side.OFFER)
+        val theirs = f.rest(-100L, 2L, null, Side.BID)
+        f.requests.transition(theirs.refToken, RequestState.OPEN, RequestState.CANCELLED)
+
+        val r = f.svc.done(1L, mine.refToken, theirs.refToken)
+        r.shouldBeInstanceOf<ActionResult.Gone>()
+        r.text shouldBe "Ann's request isn't waiting anymore."
+    }
+
+    "a Gone about a declarer whose request already closed names them without markup" {
+        val f = AskFixture("gone_plain_confirm", NameLookup { Handle(null, if (it == 1L) "Bob" else "Ann") })
+        val mine = f.rest(-100L, 1L, null, Side.OFFER)
+        val theirs = f.rest(-100L, 2L, null, Side.BID)
+        f.ask(1L, mine.refToken, theirs.refToken).shouldBeInstanceOf<ActionResult.Asked>()
+        // Bob withdraws before Ann gets round to answering.
+        f.requests.transition(mine.refToken, RequestState.OPEN, RequestState.CANCELLED)
+
+        val r = f.svc.confirm(2L, mine.refToken, theirs.refToken)
+        r.shouldBeInstanceOf<ActionResult.Gone>()
+        r.text shouldBe "Bob's request is already closed, so there's nothing to confirm."
     }
 })

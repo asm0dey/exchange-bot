@@ -68,6 +68,31 @@ class ButtonService(
         }
     }
 
+    /**
+     * Takes ONE button off whichever message offered it to [refToken]'s owner, and leaves
+     * everything else about that message alone — no status lines, no rebuild from live
+     * state, because nothing's state changed. The counterpart of [refreshFor] for a press
+     * that answered a question instead of closing a request.
+     *
+     * A No is the only caller. `refuse` closes nothing, so [refreshFor] never runs for it
+     * and the ask keeps its live keyboard; Telegram shows no lasting sign that a button was
+     * pressed, so a second tap on the SAME ask spends the declarer's second refusal — and
+     * two refusals are meant to be two separate asks (see [MAX_REFUSALS]). So the No comes
+     * off and the Yes stays: a change of mind must still work.
+     *
+     * The stored keyboard is rewritten too, not just the screen. [MessageLogRepository.offered]
+     * answers from the record, so a No left there stays pressable by a replayed payload, and
+     * the next [refreshFor] over this message would put the button back.
+     */
+    suspend fun withdrawButton(refToken: String, data: String, bot: TelegramBot) {
+        for (target in log.messagesForToken(refToken, FAN_OUT)) {
+            val keep = log.dropButton(target.chatId, target.messageId, data) ?: continue
+            editMessageReplyMarkup(target.messageId)
+                .inlineKeyboardMarkup { keep.forEach { b -> b.label callback b.data; br() } }
+                .send(target.chatId, bot)
+        }
+    }
+
     /** Says how a request closed, in the vocabulary the person already knows. Null while it rests. */
     private fun statusLine(r: Request): String? = when (r.state) {
         RequestState.OPEN -> null

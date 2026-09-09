@@ -29,8 +29,8 @@ class ChatMigrationService(
      * nothing resolves any more, which is the silent split-state this task exists
      * to prevent.
      *
-     * `name_give_up` is the only table with nothing to do here: it is keyed on ref
-     * tokens and a person, and carries no chat at all.
+     * `done_refusal` is the only table with nothing to do here: it is keyed on two ref
+     * tokens — the declarer's request and the refuser's — and carries no chat at all.
      */
     fun migrate(oldChatId: Long, newChatId: Long): Int = transaction(db) {
         val moved = requests.rewriteChatRef(oldChatId, newChatId)

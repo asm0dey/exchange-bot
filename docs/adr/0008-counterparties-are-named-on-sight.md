@@ -44,6 +44,19 @@ or have both asked the bot to find them strangers; a name and a first message in
 the chat where the suggestion landed is enough to find each other, and that is
 the same fallback anyone has when a handle is missing.
 
+One thing the spec asks for is deliberately not done. Its Delivery section wants
+two privately stated interests that happen to share a group to produce one
+private message each and no chat message for that pairing, so the same two
+people are not named to a room as well. They still are. An announcement is a
+fan-out — one message showing a person's interest against everyone it found in
+that chat — and suppressing a single pairing inside it would either drop a line
+out of a list for reasons the reader cannot see, or split the announcement in
+two. Both read stranger than the double naming they avoid. Dropping one of the
+private messages instead is worse still: a group is a place a person may have
+muted, and a muted chat must never be allowed to stand in for a message that was
+actually delivered. So the private word is always sent, and the announcement
+names that pairing exactly as it names every other.
+
 The two surfaces still do not meet. A request typed in a chat is worked only
 against that chat, and one resting with no chat behind it only against others
 like it, because `Matcher` filters on the chat. That separation survives ADR

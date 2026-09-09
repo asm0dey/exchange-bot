@@ -165,12 +165,16 @@ class RenderTest : StringSpec({
     }
 
     "noticeButtons offers Reopen alone, plus a restate button only when there's a residual" {
-        val plain = Notice(chatId = 2L, text = "Confirmed.", reopenToken = "r".repeat(22), restate = null)
+        val plain = Notice(
+            chatId = 2L, text = "Confirmed.", reopenToken = "r".repeat(22), recipientUserId = 1L,
+            otherToken = "o".repeat(22), otherUserId = 2L, restate = null,
+        )
         noticeButtons(plain).size shouldBe 1
         noticeButtons(plain)[0].data shouldBe Cb.reopen("r".repeat(22))
 
         val withResidual = Notice(
-            chatId = 2L, text = "Confirmed.", reopenToken = "r".repeat(22),
+            chatId = 2L, text = "Confirmed.", reopenToken = "r".repeat(22), recipientUserId = 1L,
+            otherToken = "o".repeat(22), otherUserId = 2L,
             restate = RestateOffer("m".repeat(22), "p".repeat(22), BigDecimal("50"), "EUR"),
         )
         val buttons = noticeButtons(withResidual)

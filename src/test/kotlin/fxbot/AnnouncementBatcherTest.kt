@@ -81,7 +81,7 @@ private class BatchFixture(
         val requests = RequestRepository(ds, crypto, stamped)
         val chats = ChatSettingsRepository(ds, crypto, clock)
         val people = PersonSettingsRepository(ds, crypto, clock)
-            val pending = PendingAnnouncementRepository(ds, crypto, stamped)
+        val pending = PendingAnnouncementRepository(ds, crypto, stamped)
         val rates = RateService(client, RateRepository(ds), clock)
         val interests =
             InterestService(requests, chats, people, rates, client, pending, MembershipProbe { _, _ -> true })

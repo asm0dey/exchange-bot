@@ -45,16 +45,28 @@ enumeration. What actually deters probing is that every ask is **loud**: it
 delivers, to the named person, a question naming the asker and the amount. There
 is no quiet way to try this.
 
-The confirmation does not remove the force-close residual, and it is accepted
-here as it was before. The reasoning that introduced this change claimed it
-did — that asking the counterparty removes the old hazard "because its victim is
-the one being asked". That is true of `done`, and false of `confirm`. Precisely
-because nothing records that an ask was made, `confirm` cannot tell a genuine
-answer from a volunteered one: somebody who owns an opposite-side request in the
-same chat can pair it with a harvested ref token and close that request without
-its owner having declared anything. The mitigations are the ones that always
-applied — the outcome names both people, and the person closed out receives a
-notice carrying their own Reopen. Closing it properly would need the pressed
-button checked against the message the bot recorded sending, which is a bigger
-change than this one; until then it is a known residual, written here rather
-than left to be rediscovered.
+The force-close residual is closed. The reasoning that introduced this change
+claimed asking the counterparty removed the old hazard "because its victim is
+the one being asked", which was true of `done` and false of `confirm`: a Yes
+does the closing, and `confirm` could not tell a genuine answer from a
+volunteered one. Somebody who owned an opposite-side request in the same chat
+could pair it with a harvested ref token and close that request without its
+owner having declared anything.
+
+Two things shut that route. A press is now honoured only when the bot really put
+that exact button in front of the presser: `confirm` and `refuse` both ask
+`AskLookup.wasAsked`, which finds the pressed callback data in the buttons of a
+message logged against the presser's own request, and `sendAsk` is the only
+thing that ever logs one. And the Done button no longer hands the reader the
+other person's ref token at all — `Cb.done` names the counterparty by user id,
+so there is nothing to harvest from the message a stranger can read. The old
+mitigations still stand behind both: the outcome names both people, and the
+person closed out gets a notice carrying their own Reopen.
+
+It is bought with a real cost, and the cost is deliberate. The ask lives in the
+message log and nowhere else, so anything that deletes logged messages
+invalidates an ask nobody has answered yet: a `/forget` from either side, and
+the 90-day prune. The Yes or No that follows is refused as one nobody was asked
+for. A forgotten question must not stay actionable — that is the behaviour we
+want — but it is also a way for an honest counterparty's Yes to stop working,
+and the declarer can simply ask again.

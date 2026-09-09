@@ -146,15 +146,12 @@ class InterestService(
         return shown.map { s -> s.copy(found = s.found.filter { seen.add(it.request.userId) }) }
     }
 
-    // A pairing is no longer suppressed while a showing already pairs the two people. With
-    // names everywhere the anonymous route is gone, and the rule that replaced it delivers
-    // each person one message where they spoke — a chat that may be muted must never be
-    // allowed to stand in for a message that was actually delivered.
-
     /**
      * The counterparties resting for [subject], judged the way its own scope judges: each
      * person's own size tolerance for a request with no chat behind it, the chat's own for a
      * showing or a request typed there.
+     *
+     * [LifecycleService.candidatesFor] judges scope the same way and must change with this.
      */
     fun counterparties(subject: Request): List<Counterparty> {
         val rate = rates.status(subject.pair).rate

@@ -26,11 +26,13 @@ import eu.vendeli.tgbot.types.msg.EntityType
  * the messages that carried them.
  *
  * HTML parse mode is applied to [ActionResult.Ok] and [ActionResult.Asked] text — the two
- * branches that embed a [mention] — and to nothing else. `Denied`/`Gone` text can carry raw
- * user input (e.g. a short id typed by the caller) that was never meant to be parsed as
- * markup: sending it under `ParseMode.HTML` risks a Telegram entity-parse rejection
- * (silently swallowed — the reply never arrives) or, worse, an attacker-authored tag
- * rendering as a live link.
+ * branches sent under it — and to nothing else. `Denied`/`Gone` text can carry raw user
+ * input (e.g. a short id typed by the caller) that was never meant to be parsed as markup:
+ * sending it under `ParseMode.HTML` risks a Telegram entity-parse rejection (silently
+ * swallowed — the reply never arrives) or, worse, an attacker-authored tag rendering as a
+ * live link. Those two branches name a counterparty too, and name them with [plainName] for
+ * the same reason: their text also reaches an `answerCallbackQuery` toast, which parses
+ * nothing, so a `mention(...)` link there would be read out as its own markup.
  */
 private suspend fun replyToDecision(
     chatId: Long,
@@ -40,8 +42,7 @@ private suspend fun replyToDecision(
 ) {
     when (result) {
         is ActionResult.Asked -> {
-            // HTML: the text names the counterparty via `mention(...)`.
-            message { result.text }.options { parseMode = ParseMode.HTML }.send(chatId, bot)
+            sendAskedReply(chatId, result, bot)
             sendAsk(result, bot)
             return
         }
@@ -69,6 +70,27 @@ private suspend fun replyToDecision(
 }
 
 /**
+ * What the declarer is told, in the chat they typed in: the counterparty was asked and
+ * nothing closed. HTML, because the text names that counterparty via `mention(...)` — and
+ * recorded against both people for exactly that reason, so the counterparty's `/forget`
+ * reaches a message naming them (ADR 0005), same as [sendAsk] one function down.
+ */
+private suspend fun sendAskedReply(chatId: Long, r: ActionResult.Asked, bot: TelegramBot) {
+    val sent = message { r.text }
+        .options { parseMode = ParseMode.HTML }
+        .sendReturning(chatId, bot)
+        .getOrNull()
+    sent?.messageId?.let { id ->
+        Registry.messages.record(
+            chatId, id,
+            listOf(r.myToken, r.peerToken),
+            listOf(r.declarerUserId, r.peerUserId),
+            r.text,
+        )
+    }
+}
+
+/**
  * The question, where the counterparty spoke. Recorded against BOTH people, because it
  * names the declarer and a `/forget` from either side must reach it (ADR 0005).
  */
@@ -91,10 +113,15 @@ internal suspend fun sendAsk(r: ActionResult.Asked, bot: TelegramBot) {
 
 /**
  * The other side of a confirmed done, told where THEY spoke rather than where the press
- * happened. Recorded against the reopen token and — when there is one — the restate
- * offer's counterparty token, both naming real people: the Reopen button alone names
- * whoever this notice is FOR, and a `/forget` from either side must still reach this
- * message (ADR 0005), same reasoning as [sendAsk].
+ * happened. Recorded against BOTH people the text names — the recipient and the person
+ * who confirmed — because a `/forget` from either side must still reach it (ADR 0005),
+ * same reasoning as [sendAsk], and said the same explicit way [sendAsk] says it.
+ *
+ * Both people come off the [Notice] rather than off the keyboard. The keyboard names the
+ * confirmer only when the swap left the recipient something over, so a text reading
+ * "@ann confirmed. Marked done: @ann and @bob." was recorded against @bob alone on every
+ * exactly equal swap — the modal case — and @ann's `/forget` walked straight past a
+ * message naming her.
  */
 internal suspend fun sendNotice(n: Notice, bot: TelegramBot) {
     val buttons = noticeButtons(n)
@@ -104,13 +131,12 @@ internal suspend fun sendNotice(n: Notice, bot: TelegramBot) {
         .sendReturning(n.chatId, bot)
         .getOrNull()
     sent?.messageId?.let { id ->
-        val tokens = listOf(n.reopenToken) + listOfNotNull(n.restate?.peerToken)
-        val userIds = tokens.mapNotNull { Registry.requests.byRefToken(it)?.userId }
-        // Every named token must resolve to a real owner before this is recorded at all —
-        // a partial record would pair tokens and user ids off by one.
-        if (userIds.size == tokens.size) {
-            Registry.messages.record(n.chatId, id, tokens, userIds, n.text, buttons)
-        }
+        Registry.messages.record(
+            n.chatId, id,
+            listOf(n.reopenToken, n.otherToken),
+            listOf(n.recipientUserId, n.otherUserId),
+            n.text, buttons,
+        )
     }
 }
 

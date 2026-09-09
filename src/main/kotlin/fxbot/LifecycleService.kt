@@ -22,7 +22,17 @@ data class RestateOffer(
 data class Notice(
     val chatId: Long,
     val text: String,
+    /** The recipient's own closed request: what Reopen names, and whose message this is. */
     val reopenToken: String,
+    val recipientUserId: Long,
+    /**
+     * The OTHER person [text] names, said outright rather than read off the keyboard. The
+     * buttons name them only when the swap left something over, so inferring it from them
+     * loses the person entirely on an exactly equal swap — and a message naming somebody
+     * that is not recorded against them is out of reach of their `/forget` (ADR 0005).
+     */
+    val otherToken: String,
+    val otherUserId: Long,
     val restate: RestateOffer?,
 )
 
@@ -160,6 +170,15 @@ class LifecycleService(
     /** Text sent with HTML parse mode — see [mention] — so callers must send it that way. */
     private fun nameOf(r: Request, book: NameBook) = mentionOf(r, book)
 
+    /**
+     * The same person where no markup is parsed. A `Denied`/`Gone` text reaches an
+     * `answerCallbackQuery` toast and a plain chat reply, neither of which reads HTML, so
+     * a handle-less counterparty named with [nameOf] would show as a literal
+     * `<a href="tg://user?id=…">Ann</a>` to exactly the people the name lookup exists to
+     * serve. [plainName] is what the button labels already use for the same reason.
+     */
+    private fun plainNameOf(r: Request, book: NameBook) = plainName(r, book)
+
     /** Each chat's own time in force, and the bot default for the row with no chat. */
     private fun tifFor(chatId: Long): Int =
         if (chatId == NO_CHAT_ID) NO_CHAT_TIF_DAYS else settings.get(chatId).tifDays
@@ -209,7 +228,7 @@ class LifecycleService(
         if (mine.state != RequestState.OPEN) return ActionResult.Gone("That one is already closed.")
         val book = nameBookFor(listOf(mine, theirs), names)
         if (theirs.state != RequestState.OPEN) {
-            return ActionResult.Gone("${nameOf(theirs, book)}'s request isn't waiting anymore.")
+            return ActionResult.Gone("${plainNameOf(theirs, book)}'s request isn't waiting anymore.")
         }
         if (refusals.count(mine.refToken, theirs.refToken) >= MAX_REFUSALS) {
             return ActionResult.Denied(REFUSED_TWICE)
@@ -276,7 +295,9 @@ class LifecycleService(
         if (mine.state != RequestState.OPEN) return ActionResult.Gone("Your own request is already closed.")
         val book = nameBookFor(listOf(mine, theirs), names)
         if (theirs.state != RequestState.OPEN) {
-            return ActionResult.Gone("${nameOf(theirs, book)}'s request is already closed, so there's nothing to confirm.")
+            return ActionResult.Gone(
+                "${plainNameOf(theirs, book)}'s request is already closed, so there's nothing to confirm.",
+            )
         }
         // Both interests close together, in one transaction: a swap is one decision, and a
         // half-applied one would leave a person resting against a counterparty who is gone.
@@ -291,6 +312,9 @@ class LifecycleService(
                 chatId = theirs.answerChatId(),
                 text = "${nameOf(mine, book)} confirmed. Marked done: $both. If that's wrong, /reopen.",
                 reopenToken = theirs.refToken,
+                recipientUserId = theirs.userId,
+                otherToken = mine.refToken,
+                otherUserId = mine.userId,
                 restate = offerFor(theirs, mine),
             ),
         )
@@ -373,6 +397,10 @@ class LifecycleService(
      * Who the bot would suggest for [r] right now, judged the way that scope judges: a
      * chat's own size tolerance for a showing or a typed request, each person's own for
      * a request with no chat behind it.
+     *
+     * [InterestService.counterparties] judges scope the same way and must change with this.
+     * They are not shared: this service holds no [InterestService], and giving it one to
+     * save the duplication would close a dependency cycle between them.
      */
     private fun candidatesFor(r: Request): List<Request> {
         val resting = requests.resting(r.chatId)
