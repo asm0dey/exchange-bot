@@ -40,8 +40,11 @@ class DoneRefusalRepository(
 
     /**
      * Read-then-write rather than a SQL increment: this is a small table on a single-process
-     * bot (ADR 0004), the surrounding transaction is the guard, and the plain form is the one
-     * that is obviously right.
+     * bot (ADR 0004), and the plain form is the one that is obviously right. Concurrent
+     * `record` calls for the same pairing can race and lose a count — each reads old, each
+     * writes old+1 — but this is acceptable because the two refusals that block are separated
+     * by the declarer having to ask again, placing them far apart in time. The worst failure
+     * mode is one extra permitted ask, never a wrong close.
      */
     fun record(declarerToken: String, refuserToken: String): Int = transaction(db) {
         val next = count(declarerToken, refuserToken) + 1

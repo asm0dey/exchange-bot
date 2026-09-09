@@ -47,6 +47,17 @@ class DoneRefusalRepositoryTest : StringSpec({
         f.refusals.count(a.refToken, b.refToken) shouldBe 0
     }
 
+    "a row dies when the declarer's request stops resting" {
+        val f = RefusalFixture("refusal_dropclosed_declarer")
+        val a = f.rest(1L, Side.OFFER)
+        val b = f.rest(2L, Side.BID)
+        f.refusals.record(a.refToken, b.refToken)
+        f.refusals.dropClosed() shouldBe 0
+        f.requests.transition(a.refToken, RequestState.OPEN, RequestState.CANCELLED) shouldBe true
+        f.refusals.dropClosed() shouldBe 1
+        f.refusals.count(a.refToken, b.refToken) shouldBe 0
+    }
+
     "forgetting a person's tokens erases their rows in both directions" {
         val f = RefusalFixture("refusal_forget")
         f.refusals.record("mine", "theirs")
