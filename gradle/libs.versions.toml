@@ -1,6 +1,6 @@
 [versions]
 kotlin = "2.4.10"
-ksp = "2.3.10"
+ksp = "2.3.11"
 telegrambot = "9.6.0"
 ktor = "3.5.1"
 serialization = "1.11.0"
