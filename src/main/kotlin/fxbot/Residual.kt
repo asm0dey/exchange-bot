@@ -39,4 +39,4 @@ fun residualOf(mine: Request, theirs: Request, rate: BigDecimal?): BigDecimal? {
  * fanning it out bot-wide would put someone on the bot-side who never asked, and
  * consent is what puts them there (ADR 0007).
  */
-fun restateGoesPrivate(mine: Request): Boolean = mine.interestToken != null || mine.chatId == NO_CHAT_ID
+fun restateGoesPrivate(mine: Request): Boolean = mine.spokePrivately()

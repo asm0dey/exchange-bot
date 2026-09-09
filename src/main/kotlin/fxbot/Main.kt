@@ -43,7 +43,7 @@ suspend fun main(): Unit = coroutineScope {
     Registry.rates = RateService(rateClient, RateRepository(ds, db = db))
     Registry.service = RequestService(Registry.requests, Registry.settings, Registry.rates)
     Registry.giveUps = NameGiveUpRepository(ds, crypto, db = db)
-    Registry.lifecycle = LifecycleService(Registry.requests, Registry.settings, Registry.rates, Registry.giveUps)
+    Registry.refusals = DoneRefusalRepository(ds, db = db)
     Registry.messages = MessageLogRepository(ds, crypto, db = db)
     Registry.buttons = ButtonService(Registry.messages, Registry.requests)
     Registry.admin = AdminService(Registry.settings, rateClient)
@@ -78,6 +78,12 @@ suspend fun main(): Unit = coroutineScope {
         Registry.giveUps, Registry.pending, telegramMembership(bot),
     )
     Registry.names = telegramNames(bot)
+    // Below `Registry.names`, deliberately: a done now names the counterparty it asks, and
+    // a person with no handle only has a name because the Telegram layer can look one up.
+    Registry.lifecycle = LifecycleService(
+        Registry.requests, Registry.settings, Registry.rates,
+        Registry.people, Registry.refusals, Registry.names,
+    )
     Registry.giveUpService = GiveUpService(Registry.requests, Registry.giveUps, Registry.names)
     Registry.batcher = AnnouncementBatcher(
         Registry.requests, Registry.settings, Registry.pending, Registry.interests, Registry.rates,

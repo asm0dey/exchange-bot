@@ -23,6 +23,7 @@ import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.string.shouldContain
 import io.kotest.matchers.string.shouldNotContain
+import io.kotest.matchers.types.shouldBeInstanceOf
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
@@ -72,6 +73,7 @@ private class PrivateFixture(name: String) {
     val chats = ChatSettingsRepository(ds, crypto, clock)
     val people = PersonSettingsRepository(ds, crypto, clock)
     val giveUps = NameGiveUpRepository(ds, crypto, clock)
+    val refusals = DoneRefusalRepository(ds, clock)
     val pending = PendingAnnouncementRepository(ds, crypto, clock)
     val messages = MessageLogRepository(ds, crypto, clock)
     val rateRepo = RateRepository(ds)
@@ -97,7 +99,10 @@ private class PrivateFixture(name: String) {
         Registry.pending = pending
         Registry.messages = messages
         Registry.service = RequestService(requests, chats, rates)
-        Registry.lifecycle = LifecycleService(requests, chats, rates, giveUps)
+        // Above `Registry.lifecycle`, which now takes the lookup: a done names the
+        // counterparty it asks, and somebody with no handle only has a name through this.
+        Registry.names = NameLookup { handles[it] }
+        Registry.lifecycle = LifecycleService(requests, chats, rates, people, refusals, Registry.names)
         Registry.buttons = ButtonService(messages, requests)
         Registry.forget = ForgetService(requests, messages, people, giveUps, pending)
         Registry.admin = AdminService(chats, client)
@@ -105,7 +110,6 @@ private class PrivateFixture(name: String) {
             requests, chats, people, rates, client, giveUps, pending,
             MembershipProbe { _, _ -> true },
         )
-        Registry.names = NameLookup { handles[it] }
         Registry.giveUpService = GiveUpService(requests, giveUps, Registry.names)
         Registry.batcher = AnnouncementBatcher(
             requests, chats, pending, Registry.interests, rates,
@@ -708,9 +712,9 @@ class PrivateCommandTest : StringSpec({
         body shouldNotContain "admin"
     }
 
-    // ---- C-1: a stranger can neither force-close nor unmask a bot-side interest ----
+    // ---- C-1: a private /done closes nothing on one person's word ----
 
-    "a private /done naming somebody who never agreed closes nothing and names nobody" {
+    "a private /done closes nothing until the counterparty answers" {
         val f = PrivateFixture("donestranger")
         // Mallory states one interest of her own, purely to have a short id to type.
         val mine = f.requests.create(
@@ -724,15 +728,15 @@ class PrivateCommandTest : StringSpec({
 
         done(mentionUpdate(DM, ChatType.Private, "/done ${mine.shortId} @ann"), recordingBot(sent))
 
-        // Nothing the bot says may confirm that @ann rests anything at all (ADR 0007).
-        sent.joinToString { it.body } shouldNotContain "@ann"
-        // And nothing closed: not the victim's interest, not its showing, not the caller's.
+        // The declarer is told an ask went out, and told plainly that it settled nothing.
+        sent.joinToString { it.body } shouldContain "Nothing's closed yet"
+        // And nothing closed: not the other person's interest, not its showing, not the caller's.
         f.requests.byRefToken(victim.refToken)!!.state shouldBe RequestState.OPEN
         f.requests.byRefToken(showing.refToken)!!.state shouldBe RequestState.OPEN
         f.requests.byRefToken(mine.refToken)!!.state shouldBe RequestState.OPEN
     }
 
-    "the two private /done refusals are word for word the same, so neither is an oracle" {
+    "a private /done naming somebody nothing here belongs to is refused, and names nobody" {
         val f = PrivateFixture("doneoracle")
         val mine = f.requests.create(
             NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1",
@@ -741,16 +745,19 @@ class PrivateCommandTest : StringSpec({
         val toResting = mutableListOf<Call>()
         val toNobody = mutableListOf<Call>()
 
-        // @ann rests an opposite-side interest with no give-up; @zoe rests nothing at all.
+        // @ann rests an opposite-side interest; @zoe rests nothing at all.
         done(mentionUpdate(DM, ChatType.Private, "/done ${mine.shortId} @ann"), recordingBot(toResting))
         done(mentionUpdate(DM, ChatType.Private, "/done ${mine.shortId} @zoe"), recordingBot(toNobody))
 
-        toResting.single().body shouldBe toNobody.single().body
-        // Neither closed the caller's own interest either, which would itself tell them apart.
+        // The refusal names nobody, and says nothing about anyone the caller may have meant.
+        toNobody.single().body shouldNotContain "zoe"
+        toNobody.single().body shouldContain "aren't a pair"
+        // Neither closed the caller's own interest, and neither closed anybody else's.
         f.requests.byRefToken(mine.refToken)!!.state shouldBe RequestState.OPEN
+        toResting.single().body shouldContain "Nothing's closed yet"
     }
 
-    "a private /done closes both interests once both sides have passed names" {
+    "a private /done closes both interests once the counterparty confirms" {
         val f = PrivateFixture("doneconsented")
         val mine = f.requests.create(
             NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1",
@@ -759,18 +766,21 @@ class PrivateCommandTest : StringSpec({
             NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2",
         )
         val showing = f.requests.create(GROUP, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
-        // Both agreed, which is what the spec means by the typed form being used after a
-        // name give-up — and consent is read from the table, never from what was typed.
-        f.giveUps.record(mine.refToken, theirs.refToken, 1L, Stance.OFFERED)
-        f.giveUps.record(theirs.refToken, mine.refToken, 2L, Stance.OFFERED)
         val sent = mutableListOf<Call>()
 
         done(mentionUpdate(DM, ChatType.Private, "/done ${mine.shortId} @ann"), recordingBot(sent))
 
+        // The typed form only asks; nothing has closed on bob's word alone.
+        f.requests.byRefToken(theirs.refToken)!!.state shouldBe RequestState.OPEN
+        sent.first { it.path == "sendMessage" }.body shouldContain "@ann"
+
+        // Ann answers. Task 7 gives that answer a button; the service is what decides.
+        Registry.lifecycle.confirm(2L, mine.refToken, theirs.refToken)
+            .shouldBeInstanceOf<ActionResult.Ok>()
+
         f.requests.byRefToken(mine.refToken)!!.state shouldBe RequestState.DONE
         f.requests.byRefToken(theirs.refToken)!!.state shouldBe RequestState.DONE
         f.requests.byRefToken(showing.refToken)!!.state shouldBe RequestState.DONE
-        sent.first { it.path == "sendMessage" }.body shouldContain "@ann"
     }
 
     // ---- I-1: one dead chat must not starve the announcements behind it ----

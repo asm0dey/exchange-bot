@@ -35,3 +35,16 @@ data class Request(
     /** The sibling link: every row born of one interest carries the same value. Null for a request typed in a chat. */
     val interestToken: String? = null,
 )
+
+/**
+ * Whether somebody spoke to the bot privately. True for every row born of a stated
+ * interest — including its showings in chats, which the person never typed in — and for
+ * the chatless row itself.
+ */
+fun Request.spokePrivately(): Boolean = interestToken != null || chatId == NO_CHAT_ID
+
+/**
+ * Where this person is answered: their own chat with the bot when they spoke privately,
+ * otherwise the chat they typed in. A private chat's id IS the person's user id.
+ */
+fun Request.answerChatId(): Long = if (spokePrivately()) userId else chatId

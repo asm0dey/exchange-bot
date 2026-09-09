@@ -95,6 +95,12 @@ private suspend fun respond(
             }
             if (result.touchedTokens.isNotEmpty()) Registry.buttons.refreshFor(result.touchedTokens, bot)
         }
+        is ActionResult.Asked -> {
+            // Task 7 delivers the question.
+            queryId?.let { answerCallbackQuery(it).send(user.id, bot) }
+            // HTML: the text names the counterparty via `mention(...)`.
+            message { result.text }.options { parseMode = ParseMode.HTML }.send(update.getChat().id, bot)
+        }
         is ActionResult.Denied, is ActionResult.Gone -> {
             // Private to the presser: a refusal is not the group's business. This also
             // clears the presser's spinner on a malformed/forged payload, instead of the

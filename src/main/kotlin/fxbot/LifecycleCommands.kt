@@ -37,6 +37,12 @@ private suspend fun replyToDecision(
     result: ActionResult,
     undoable: Boolean = true,
 ) {
+    if (result is ActionResult.Asked) {
+        // Task 7 delivers the question.
+        // HTML: the text names the counterparty via `mention(...)`.
+        message { result.text }.options { parseMode = ParseMode.HTML }.send(chatId, bot)
+        return
+    }
     val reply = message { result.text }.let {
         if (result is ActionResult.Ok) it.options { parseMode = ParseMode.HTML } else it
     }
