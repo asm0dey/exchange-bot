@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory
 import java.time.Clock
 import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.time.Duration.Companion.milliseconds
 
 private val logger = LoggerFactory.getLogger("fxbot.AnnouncementBatcher")
 
@@ -115,7 +116,7 @@ class AnnouncementBatcher(
         // rather than pushing its deadline out.
         announceWindows.computeIfAbsent(userId) {
             scope.launch {
-                delay(window.toMillis())
+                delay(window.toMillis().milliseconds)
                 // Cleared BEFORE the flush, so a statement made while it runs opens a
                 // fresh window instead of being swallowed by the one that is closing.
                 announceWindows.remove(userId)
@@ -125,7 +126,7 @@ class AnnouncementBatcher(
     }
 
     fun enqueueAppeared(appeared: List<CounterpartyAppeared>) {
-        for (a in appeared) {
+        for ((userId, refToken) in appeared) {
             // `compute` is atomic for this key, and so is the `remove` the drain uses, so
             // a token can never land in a set the drain has already taken away. Opening
             // the window from INSIDE the same block is what closes the other half of it:
@@ -133,17 +134,17 @@ class AnnouncementBatcher(
             // is open that will. Starting a coroutine in here is safe — it touches a
             // different map, and its body suspends on `delay` before it could reach this
             // one.
-            appearedQueue.compute(a.userId) { _, queued ->
+            appearedQueue.compute(userId) { _, queued ->
                 val tokens = queued ?: linkedSetOf()
-                tokens.add(a.refToken)
-                appearedWindows.computeIfAbsent(a.userId) { openAppearedWindow(a.userId) }
+                tokens.add(refToken)
+                appearedWindows.computeIfAbsent(userId) { openAppearedWindow(userId) }
                 tokens
             }
         }
     }
 
     private fun openAppearedWindow(userId: Long): Job = scope.launch {
-        delay(window.toMillis())
+        delay(window.toMillis().milliseconds)
         appearedWindows.remove(userId)
         guarded("ping flush") { flushAppeared(userId) }
     }
@@ -160,7 +161,7 @@ class AnnouncementBatcher(
         // An hour-late "someone just stated this" is noise, and the showing keeps working
         // silently regardless, so a stale row is dropped rather than sent.
         val (stale, live) = rows.partition { it.createdAt.isBefore(cutoff) }
-        for (row in stale) pending.remove(row.chatRef, row.interestToken)
+        for ((chatRef, interestToken) in stale) pending.remove(chatRef, interestToken)
         if (stale.isNotEmpty()) logger.info("announcement flush: dropped_stale=${stale.size}")
 
         val announcements = mutableListOf<Announcement>()
@@ -204,7 +205,7 @@ class AnnouncementBatcher(
         if (announcements.isEmpty()) return
         // Sent first, consumed second. A throw here leaves every row exactly where it was.
         sink.deliver(announcements, emptyList())
-        for (row in owed) pending.remove(row.chatRef, row.interestToken)
+        for ((chatRef, interestToken) in owed) pending.remove(chatRef, interestToken)
         logger.info("announcement flush: sent=${announcements.size}")
     }
 
@@ -217,13 +218,18 @@ class AnnouncementBatcher(
             .map { ShownInterest(it, interests.counterparties(it)) }
             .filter { it.found.isNotEmpty() }
         if (mine.isEmpty()) return
-        val book = nameBookFor(mine.flatMap { s -> s.found.map { it.request } }, names)
+        // One traversal, two projections: `record` checks that the token and user lists are
+        // the same LENGTH, never that entry i of each is the same person, so two independent
+        // walks could go out of step and store somebody's token against somebody else's ref
+        // without anything catching it.
+        val named = mine.map(ShownInterest::request) + mine.flatMap { s -> s.found.map(Counterparty::request) }
+        val book = nameBookFor(mine.flatMap { s -> s.found.map(Counterparty::request) }, names)
         val ping = Ping(
             userId = userId,
             text = renderAppeared(mine, book),
             buttons = appearedButtons(mine, book),
-            refTokens = mine.map { it.request.refToken } + mine.flatMap { s -> s.found.map { it.request.refToken } },
-            userIds = mine.map { it.request.userId } + mine.flatMap { s -> s.found.map { it.request.userId } },
+            refTokens = named.map(Request::refToken),
+            userIds = named.map(Request::userId),
         )
         sink.deliver(emptyList(), listOf(ping))
     }
@@ -235,7 +241,7 @@ class AnnouncementBatcher(
             // Siblings in every state, so a showing that has since closed still resolves
             // the chat this row is owed to.
             val chatId = requests.siblings(row.interestToken)
-                .map { it.chatId }
+                .map(Request::chatId)
                 .firstOrNull { it != NO_CHAT_ID && pending.isFor(row, it) }
             if (chatId == null) {
                 // The interest is gone entirely; there is nothing left to announce.

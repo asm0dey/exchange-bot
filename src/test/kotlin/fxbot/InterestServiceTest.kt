@@ -306,6 +306,14 @@ class InterestServiceTest : StringSpec({
         r.shouldBeInstanceOf<InterestResult.Stated>()
         r.shown.first().request.chatId shouldBe NO_CHAT_ID
         r.shown.flatMap { s -> s.found.map { it.request.refToken } } shouldContain inGroup.refToken
+        // The done pairs the counterparty with the row it was found AGAINST — the showing,
+        // not the chatless interest. LifecycleService.done refuses a pairing whose two
+        // tokens are in different scopes, so the wrong subject here is a dead button that
+        // still renders perfectly.
+        val showing = r.showings.single()
+        val data = statedButtons(r).map { it.data }
+        data shouldContain Cb.done(showing.refToken, inGroup.refToken)
+        data.contains(Cb.done(r.interest.refToken, inGroup.refToken)) shouldBe false
     }
 
     "nobody is named twice in one reply" {
@@ -317,6 +325,9 @@ class InterestServiceTest : StringSpec({
         val r = f.svc.state(1L, "bob", Verb.SELL, "1000", "EUR", "RUB")
         r.shouldBeInstanceOf<InterestResult.Stated>()
         r.shown.flatMap { s -> s.found.map { it.request.userId } } shouldBe listOf(2L)
+        // FIRST occurrence wins, and which one survives decides which pairing the done
+        // offers: keeping the last would pass the check above and change every button.
+        r.shown.drop(1).map { it.found.size } shouldBe listOf(1, 0)
     }
 
     "status lists each interest once, with where it still rests" {

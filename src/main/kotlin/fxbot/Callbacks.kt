@@ -302,8 +302,12 @@ private suspend fun restatePrivately(
         }
         is InterestResult.Stated -> {
             logCommand("restate_button", "stated")
+            // Every row for `record` — the buttons name the stater's own rows too, and an
+            // unrecorded token loses its button. Only the COUNTERPARTIES for the book: they
+            // are the only people either the text or a button label ever names, and a lookup
+            // is a live round-trip to Telegram.
             val everyone = result.shown.flatMap { s -> listOf(s.request) + s.found.map { it.request } }
-            val book = nameBookFor(everyone, Registry.names)
+            val book = nameBookFor(result.shown.flatMap { s -> s.found.map { it.request } }, Registry.names)
             val text = renderStated(result, book)
             val buttons = statedButtons(result, book)
             val sent = message { text }

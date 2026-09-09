@@ -321,5 +321,15 @@ class AnnouncementBatcherTest : StringSpec({
         Regex("buy 1,000 EUR|buy 5,000 GBP").findAll(text).count() shouldBe 2
         text shouldContain "@ann"
         text shouldContain "@cat"
+        // Each done pairs a counterparty with the interest of bob's it was found against.
+        // Two interests is what makes this test able to see the difference: pairing both
+        // with bob's FIRST row renders identically and dead-buttons the second via
+        // LifecycleService.done's pairing check.
+        val bobsEur = f.requests.resting(NO_CHAT_ID).single { it.userId == 1L && it.statedCurrency == "EUR" }
+        val bobsGbp = f.requests.resting(NO_CHAT_ID).single { it.userId == 1L && it.statedCurrency == "GBP" }
+        f.pings.single().buttons.map { it.data } shouldBe listOf(
+            Cb.done(bobsEur.refToken, a.interest.refToken),
+            Cb.done(bobsGbp.refToken, c.interest.refToken),
+        )
     }
 })
