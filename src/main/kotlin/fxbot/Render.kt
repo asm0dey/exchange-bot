@@ -1,6 +1,5 @@
 package fxbot
 
-import java.math.BigDecimal
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.Locale

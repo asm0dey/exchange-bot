@@ -109,7 +109,7 @@ sealed interface NamedPeer {
 }
 
 /**
- * Said once, so the refusals [done] and [doneByShortId] must not tell apart cannot drift
+ * Said once, so the refusals [LifecycleService.done] and [LifecycleService.doneByShortId] must not tell apart cannot drift
  * apart — a structurally impossible pairing and a name nothing here belongs to both read
  * exactly like this.
  */
@@ -132,7 +132,7 @@ private const val NOT_ASKED = "That isn't a question I asked you."
 
 /**
  * Whether the bot ever put this exact button in front of the person whose request
- * [myToken] names — the record that an ask actually happened, without a table recording
+ * [ActionResult.Asked.myToken] names — the record that an ask actually happened, without a table recording
  * an outstanding one (the design spec forbids that). The Telegram layer answers from the
  * message log, where `sendAsk` writes every question against both ref tokens with its
  * exact button list; a test answers with a lambda.
@@ -176,8 +176,14 @@ class LifecycleService(
      * a handle-less counterparty named with [nameOf] would show as a literal
      * `<a href="tg://user?id=…">Ann</a>` to exactly the people the name lookup exists to
      * serve. [plainName] is what the button labels already use for the same reason.
+     *
+     * The `@` is kept, unlike [plainName]: a bare `@handle` needs no markup to be useful —
+     * Telegram links it on sight in ordinary message text — so dropping it would cost a
+     * tappable name to fix a problem only a handle-LESS person ever had. A button label has
+     * no such benefit to lose, which is why [plainName] itself is left as it is.
      */
-    private fun plainNameOf(r: Request, book: NameBook) = plainName(r, book)
+    private fun plainNameOf(r: Request, book: NameBook) =
+        r.username?.let { "@$it" } ?: plainName(r, book)
 
     /** Each chat's own time in force, and the bot default for the row with no chat. */
     private fun tifFor(chatId: Long): Int =

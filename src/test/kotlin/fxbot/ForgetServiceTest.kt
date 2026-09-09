@@ -20,7 +20,7 @@ private class Fixture(name: String) {
     val people = PersonSettingsRepository(ds, crypto, clock)
     val refusals = DoneRefusalRepository(ds, clock)
     val pending = PendingAnnouncementRepository(ds, crypto, clock)
-    val svc = ForgetService(requests, log, people, refusals, pending, clock)
+    val svc = ForgetService(requests, log, people, refusals, pending)
 }
 
 class ForgetServiceTest : StringSpec({

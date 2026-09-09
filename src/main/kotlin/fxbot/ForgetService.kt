@@ -1,6 +1,5 @@
 package fxbot
 
-import java.time.Clock
 
 data class ForgetPlan(
     val deletedRequests: Int,
@@ -19,7 +18,6 @@ class ForgetService(
     private val people: PersonSettingsRepository,
     private val refusals: DoneRefusalRepository,
     private val pending: PendingAnnouncementRepository,
-    private val clock: Clock = Clock.systemUTC(),
 ) {
     /**
      * [personal] covers what belongs to the person rather than to a chat: their own size

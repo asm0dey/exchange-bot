@@ -131,7 +131,7 @@ private class LifecycleCommandFixture(name: String) {
 
 class LifecycleCommandTest : StringSpec({
     "/cancel with an HTML-bearing short id still gets a reply, sent as plain text" {
-        val f = LifecycleCommandFixture("cancel-html-shortid")
+        LifecycleCommandFixture("cancel-html-shortid")
         val sent = mutableListOf<LcSent>()
 
         cancel(updateFor(-100L, ChatType.Group, "/cancel <a>evil</a>"), recordingBot(sent))
@@ -150,7 +150,7 @@ class LifecycleCommandTest : StringSpec({
     }
 
     "/done with an HTML-bearing short id still gets a reply, sent as plain text" {
-        val f = LifecycleCommandFixture("done-html-shortid")
+        LifecycleCommandFixture("done-html-shortid")
         val sent = mutableListOf<LcSent>()
 
         done(updateFor(-100L, ChatType.Group, "/done <a>evil</a>"), recordingBot(sent))

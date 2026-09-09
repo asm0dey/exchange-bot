@@ -207,7 +207,7 @@ class LifecycleServiceTest : StringSpec({
         // Says WHICH side is gone, so the declarer can tell their own request from the other's.
         // Named plainly, not as a `mention`: this text is sent with no parse mode and shown
         // in a callback toast, and neither reads markup.
-        result.text shouldBe "alice's request isn't waiting anymore."
+        result.text shouldBe "@alice's request isn't waiting anymore."
         repo.byRefToken(a.refToken)!!.state shouldBe RequestState.OPEN
     }
 
@@ -268,7 +268,7 @@ class LifecycleServiceTest : StringSpec({
         // Names bob, whose request is the gone one — proving the message is built from
         // `mine`/`theirs` as re-derived for the presser, not from which slot each token sits
         // in. A naive `mine = a` would have told alice her OWN request was the gone one.
-        result.text shouldBe "bob's request isn't waiting anymore."
+        result.text shouldBe "@bob's request isn't waiting anymore."
         repo.byRefToken(b.refToken)!!.state shouldBe RequestState.OPEN
     }
 
