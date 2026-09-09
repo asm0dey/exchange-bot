@@ -11,7 +11,7 @@ hikari = "7.1.0"
 tinylog = "2.8.0"
 kotest = "6.2.4"
 tink = "1.23.0"
-flyway = "11.20.3"
+flyway = "13.5.0"
 exposed = "1.5.0"
 shadow = "9.6.1"
 
