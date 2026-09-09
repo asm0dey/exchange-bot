@@ -67,7 +67,6 @@ private class LifecycleCommandFixture(name: String) {
     val requests = RequestRepository(ds, crypto)
     val messages = MessageLogRepository(ds, crypto)
     val settings = ChatSettingsRepository(ds, crypto)
-    val giveUps = NameGiveUpRepository(ds, crypto)
     val people = PersonSettingsRepository(ds, crypto)
     val refusals = DoneRefusalRepository(ds)
 

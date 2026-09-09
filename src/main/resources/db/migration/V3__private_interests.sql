@@ -13,18 +13,6 @@ CREATE TABLE person_settings (
     updated_at TIMESTAMP NOT NULL
 );
 
--- One row per direction of a pairing. Two 'offered' rows mean both consented; one
--- 'declined' row suppresses the pairing for both. Rows die with their requests.
-CREATE TABLE name_give_up (
-    ref_token      TEXT      NOT NULL,
-    peer_ref_token TEXT      NOT NULL,
-    user_ref       TEXT      NOT NULL,
-    stance         TEXT      NOT NULL,
-    decided_at     TIMESTAMP NOT NULL,
-    PRIMARY KEY (ref_token, peer_ref_token)
-);
-CREATE INDEX name_give_up_user_idx ON name_give_up (user_ref);
-
 -- What to announce, never how: the text is re-rendered from live state at flush time.
 CREATE TABLE pending_announcement (
     chat_ref       TEXT      NOT NULL,

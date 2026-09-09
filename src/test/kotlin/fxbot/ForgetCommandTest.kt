@@ -84,17 +84,22 @@ private class CommandFixture(name: String) {
     val requests = RequestRepository(ds, crypto)
     val log = MessageLogRepository(ds, crypto)
     val people = PersonSettingsRepository(ds, crypto)
-    val giveUps = NameGiveUpRepository(ds, crypto)
+    val refusals = DoneRefusalRepository(ds)
     val pending = PendingAnnouncementRepository(ds, crypto)
+    val forget = ForgetService(requests, log, people, refusals, pending)
 
     init {
         Registry.requests = requests
         Registry.messages = log
         Registry.people = people
-        Registry.giveUps = giveUps
+        Registry.refusals = refusals
         Registry.pending = pending
-        Registry.forget = ForgetService(requests, log, people, giveUps, pending)
+        Registry.forget = forget
     }
+
+    /** One resting request, so a test has a ref token a refusal row can name. */
+    fun rest(chatId: Long, userId: Long, side: Side) =
+        requests.create(chatId, userId, "a", side, "EUR", BigDecimal("1"), EURRUB, 7, "i$userId")
 }
 
 class ForgetCommandTest : StringSpec({
@@ -140,31 +145,35 @@ class ForgetCommandTest : StringSpec({
         f.requests.create(NO_CHAT_ID, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
         f.requests.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
         f.people.save(PersonSettings(1L, 40))
-        f.giveUps.record("tokA", "tokB", 1L, Stance.OFFERED)
         f.pending.add(-100L, "i1", 1L)
         // Somebody else's rows, in the same tables, which a truncation would take with it.
         f.people.save(PersonSettings(2L, 40))
-        f.giveUps.record("tokC", "tokD", 2L, Stance.OFFERED)
         f.pending.add(-100L, "i2", 2L)
         val sent = mutableListOf<Sent>()
         forget(updateFor(555L, ChatType.Private, "/forget"), recordingBot(sent))
 
         f.requests.resting(NO_CHAT_ID) shouldHaveSize 0
         f.people.get(1L).tolerancePct shouldBe 20
-        f.giveUps.stanceOf("tokA", "tokB") shouldBe null
         f.pending.allFor(1L) shouldHaveSize 0
         // A showing in a group is a record in that group; plain private /forget does not reach it.
         f.requests.resting(-100L) shouldHaveSize 1
         // Everything belonging to the other person survives.
         f.people.get(2L).tolerancePct shouldBe 40
-        f.giveUps.stanceOf("tokC", "tokD") shouldBe Stance.OFFERED
         f.pending.allFor(2L) shouldHaveSize 1
     }
-    "plain /forget in a private chat redacts a give-up message that named somebody else" {
+    "forgetting erases the refusals recorded about this person's requests" {
+        val f = CommandFixture("forget_refusals")
+        val mine = f.rest(NO_CHAT_ID, 1L, Side.OFFER)
+        val theirs = f.rest(NO_CHAT_ID, 2L, Side.BID)
+        f.refusals.record(theirs.refToken, mine.refToken)
+        f.forget.plan(1L, NO_CHAT_ID, personal = true)
+        f.refusals.count(theirs.refToken, mine.refToken) shouldBe 0
+    }
+    "plain /forget in a private chat redacts a private message that named somebody else" {
         val f = CommandFixture("privforgetredact")
-        // What a completed give-up leaves behind: a message in the person's OWN private
-        // chat, naming them and the counterparty. It is recorded under the private chat
-        // id, never under NO_CHAT_ID, so a plan scoped to the sentinel misses it.
+        // A private reply names its counterparty, and it is recorded under the person's
+        // OWN private chat id, never under NO_CHAT_ID, so a plan scoped to the sentinel
+        // misses it.
         f.log.record(555L, 10L, listOf("tokA", "tokB"), listOf(1L, 2L))
         // Named only them, in the same private chat: deleted outright, not redacted.
         f.log.record(555L, 11L, listOf("tokA"), listOf(1L))
@@ -198,7 +207,6 @@ class ForgetCommandTest : StringSpec({
         f.requests.create(NO_CHAT_ID, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
         f.requests.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
         f.people.save(PersonSettings(1L, 40))
-        f.giveUps.record("tokA", "tokB", 1L, Stance.OFFERED)
         f.pending.add(-100L, "i1", 1L)
         val sent = mutableListOf<Sent>()
         forget(updateFor(-100L, ChatType.Group, "/forget"), recordingBot(sent))
@@ -206,7 +214,6 @@ class ForgetCommandTest : StringSpec({
         f.requests.resting(NO_CHAT_ID) shouldHaveSize 1
         f.people.get(1L).tolerancePct shouldBe 40
         // `/forget` typed in a group means that group alone: nothing personal is touched.
-        f.giveUps.stanceOf("tokA", "tokB") shouldBe Stance.OFFERED
         f.pending.allFor(1L) shouldHaveSize 1
     }
 

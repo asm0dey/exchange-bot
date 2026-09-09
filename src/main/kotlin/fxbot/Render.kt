@@ -12,8 +12,6 @@ object Cb {
     const val DONE = "done"
     const val CANCEL = "cancel"
     const val REOPEN = "reopen"
-    const val GIVE_UP = "giveup"
-    const val DECLINE = "decline"
     const val RESTATE = "restate"
     const val CONFIRM = "yes"
     const val REFUSE = "no"
@@ -21,8 +19,6 @@ object Cb {
     fun done(mine: String, theirs: String) = "$DONE?a=$mine&b=$theirs"
     fun cancel(token: String) = "$CANCEL?t=$token"
     fun reopen(token: String) = "$REOPEN?t=$token"
-    fun giveUp(mine: String, theirs: String) = "$GIVE_UP?a=$mine&b=$theirs"
-    fun decline(mine: String, theirs: String) = "$DECLINE?a=$mine&b=$theirs"
     fun restate(mine: String, theirs: String) = "$RESTATE?a=$mine&b=$theirs"
 
     /**

@@ -42,7 +42,6 @@ suspend fun main(): Unit = coroutineScope {
     Registry.settings = ChatSettingsRepository(ds, crypto, db = db)
     Registry.rates = RateService(rateClient, RateRepository(ds, db = db))
     Registry.service = RequestService(Registry.requests, Registry.settings, Registry.rates)
-    Registry.giveUps = NameGiveUpRepository(ds, crypto, db = db)
     Registry.refusals = DoneRefusalRepository(ds, db = db)
     Registry.messages = MessageLogRepository(ds, crypto, db = db)
     Registry.buttons = ButtonService(Registry.messages, Registry.requests)
@@ -50,7 +49,7 @@ suspend fun main(): Unit = coroutineScope {
     Registry.people = PersonSettingsRepository(ds, crypto, db = db)
     Registry.pending = PendingAnnouncementRepository(ds, crypto, db = db)
     Registry.forget = ForgetService(
-        Registry.requests, Registry.messages, Registry.people, Registry.giveUps, Registry.pending,
+        Registry.requests, Registry.messages, Registry.people, Registry.refusals, Registry.pending,
     )
     Registry.migration = ChatMigrationService(
         Registry.requests, Registry.settings, Registry.messages, Registry.pending, db,
@@ -75,7 +74,7 @@ suspend fun main(): Unit = coroutineScope {
     // layer, so they cannot be built before there is a bot to reach it with.
     Registry.interests = InterestService(
         Registry.requests, Registry.settings, Registry.people, Registry.rates, rateClient,
-        Registry.giveUps, Registry.pending, telegramMembership(bot),
+        Registry.pending, telegramMembership(bot),
     )
     Registry.names = telegramNames(bot)
     // Below `Registry.names`, deliberately: a done now names the counterparty it asks, and
@@ -84,19 +83,16 @@ suspend fun main(): Unit = coroutineScope {
         Registry.requests, Registry.settings, Registry.rates,
         Registry.people, Registry.refusals, Registry.names,
     )
-    Registry.giveUpService = GiveUpService(Registry.requests, Registry.giveUps, Registry.names)
     Registry.batcher = AnnouncementBatcher(
         Registry.requests, Registry.settings, Registry.pending, Registry.interests, Registry.rates,
         telegramSink(bot), this, names = Registry.names,
     )
 
-    // Housekeeping is bot-dependent too: a lapsed showing's messages have to be rewritten,
-    // and somebody whose give-up died with the other side's interest has to be told.
+    // Housekeeping is bot-dependent too: a lapsed showing's messages have to be rewritten.
     val housekeeping = Housekeeping(
         Registry.requests, Registry.settings, Registry.rates, Registry.messages,
-        Registry.giveUps, Registry.pending,
+        Registry.refusals, Registry.pending,
         onClosed = { tokens -> Registry.buttons.refreshFor(tokens, bot) },
-        onGiveUpDied = telegramGiveUpDied(bot),
     )
     startScheduler(ds, housekeeping)
     // Warm the rate cache without waiting a day for the scheduler's first run — but never

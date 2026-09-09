@@ -153,74 +153,6 @@ suspend fun refuseDoneCallback(a: String?, b: String?, update: ProcessedUpdate, 
     respond(result, update, bot)
 }
 
-/**
- * Offering to pass a name. Consent is read from the table, not from this payload: a
- * hand-crafted `b` claiming the other side agreed achieves nothing, and [GiveUpService]
- * refuses outright unless the presser — re-derived from `callback_query.from.id` — owns
- * the request `a` names.
- */
-@CommandHandler.CallbackQuery(["giveup"], autoAnswer = false)
-suspend fun giveUpCallback(a: String?, b: String?, update: ProcessedUpdate, bot: TelegramBot) {
-    if (a == null || b == null) return respond(ActionResult.Denied(BROKEN_BUTTON), update, bot)
-    when (val r = Registry.giveUpService.offer(update.getUser().id, a, b)) {
-        is GiveUpResult.Asked -> {
-            logCommand("giveup_button", "asked")
-            // Nothing about the presser reaches the peer here — the peer is told about
-            // THEIR OWN interest (`theirs`), and both requests arrive with their
-            // usernames stripped, so `describe` cannot print a handle either way.
-            //
-            // Deliberately not recorded in the message log: its buttons name the
-            // presser's ref token, and recording it would store the presser's user ref
-            // against this peer's private chat before the peer has agreed to anything.
-            message { "Someone matching your ${describe(r.theirs)} has offered to pass their name. Pass yours back?" }
-                .inlineKeyboardMarkup {
-                    "🤝 Pass my name" callback Cb.giveUp(r.peerRefToken, r.myRefToken); br()
-                    "🚫 No thanks" callback Cb.decline(r.peerRefToken, r.myRefToken)
-                }
-                .send(r.peerUserId, bot)
-            ackCallback(update, bot, "I've asked them. I'll tell you if they agree.")
-        }
-        is GiveUpResult.Disclosed -> {
-            // Recorded in the message log so forgetting can redact them (ADR 0005).
-            val toA = discloseTo(r.a, r.b, bot)
-            val toB = discloseTo(r.b, r.a, bot)
-            // Which of the two the presser is decides what is true to tell them, so the
-            // answer is picked from the delivery that was actually theirs.
-            val presserIsA = update.getUser().id == r.a.userId
-            logCommand("giveup_button", if (toA && toB) "disclosed" else "disclosed_undelivered")
-            ackCallback(
-                update, bot,
-                disclosureReply(mine = if (presserIsA) toA else toB, theirs = if (presserIsA) toB else toA),
-            )
-        }
-        is GiveUpResult.Recorded -> {
-            logCommand("giveup_button", "recorded")
-            ackCallback(update, bot, r.text)
-        }
-        is GiveUpResult.Refused -> {
-            logCommand("giveup_button", "refused")
-            ackCallback(update, bot, r.text)
-        }
-    }
-}
-
-/**
- * Saying no to one pairing. Written, so neither side is offered the other again while the
- * two requests rest — and authorized exactly as the give-up is: [GiveUpService.decline]
- * writes nothing unless the presser owns the request `a` names.
- *
- * The answer is private to the presser and names nobody, in both directions: a decline is
- * not the other person's business, and telling them would turn "no" into a message they
- * would have to read.
- */
-@CommandHandler.CallbackQuery(["decline"], autoAnswer = false)
-suspend fun declineCallback(a: String?, b: String?, update: ProcessedUpdate, bot: TelegramBot) {
-    if (a == null || b == null) return respond(ActionResult.Denied(BROKEN_BUTTON), update, bot)
-    val r = Registry.giveUpService.decline(update.getUser().id, a, b)
-    logCommand("decline_button", if (r is GiveUpResult.Recorded) "recorded" else "refused")
-    ackCallback(update, bot, giveUpText(r))
-}
-
 private const val RESTATE_GONE = "That request is gone, so there's nothing left to work out."
 
 private const val RESTATE_NOT_YOURS = "That isn't your request."
@@ -371,52 +303,6 @@ private suspend fun restateInChat(
             ackCallback(update, bot, "Stated.")
         }
     }
-}
-
-/** The text a give-up outcome carries, for the two branches that only ever answer. */
-private fun giveUpText(r: GiveUpResult): String = when (r) {
-    is GiveUpResult.Recorded -> r.text
-    is GiveUpResult.Refused -> r.text
-    // Neither is reachable from `decline`, which only ever writes or refuses.
-    is GiveUpResult.Asked, is GiveUpResult.Disclosed -> BROKEN_BUTTON
-}
-
-/**
- * Hands [to] the other person's handle, with a Done button naming both requests, and
- * records the message against BOTH people so a `/forget` from either side reaches it
- * (ADR 0005). [Party.handle] is already a `mention(...)`, hence HTML.
- */
-private suspend fun discloseTo(to: Party, other: Party, bot: TelegramBot): Boolean {
-    val text = "You both agreed to pass names. This is ${other.handle}.\n$AGREE_LINE"
-    val buttons = listOf(Button("✅ Done", Cb.done(to.refToken, other.refToken)))
-    val sent = message { text }
-        .options { parseMode = ParseMode.HTML }
-        .inlineKeyboardMarkup { buttons.forEach { b -> b.label callback b.data; br() } }
-        .sendReturning(to.userId, bot)
-        .getOrNull() ?: return false
-    Registry.messages.record(
-        to.userId, sent.messageId,
-        listOf(to.refToken, other.refToken),
-        listOf(to.userId, other.userId),
-        text, buttons,
-    )
-    return true
-}
-
-/**
- * What to tell the presser, from what actually arrived. A person deciding what to believe
- * about their own name must not be told a delivery happened when it did not — and the
- * agreement itself is already written, so pressing again re-sends rather than re-asking.
- * The recovery each wording suggests is therefore real.
- */
-private fun disclosureReply(mine: Boolean, theirs: Boolean): String = when {
-    mine && theirs -> "You both agreed — I've passed your names."
-    mine -> "You both agreed and I've sent you their details, but I couldn't get a message " +
-        "through to them. They may have blocked me."
-    theirs -> "You both agreed and I've told them, but I couldn't send you their details. " +
-        "Make sure you haven't blocked me, then press again."
-    else -> "You both agreed, but I couldn't get a message through to either of you. " +
-        "Make sure you haven't blocked me, then press again."
 }
 
 /**

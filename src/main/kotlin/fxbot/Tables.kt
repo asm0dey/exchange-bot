@@ -92,15 +92,6 @@ object PersonSettingsTable : Table("person_settings") {
     override val primaryKey = PrimaryKey(userRef)
 }
 
-object NameGiveUps : Table("name_give_up") {
-    val refToken = text("ref_token")
-    val peerRefToken = text("peer_ref_token")
-    val userRef = text("user_ref")
-    val stance = text("stance")
-    val decidedAt = timestamp("decided_at")
-    override val primaryKey = PrimaryKey(refToken, peerRefToken)
-}
-
 object DoneRefusals : Table("done_refusal") {
     val refToken = text("ref_token")
     val peerRefToken = text("peer_ref_token")

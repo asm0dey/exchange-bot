@@ -204,9 +204,9 @@ private const val REDACTED = "(a message was edited at someone's request)"
  *  - in a group, that group alone — which may remove one showing of an interest whose
  *    siblings live on, because forgetting removes a RECORD, it does not withdraw an interest;
  *  - privately and plain, the person's own side of the bot: their bot-side requests, their
- *    size tolerance, their give-up consents, their pending announcements, and the messages
- *    in that private chat (a completed give-up named somebody there, so it is redacted
- *    rather than deleted — ADR 0005);
+ *    size tolerance, their pending announcements, and the messages in that private chat (a
+ *    private reply named a counterparty there, so it is redacted rather than deleted —
+ *    ADR 0005);
  *  - privately with `all`, the above and every group as well.
  *
  * `/forget all` is accepted only in a private chat with the bot — from a group it would
@@ -275,7 +275,7 @@ suspend fun forget(update: ProcessedUpdate, bot: TelegramBot) {
  * people who actually have something waiting in [chatId] — which privately is the
  * bot-side space, so an `@username` there is matched against the handles on the requests
  * resting with no chat. Somebody with no `@username` cannot be addressed by the
- * typed form at all; the Done button on the give-up message is the reliable path, and no
+ * typed form at all; the Done button beside their name is the reliable path, and no
  * second identifier scheme is invented to make them typeable.
  *
  * "Somebody was named and nothing resting here is theirs" comes back as

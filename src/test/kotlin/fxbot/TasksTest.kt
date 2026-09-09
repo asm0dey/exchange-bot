@@ -27,7 +27,7 @@ private fun stubRates(ds: DataSource, clock: Clock) = RateService(
 
 /**
  * Builds a [Housekeeping] over one in-memory database. Every collaborator is defaulted so
- * a test names only the ones it actually cares about — the constructor is eight arguments
+ * a test names only the ones it actually cares about — the constructor is seven arguments
  * wide and a wall of them at each call site hides which one the test is about.
  */
 private fun housekeepingWith(
@@ -37,13 +37,12 @@ private fun housekeepingWith(
     requests: RequestRepository,
     settings: ChatSettingsRepository = ChatSettingsRepository(ds, crypto, clock),
     rates: RateService = stubRates(ds, clock),
-    giveUps: NameGiveUpRepository = NameGiveUpRepository(ds, crypto, clock),
+    refusals: DoneRefusalRepository = DoneRefusalRepository(ds, clock),
     pending: PendingAnnouncementRepository = PendingAnnouncementRepository(ds, crypto, clock),
-    onGiveUpDied: suspend (List<Long>) -> Unit = {},
     onClosed: suspend (List<String>) -> Unit = {},
 ) = Housekeeping(
     requests, settings, rates, MessageLogRepository(ds, crypto, clock),
-    giveUps, pending, clock, onClosed, onGiveUpDied,
+    refusals, pending, clock, onClosed,
 )
 
 private fun housekeeping(name: String, at: Instant): Pair<Housekeeping, RequestRepository> {
@@ -103,7 +102,7 @@ class TasksTest : StringSpec({
         housekeepingWith(ds, crypto, clock, requests, settings, RateService(client, rateRepo, clock)).refreshRates()
         bases.toSet() shouldBe setOf("EUR", "CHF")
     }
-    "the sweep drops give-up rows and pending announcements whose requests have closed" {
+    "the sweep drops refusal rows and pending announcements whose requests have closed" {
         val ds = memDataSource("sweepdrops")
         migrate(ds)
         val crypto = testCrypto()
@@ -116,45 +115,22 @@ class TasksTest : StringSpec({
         val fresh = RequestRepository(ds, crypto, clock)
         val b = fresh.create(-100L, 2L, "ann", Side.BID, "EUR", BigDecimal("1"), EURRUB, 7, "i2")
         val c = fresh.create(-100L, 3L, "cat", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i3")
-        val giveUps = NameGiveUpRepository(ds, crypto, clock).also {
-            it.record(a.refToken, "gone", 1L, Stance.OFFERED)
-            it.record(b.refToken, c.refToken, 2L, Stance.OFFERED)
+        val refusals = DoneRefusalRepository(ds, clock).also {
+            it.record(a.refToken, "gone")
+            it.record(b.refToken, c.refToken)
         }
         PendingAnnouncementRepository(ds, crypto, Clock.fixed(T0, ZoneOffset.UTC)).add(-100L, "i1", 1L)
         val pending = PendingAnnouncementRepository(ds, crypto, clock).also { it.add(-100L, "i2", 2L) }
         val lapsed = mutableListOf<String>()
-        val hk = housekeepingWith(ds, crypto, clock, requests, giveUps = giveUps, pending = pending) { lapsed += it }
+        val hk = housekeepingWith(ds, crypto, clock, requests, refusals = refusals, pending = pending) { lapsed += it }
         hk.sweep() shouldBe 1
         lapsed shouldBe listOf(a.refToken)
-        giveUps.stanceOf(a.refToken, "gone") shouldBe null
+        refusals.count(a.refToken, "gone") shouldBe 0
         pending.all().single().interestToken shouldBe "i2"
         // The rows whose requests are still resting are untouched.
-        giveUps.stanceOf(b.refToken, c.refToken) shouldBe Stance.OFFERED
+        refusals.count(b.refToken, c.refToken) shouldBe 1
     }
-    "the sweep tells whoever was waiting when the other side's interest closed" {
-        val ds = memDataSource("sweepbereaved")
-        migrate(ds)
-        val crypto = testCrypto()
-        val clock = Clock.fixed(T0, ZoneOffset.UTC)
-        val requests = RequestRepository(ds, crypto, clock)
-        val mine = requests.create(NO_CHAT_ID, 7L, "bob", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
-        val theirs = requests.create(NO_CHAT_ID, 8L, "ann", Side.BID, "EUR", BigDecimal("1"), EURRUB, 7, "i2")
-        val giveUps = NameGiveUpRepository(ds, crypto, clock).also {
-            it.record(mine.refToken, theirs.refToken, 7L, Stance.OFFERED)
-        }
-        requests.closeInterest("i2", RequestState.DONE)
-        val told = mutableListOf<List<Long>>()
-        val lapsed = mutableListOf<String>()
-        val hk = housekeepingWith(
-            ds, crypto, clock, requests, giveUps = giveUps,
-            onGiveUpDied = { told += it }, onClosed = { lapsed += it },
-        )
-        hk.sweep() shouldBe 0
-        told shouldBe listOf(listOf(7L))
-        // Nothing lapsed, so the message-rewriting pass was not asked to do anything.
-        lapsed shouldHaveSize 0
-    }
-    "a hook that throws neither fails the sweep nor stops the other hook" {
+    "a hook that throws does not fail the sweep" {
         val ds = memDataSource("sweephookfails")
         migrate(ds)
         val crypto = testCrypto()
@@ -164,45 +140,14 @@ class TasksTest : StringSpec({
         // so onClosed fires — and throws.
         val lapsing = RequestRepository(ds, crypto, Clock.fixed(T0, ZoneOffset.UTC))
         lapsing.create(-100L, 9L, "zed", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7)
-        // A give-up whose peer closed, whose offerer is still resting: onGiveUpDied fires
-        // AFTER the throwing hook, and its rows are already gone by then.
-        val requests = RequestRepository(ds, crypto, clock)
-        val mine = requests.create(NO_CHAT_ID, 7L, "bob", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
-        val theirs = requests.create(NO_CHAT_ID, 8L, "ann", Side.BID, "EUR", BigDecimal("1"), EURRUB, 7, "i2")
-        val giveUps = NameGiveUpRepository(ds, crypto, clock).also {
-            it.record(mine.refToken, theirs.refToken, 7L, Stance.OFFERED)
-        }
-        requests.closeInterest("i2", RequestState.DONE)
-        val told = mutableListOf<List<Long>>()
         val hk = housekeepingWith(
-            ds, crypto, clock, lapsing, giveUps = giveUps,
-            onGiveUpDied = { told += it },
+            ds, crypto, clock, lapsing,
             onClosed = { throw IllegalStateException("telegram is down") },
         )
 
+        // A retry could not recover anything — the lapsing is already committed — so the
+        // task reports its real result rather than asking db-scheduler to run it again.
         hk.sweep() shouldBe 1
-        told shouldBe listOf(listOf(7L))
-    }
-    "a throwing give-up notice does not fail the sweep either" {
-        val ds = memDataSource("sweepgiveuphookfails")
-        migrate(ds)
-        val crypto = testCrypto()
-        val clock = Clock.fixed(T0, ZoneOffset.UTC)
-        val requests = RequestRepository(ds, crypto, clock)
-        val mine = requests.create(NO_CHAT_ID, 7L, "bob", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7, "i1")
-        val theirs = requests.create(NO_CHAT_ID, 8L, "ann", Side.BID, "EUR", BigDecimal("1"), EURRUB, 7, "i2")
-        val giveUps = NameGiveUpRepository(ds, crypto, clock).also {
-            it.record(mine.refToken, theirs.refToken, 7L, Stance.OFFERED)
-        }
-        requests.closeInterest("i2", RequestState.DONE)
-        val hk = housekeepingWith(
-            ds, crypto, clock, requests, giveUps = giveUps,
-            onGiveUpDied = { throw IllegalStateException("telegram is down") },
-        )
-
-        // A retry could not recover anything — the rows are gone — so the task reports
-        // its real result rather than asking db-scheduler to run the whole sweep again.
-        hk.sweep() shouldBe 0
     }
     "startScheduler registers both tasks with no task_data" {
         // db-scheduler's task_data is an unencrypted BYTEA — nothing chat- or

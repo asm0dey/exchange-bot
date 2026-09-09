@@ -43,10 +43,6 @@ private fun residualFraction(mine: BigDecimal, theirs: BigDecimal): BigDecimal =
  * person brings their own. Counterparties are strictly pairwise — the bot never
  * searches for a set that together covers a size (ADR 0006).
  *
- * [suppressed] hides a pairing without storing anything: it is evaluated fresh on every
- * call, so a pairing suppressed while a live showing already pairs the two people, or
- * while one of them has declined, reappears the moment that stops being true.
- *
  * With no reference rate, only requests quoted in the same currency as the subject can
  * be compared — that comparison needs no conversion.
  */
@@ -57,7 +53,6 @@ fun findCounterparties(
     tolerancePct: Int,
     limit: Int = 5,
     peerTolerancePct: (Request) -> Int = { tolerancePct },
-    suppressed: (Request, Request) -> Boolean = { _, _ -> false },
 ): List<Counterparty> {
     if (subject.state != RequestState.OPEN) return emptyList()
     val mineLimit = BigDecimal(tolerancePct).divide(HUNDRED, MC)
@@ -67,7 +62,6 @@ fun findCounterparties(
         .filter { it.state == RequestState.OPEN }
         .filter { it.side != subject.side }
         .filter { it.userId != subject.userId }
-        .filter { !suppressed(subject, it) }
         .mapNotNull { candidate ->
             val (a, b) = comparableSizes(subject, candidate, rate) ?: return@mapNotNull null
             // A non-positive size cannot carry a residual: dividing by it would throw, and

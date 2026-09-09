@@ -48,12 +48,11 @@ private class BatchFixture(
     val requests = RequestRepository(ds, crypto, stamped)
     val chats = ChatSettingsRepository(ds, crypto, clock)
     val people = PersonSettingsRepository(ds, crypto, clock)
-    val giveUps = NameGiveUpRepository(ds, crypto, clock)
     val pending = PendingAnnouncementRepository(ds, crypto, stamped)
     val rateRepo = RateRepository(ds).also { it.put("EUR", "RUB", BigDecimal("99.98"), T0) }
     val client = RateClient(HttpClient(MockEngine { respondError(HttpStatusCode.ServiceUnavailable) }))
     val rates = RateService(client, rateRepo, clock)
-    val interests = InterestService(requests, chats, people, rates, client, giveUps, pending, MembershipProbe { _, _ -> true })
+    val interests = InterestService(requests, chats, people, rates, client, pending, MembershipProbe { _, _ -> true })
 
     // Written from a window coroutine on Dispatchers.Default and read from the test thread.
     val announcements = CopyOnWriteArrayList<Announcement>()
@@ -82,11 +81,10 @@ private class BatchFixture(
         val requests = RequestRepository(ds, crypto, stamped)
         val chats = ChatSettingsRepository(ds, crypto, clock)
         val people = PersonSettingsRepository(ds, crypto, clock)
-        val giveUps = NameGiveUpRepository(ds, crypto, clock)
-        val pending = PendingAnnouncementRepository(ds, crypto, stamped)
+            val pending = PendingAnnouncementRepository(ds, crypto, stamped)
         val rates = RateService(client, RateRepository(ds), clock)
         val interests =
-            InterestService(requests, chats, people, rates, client, giveUps, pending, MembershipProbe { _, _ -> true })
+            InterestService(requests, chats, people, rates, client, pending, MembershipProbe { _, _ -> true })
         return AnnouncementBatcher(
             requests, chats, pending, interests, rates, sink,
             CoroutineScope(Dispatchers.Default), clock, window = window,

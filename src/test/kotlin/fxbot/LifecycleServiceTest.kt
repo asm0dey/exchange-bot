@@ -74,28 +74,6 @@ private fun lifecycle(
 private fun RequestRepository.put(chatId: Long, userId: Long, name: String, side: Side) =
     create(chatId, userId, name, side, "EUR", BigDecimal("1000"), EURRUB, 7)
 
-/** The same wiring, with the consent table in reach — what the bot-side `/done` is decided from. */
-private class ConsentFixture(name: String) {
-    private val ds = memDataSource(name).also { migrate(it) }
-    private val clock: Clock = Clock.fixed(T0, ZoneOffset.UTC)
-    private val crypto = testCrypto()
-    val requests = RequestRepository(ds, crypto, clock)
-    val giveUps = NameGiveUpRepository(ds, crypto, clock)
-    val svc = LifecycleService(
-        requests,
-        ChatSettingsRepository(ds, crypto, clock),
-        deadRateService(ds, clock),
-        PersonSettingsRepository(ds, crypto, clock),
-        DoneRefusalRepository(ds, clock),
-        NameLookup { null },
-    )
-
-    fun rest(chatId: Long, userId: Long, name: String, side: Side, interest: String? = null) =
-        requests.create(chatId, userId, name, side, "EUR", BigDecimal("1000"), EURRUB, 7, interest)
-
-    fun stateOf(r: Request) = requests.byRefToken(r.refToken)!!.state
-}
-
 /** The wiring a done needs now: person tolerances for the candidate search, and the refusal count. */
 private class AskFixture(name: String) {
     private val ds = memDataSource(name).also { migrate(it) }
@@ -393,175 +371,6 @@ class LifecycleServiceTest : StringSpec({
         repo.byRefToken(mine.refToken)!!.state shouldBe RequestState.OPEN
     }
 
-    // --- The give-up table no longer decides anything a done does: the confirmation
-    // replaced it, and the person a force close would have wronged is the person now
-    // being asked. These cases hold the fixture that recorded consent and prove it
-    // neither arms nor blocks the ask. Task 9 removes them with the mechanism itself.
-
-    "a bot-side peer who never agreed to pass names is asked, and nothing closes" {
-        val f = ConsentFixture("donenogiveup")
-        val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
-        val theirs = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
-        val showing = f.rest(-100L, 2L, "ann", Side.BID, "i2")
-        val r = f.svc.doneByShortId(NO_CHAT_ID, 1L, mine.shortId, NamedPeer.Somebody(2L))
-        r.shouldBeInstanceOf<ActionResult.Asked>()
-        r.peerUserId shouldBe 2L
-        f.stateOf(mine) shouldBe RequestState.OPEN
-        f.stateOf(theirs) shouldBe RequestState.OPEN
-        f.stateOf(showing) shouldBe RequestState.OPEN
-    }
-
-    "one side's recorded consent changes nothing about the ask" {
-        val f = ConsentFixture("donehalfgiveup")
-        val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
-        val theirs = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
-        f.giveUps.record(mine.refToken, theirs.refToken, 1L, Stance.OFFERED)
-        f.svc.doneByShortId(NO_CHAT_ID, 1L, mine.shortId, NamedPeer.Somebody(2L))
-            .shouldBeInstanceOf<ActionResult.Asked>()
-        f.stateOf(theirs) shouldBe RequestState.OPEN
-    }
-
-    "a mutual give-up does not close a bot-side /done either — the Yes does" {
-        val f = ConsentFixture("donegiveup")
-        val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
-        val theirs = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
-        val showing = f.rest(-100L, 2L, "ann", Side.BID, "i2")
-        f.giveUps.record(mine.refToken, theirs.refToken, 1L, Stance.OFFERED)
-        f.giveUps.record(theirs.refToken, mine.refToken, 2L, Stance.OFFERED)
-        f.svc.doneByShortId(NO_CHAT_ID, 1L, mine.shortId, NamedPeer.Somebody(2L))
-            .shouldBeInstanceOf<ActionResult.Asked>()
-        f.stateOf(mine) shouldBe RequestState.OPEN
-        f.svc.confirm(2L, mine.refToken, theirs.refToken).shouldBeInstanceOf<ActionResult.Ok>()
-        f.stateOf(mine) shouldBe RequestState.DONE
-        f.stateOf(theirs) shouldBe RequestState.DONE
-        f.stateOf(showing) shouldBe RequestState.DONE
-    }
-
-    "naming somebody unplaceable is refused on the bot-side, and closes nothing" {
-        val f = ConsentFixture("doneunplaceable")
-        val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
-        f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
-        val unplaceable = f.svc.doneByShortId(NO_CHAT_ID, 1L, mine.shortId, NamedPeer.Unplaceable)
-        unplaceable.shouldBeInstanceOf<ActionResult.Denied>()
-        // Not a word about anybody the caller may have meant.
-        unplaceable.text shouldNotContain "ann"
-        f.stateOf(mine) shouldBe RequestState.OPEN
-    }
-
-    "in a chat the named counterparty is asked, and an unplaceable name is refused" {
-        val f = ConsentFixture("donegroupunchanged")
-        val mine = f.rest(-100L, 1L, "bob", Side.OFFER)
-        val theirs = f.rest(-100L, 2L, "ann", Side.BID)
-        f.svc.doneByShortId(-100L, 1L, mine.shortId, NamedPeer.Somebody(2L))
-            .shouldBeInstanceOf<ActionResult.Asked>()
-        f.stateOf(mine) shouldBe RequestState.OPEN
-        f.svc.confirm(2L, mine.refToken, theirs.refToken).shouldBeInstanceOf<ActionResult.Ok>()
-        f.stateOf(mine) shouldBe RequestState.DONE
-        f.stateOf(theirs) shouldBe RequestState.DONE
-        // And a name nothing in the chat belongs to no longer closes the caller's own alone.
-        val alone = f.rest(-100L, 1L, "bob", Side.OFFER)
-        f.svc.doneByShortId(-100L, 1L, alone.shortId, NamedPeer.Unplaceable)
-            .shouldBeInstanceOf<ActionResult.Denied>()
-        f.stateOf(alone) shouldBe RequestState.OPEN
-    }
-
-    "a private /done with nobody named resolves to the sole match, and still only asks" {
-        val f = ConsentFixture("donenobody")
-        val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
-        val theirs = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
-        // Task 6: no handle typed resolves to whoever the bot would have suggested —
-        // here, the sole match — and it never closes the caller's own request on its own.
-        val r = f.svc.doneByShortId(NO_CHAT_ID, 1L, mine.shortId, NamedPeer.Nobody)
-        r.shouldBeInstanceOf<ActionResult.Asked>()
-        r.peerToken shouldBe theirs.refToken
-        f.stateOf(mine) shouldBe RequestState.OPEN
-        f.stateOf(theirs) shouldBe RequestState.OPEN
-    }
-
-    // --- The BUTTON path. `doneCallback` calls `done` directly with two ref tokens, so
-    // anyone can pair their own token with any other one they have seen. What that reaches
-    // now is an ask, not a close, and the person on the other end is the one who decides.
-
-    "a rewritten payload reaches an ask, not a close" {
-        val f = ConsentFixture("donebuttonnogiveup")
-        val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
-        val theirs = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
-        val showing = f.rest(-100L, 2L, "ann", Side.BID, "i2")
-        // Exactly what a rewritten give-up payload reaches: the presser's own token, and
-        // the peer's chatless token the give-up button published to them.
-        val r = f.svc.done(1L, mine.refToken, theirs.refToken)
-        r.shouldBeInstanceOf<ActionResult.Asked>()
-        // Nothing closed — not the peer's chatless row, and not its showings elsewhere.
-        f.stateOf(mine) shouldBe RequestState.OPEN
-        f.stateOf(theirs) shouldBe RequestState.OPEN
-        f.stateOf(showing) shouldBe RequestState.OPEN
-    }
-
-    "the button and the typed form reach the same ask" {
-        val f = ConsentFixture("donebuttonsamewords")
-        val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
-        val theirs = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
-        val button = f.svc.done(1L, mine.refToken, theirs.refToken)
-        val typed = f.svc.doneByShortId(NO_CHAT_ID, 1L, mine.shortId, NamedPeer.Somebody(2L))
-        button.shouldBeInstanceOf<ActionResult.Asked>()
-        typed.shouldBeInstanceOf<ActionResult.Asked>()
-        button shouldBe typed
-        // A name nothing here belongs to is still the one refusal, and the log says so.
-        val unplaceable = f.svc.doneByShortId(NO_CHAT_ID, 1L, mine.shortId, NamedPeer.Unplaceable)
-        unplaceable.shouldBeInstanceOf<ActionResult.Denied>()
-        unplaceable.outcomeLabel() shouldBe "denied"
-        button.outcomeLabel() shouldBe "asked"
-    }
-
-    "one side's consent does not arm the Done button either" {
-        val f = ConsentFixture("donebuttonhalfgiveup")
-        val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
-        val theirs = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
-        f.giveUps.record(mine.refToken, theirs.refToken, 1L, Stance.OFFERED)
-        f.svc.done(1L, mine.refToken, theirs.refToken).shouldBeInstanceOf<ActionResult.Asked>()
-        f.stateOf(mine) shouldBe RequestState.OPEN
-        f.stateOf(theirs) shouldBe RequestState.OPEN
-    }
-
-    "the Done button closes both once answered, either way round" {
-        val f = ConsentFixture("donebuttongiveup")
-        val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
-        val theirs = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
-        val showing = f.rest(-100L, 2L, "ann", Side.BID, "i2")
-        // The copy the peer was handed carries the tokens the other way round; that copy
-        // must work too, or half of the only legitimate flow would be broken.
-        f.svc.done(2L, theirs.refToken, mine.refToken).shouldBeInstanceOf<ActionResult.Asked>()
-        f.svc.confirm(1L, theirs.refToken, mine.refToken).shouldBeInstanceOf<ActionResult.Ok>()
-        f.stateOf(mine) shouldBe RequestState.DONE
-        f.stateOf(theirs) shouldBe RequestState.DONE
-        f.stateOf(showing) shouldBe RequestState.DONE
-    }
-
-    "a second press of a legitimate Done button still says already closed" {
-        val f = ConsentFixture("donebuttonstale")
-        val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
-        val theirs = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
-        f.svc.done(1L, mine.refToken, theirs.refToken).shouldBeInstanceOf<ActionResult.Asked>()
-        f.svc.confirm(2L, mine.refToken, theirs.refToken).shouldBeInstanceOf<ActionResult.Ok>()
-        // The button in the chat outlives the close, and its owner should still be told
-        // what actually happened rather than being asked all over again.
-        val again = f.svc.done(1L, mine.refToken, theirs.refToken)
-        again.shouldBeInstanceOf<ActionResult.Gone>()
-        again.text shouldContain "already"
-    }
-
-    "a group Done button asks whichever side did not press it" {
-        val f = ConsentFixture("donebuttongroup")
-        val mine = f.rest(-100L, 1L, "bob", Side.OFFER)
-        val theirs = f.rest(-100L, 2L, "ann", Side.BID)
-        val r = f.svc.done(2L, mine.refToken, theirs.refToken)
-        r.shouldBeInstanceOf<ActionResult.Asked>()
-        r.peerUserId shouldBe 1L
-        f.svc.confirm(1L, theirs.refToken, mine.refToken).shouldBeInstanceOf<ActionResult.Ok>()
-        f.stateOf(mine) shouldBe RequestState.DONE
-        f.stateOf(theirs) shouldBe RequestState.DONE
-    }
-
     // --- A done asks, and closes nothing until the counterparty answers.
 
     "a done asks the counterparty and closes nothing" {
@@ -578,6 +387,23 @@ class LifecycleServiceTest : StringSpec({
         r.text shouldContain "Nothing's closed yet"
         f.requests.byRefToken(mine.refToken)!!.state shouldBe RequestState.OPEN
         f.requests.byRefToken(theirs.refToken)!!.state shouldBe RequestState.OPEN
+    }
+
+    "the button and the typed form reach the same ask, and the log says which" {
+        val f = AskFixture("ask_button_equals_typed")
+        val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
+        f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
+        val theirs = f.requests.resting(NO_CHAT_ID).single { it.userId == 2L }
+        val button = f.svc.done(1L, mine.refToken, theirs.refToken)
+        val typed = f.svc.doneByShortId(NO_CHAT_ID, 1L, mine.shortId, NamedPeer.Somebody(2L))
+        button.shouldBeInstanceOf<ActionResult.Asked>()
+        typed.shouldBeInstanceOf<ActionResult.Asked>()
+        button shouldBe typed
+        // A name nothing here belongs to is still the one refusal, and the log says so.
+        val unplaceable = f.svc.doneByShortId(NO_CHAT_ID, 1L, mine.shortId, NamedPeer.Unplaceable)
+        unplaceable.shouldBeInstanceOf<ActionResult.Denied>()
+        unplaceable.outcomeLabel() shouldBe "denied"
+        button.outcomeLabel() shouldBe "asked"
     }
 
     "the ask goes to the chat somebody typed in, and privately to somebody who did not" {
@@ -606,7 +432,7 @@ class LifecycleServiceTest : StringSpec({
         ok.text shouldContain "@bob"
         ok.text shouldContain "@ann"
         ok.notify.shouldNotBeNull().chatId shouldBe -100L
-        ok.notify!!.reopenToken shouldBe mine.refToken
+        ok.notify.reopenToken shouldBe mine.refToken
     }
 
     "a Yes about a request that has already closed refuses, and names which side" {

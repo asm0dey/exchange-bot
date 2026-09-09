@@ -42,7 +42,6 @@ private class InterestFixture(
     val requests = RequestRepository(ds, crypto, clock)
     val chats = ChatSettingsRepository(ds, crypto, clock)
     val people = PersonSettingsRepository(ds, crypto, clock)
-    val giveUps = NameGiveUpRepository(ds, crypto, clock)
     val pending = PendingAnnouncementRepository(ds, crypto, clock)
     val rateRepo = RateRepository(ds)
     var feedCalls = 0
@@ -52,7 +51,7 @@ private class InterestFixture(
         else respond(feedBody, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
     }))
     val rates = RateService(client, rateRepo, clock)
-    val svc = InterestService(requests, chats, people, rates, client, giveUps, pending, membership)
+    val svc = InterestService(requests, chats, people, rates, client, pending, membership)
 
     fun withRate() = apply { rateRepo.put("EUR", "RUB", BigDecimal("99.98"), T0) }
     fun chat(id: Long, pair: CurrencyPair = EURRUB, tolerance: Int = 20, tif: Int = 7, fanOut: Boolean = true) =
@@ -178,57 +177,6 @@ class InterestServiceTest : StringSpec({
         val s = g.svc.state(2L, "ann", Verb.BUY, "2", "EUR", "RUB")
         s.shouldBeInstanceOf<InterestResult.Stated>()
         s.shown.flatMap { it.found }.shouldBeEmpty() // bob's own 20 excludes it, so they are not counterparties
-    }
-
-    "a pairing is suppressed while a live showing already pairs the two in some chat" {
-        val f = InterestFixture("suppressed").withRate().chat(-100L, EURRUB, tolerance = 20)
-        f.svc.state(1L, "bob", Verb.SELL, "1000", "EUR", "RUB")
-        val r = f.svc.state(2L, "ann", Verb.BUY, "1000", "EUR", "RUB")
-        r.shouldBeInstanceOf<InterestResult.Stated>()
-        r.shown.first().found.shouldBeEmpty() // they can already see each other by name in -100
-
-        // Close bob's showing in that chat only; the anonymous route comes back.
-        val bobsShowing = f.requests.resting(-100L).single { it.userId == 1L }
-        f.requests.transition(bobsShowing.refToken, RequestState.OPEN, RequestState.EXPIRED)
-        f.svc.counterparties(r.interest) shouldHaveSize 1
-    }
-
-    "a chat repaired while showings rest is still priced on the showings' own pair" {
-        // The two showings are 1000 EUR against 100000 RUB — the same size at EUR/RUB,
-        // so the chat already pairs them and the anonymous route is suppressed.
-        val f = InterestFixture("repaired").withRate().chat(-100L, EURRUB, tolerance = 20)
-        f.svc.state(1L, "bob", Verb.SELL, "1000", "EUR", "RUB")
-        val r = f.svc.state(2L, "ann", Verb.SELL, "100000", "RUB", "EUR")
-        r.shouldBeInstanceOf<InterestResult.Stated>()
-        r.shown.first().found.shouldBeEmpty()
-
-        // An admin repairs the chat. The showings still carry EUR/RUB; only the chat has
-        // moved. Pricing them at the chat's NEW pair would read ann's 100000 RUB as
-        // 90909 EUR and break a pairing that has not changed at all.
-        f.rateRepo.put("EUR", "USD", BigDecimal("1.1"), T0)
-        f.chats.save(ChatSettings(-100L, CurrencyPair("EUR", "USD"), 20, 7, true))
-        f.svc.counterparties(r.interest).shouldBeEmpty()
-    }
-
-    "sharing a chat is not enough — the showings there must actually pair" {
-        // Sizes that meet on the bot-side at 100 but not at the chat's 5.
-        val f = InterestFixture("sharechatnopair").withRate().chat(-100L, EURRUB, tolerance = 5)
-        f.people.save(PersonSettings(1L, 100))
-        f.people.save(PersonSettings(2L, 100))
-        f.svc.state(1L, "bob", Verb.SELL, "1000", "EUR", "RUB")
-        val r = f.svc.state(2L, "ann", Verb.BUY, "500", "EUR", "RUB")
-        r.shouldBeInstanceOf<InterestResult.Stated>()
-        r.shown.first().found shouldHaveSize 1
-    }
-
-    "a declined pairing is suppressed for both" {
-        val f = InterestFixture("declined").withRate()
-        val a = f.svc.state(1L, "bob", Verb.SELL, "1000", "EUR", "RUB") as InterestResult.Stated
-        val b = f.svc.state(2L, "ann", Verb.BUY, "1000", "EUR", "RUB") as InterestResult.Stated
-        b.shown.flatMap { it.found } shouldHaveSize 1
-        f.giveUps.record(b.interest.refToken, a.interest.refToken, 2L, Stance.DECLINED)
-        f.svc.counterparties(b.interest).shouldBeEmpty()
-        f.svc.counterparties(a.interest).shouldBeEmpty()
     }
 
     "everyone who gains a counterparty is named so they can be pinged" {

@@ -66,7 +66,6 @@ class InterestService(
     private val people: PersonSettingsRepository,
     private val rates: RateService,
     private val rateClient: RateClient,
-    private val giveUps: NameGiveUpRepository,
     private val pending: PendingAnnouncementRepository,
     private val membership: MembershipProbe,
 ) {
@@ -149,8 +148,7 @@ class InterestService(
 
     /**
      * The counterparties a showing has in ITS OWN chat, judged at that chat's tolerance —
-     * the same reading [AnnouncementBatcher] will announce there. Nothing about the
-     * bot-side suppression applies: in a chat everyone can already see everyone.
+     * the same reading [AnnouncementBatcher] will announce there.
      */
     private fun counterpartiesIn(showing: Request, chat: ChatSettings): List<Counterparty> =
         findCounterparties(
@@ -160,19 +158,18 @@ class InterestService(
             chat.tolerancePct,
         )
 
-    /**
-     * The counterparties resting in the bot for [subject]. Each side is judged at
-     * its own tolerance, and a pairing is hidden while the two can already see each other
-     * by name, or while one of them has declined. Nothing about the suppression is stored:
-     * it is re-evaluated here every time.
-     */
+    // A pairing is no longer suppressed while a showing already pairs the two people. With
+    // names everywhere the anonymous route is gone, and the rule that replaced it delivers
+    // each person one message where they spoke — a chat that may be muted must never be
+    // allowed to stand in for a message that was actually delivered.
+
+    /** The counterparties resting for [subject], each side judged at its own tolerance. */
     fun counterparties(subject: Request): List<Counterparty> = findCounterparties(
         subject = subject,
         resting = requests.resting(NO_CHAT_ID),
         rate = rates.status(subject.pair).rate,
         tolerancePct = people.get(subject.userId).tolerancePct,
         peerTolerancePct = { people.get(it.userId).tolerancePct },
-        suppressed = { a, b -> giveUps.declined(a.refToken, b.refToken) || alreadyPairedInAChat(a, b) },
     )
 
     /** Each interest once, with the chats where a showing still rests — where someone can still find you. */
@@ -213,29 +210,6 @@ class InterestService(
         } catch (e: Exception) {
             false
         }
-
-    /**
-     * Whether a live showing already pairs these two people in some chat — in which case
-     * the anonymous route adds nothing, because they can see each other by name there.
-     * Co-presence is not enough: the two showings must actually be counterparties at that
-     * chat's own tolerance, or a pairing that chat would never have suggested would
-     * silently block the one this side would.
-     */
-    private fun alreadyPairedInAChat(a: Request, b: Request): Boolean {
-        val mine = liveShowings(a)
-        if (mine.isEmpty()) return false
-        val theirs = liveShowings(b).associateBy { it.chatId }
-        return mine.any { showing ->
-            val peer = theirs[showing.chatId] ?: return@any false
-            // The showings' own pair, not `chat.pair`: an admin who repairs a chat while
-            // these rest leaves the two disagreeing, and a rate for the wrong pair would
-            // convert the sizes wrongly and flip the decision. `findCounterparties` has
-            // already established the two showings agree on a pair. The TOLERANCE is the
-            // chat's current one on purpose — that is the number the chat matches at now.
-            val chat = chats.get(showing.chatId)
-            findCounterparties(showing, listOf(peer), rates.status(showing.pair).rate, chat.tolerancePct).isNotEmpty()
-        }
-    }
 
     /** The rows of [interest] still resting in a chat — its bot-side row is not one of them. */
     private fun liveShowings(interest: Request): List<Request> =

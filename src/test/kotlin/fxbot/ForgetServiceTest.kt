@@ -18,9 +18,9 @@ private class Fixture(name: String) {
     val requests = RequestRepository(ds, crypto, clock)
     val log = MessageLogRepository(ds, crypto, clock)
     val people = PersonSettingsRepository(ds, crypto, clock)
-    val giveUps = NameGiveUpRepository(ds, crypto, clock)
+    val refusals = DoneRefusalRepository(ds, clock)
     val pending = PendingAnnouncementRepository(ds, crypto, clock)
-    val svc = ForgetService(requests, log, people, giveUps, pending, clock)
+    val svc = ForgetService(requests, log, people, refusals, pending, clock)
 }
 
 class ForgetServiceTest : StringSpec({
@@ -51,36 +51,35 @@ class ForgetServiceTest : StringSpec({
         f.svc.plan(1L, -100L, personal = false)
         f.log.messagesForUser(1L, -100L) shouldHaveSize 0
     }
-    "a personal forget erases the person's own settings, consents and pending announcements" {
+    "a personal forget erases the person's own settings and pending announcements" {
         val f = Fixture("personal")
         f.people.save(PersonSettings(1L, 40))
-        f.giveUps.record("tokA", "tokB", 1L, Stance.OFFERED)
         f.pending.add(-100L, "i1", 1L)
-        // Another person's rows, in the same three tables.
+        // Another person's rows, in the same two tables.
         f.people.save(PersonSettings(2L, 40))
-        f.giveUps.record("tokC", "tokD", 2L, Stance.OFFERED)
         f.pending.add(-100L, "i2", 2L)
 
         f.svc.plan(1L, NO_CHAT_ID, personal = true)
 
         f.people.get(1L).tolerancePct shouldBe DEFAULT_PERSON_TOLERANCE
-        f.giveUps.stanceOf("tokA", "tokB") shouldBe null
         f.pending.allFor(1L) shouldHaveSize 0
         f.people.get(2L).tolerancePct shouldBe 40
-        f.giveUps.stanceOf("tokC", "tokD") shouldBe Stance.OFFERED
         f.pending.allFor(2L) shouldHaveSize 1
     }
-    "a per-chat forget leaves the three personal tables alone" {
+    "a per-chat forget leaves the personal tables alone, but still erases the refusals" {
         val f = Fixture("impersonal")
         f.people.save(PersonSettings(1L, 40))
-        f.giveUps.record("tokA", "tokB", 1L, Stance.OFFERED)
         f.pending.add(-100L, "i1", 1L)
+        val mine = f.requests.create(-100L, 1L, "a", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7)
+        val theirs = f.requests.create(-100L, 2L, "b", Side.BID, "EUR", BigDecimal("1"), EURRUB, 7)
+        f.refusals.record(theirs.refToken, mine.refToken)
 
         f.svc.plan(1L, -100L, personal = false)
 
         f.people.get(1L).tolerancePct shouldBe 40
-        f.giveUps.stanceOf("tokA", "tokB") shouldBe Stance.OFFERED
         f.pending.allFor(1L) shouldHaveSize 1
+        // Erased whatever the shape of the forgetting: the request the row names is gone.
+        f.refusals.count(theirs.refToken, mine.refToken) shouldBe 0
     }
     "the messages cleaned up can be scoped to a different chat from the requests erased" {
         val f = Fixture("messagescope")

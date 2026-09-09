@@ -149,11 +149,10 @@ fun telegramMembership(bot: TelegramBot) = MembershipProbe { chatId, userId ->
 }
 
 /**
- * Looked up live at give-up time, so what passes is current and nothing is stored
- * (ADR 0007). A private chat's id IS the person's user id, so `getChat` addressed by user
- * id is the person's own chat with the bot — and a person who has never opened one is not
- * reachable at all, which comes back here as null and reads to [GiveUpService] as "no
- * route", exactly the outcome it already handles.
+ * Looked up when a message is about to name somebody who has no stored handle. A private
+ * chat's id IS the person's user id, so `getChat` addressed by user id is their own chat
+ * with the bot; somebody the bot cannot reach comes back null and keeps the label they
+ * always had.
  */
 fun telegramNames(bot: TelegramBot) = NameLookup { userId ->
     val chat = try {
@@ -164,39 +163,6 @@ fun telegramNames(bot: TelegramBot) = NameLookup { userId ->
         null
     }
     chat?.let { Handle(it.username, it.firstName ?: it.title ?: "this person") }
-}
-
-/**
- * Deliberately says nothing about the other person — not their handle, not their side,
- * not what they were interested in. Somebody who agreed to pass names and never got an
- * answer has learnt nothing about who was on the other end, and a message explaining
- * that the agreement died must not be the thing that tells them.
- */
-private const val GIVE_UP_DIED =
-    "You agreed to pass names on one of your interests, but the other side closed theirs " +
-        "before answering, so nothing was passed on. Your own interest is still waiting."
-
-/**
- * Tells each person whose agreement to pass names died with the other side's interest.
- * A private chat's id IS the person's user id, so this addresses them directly.
- *
- * Each recipient is INDEPENDENT. The rows are already deleted by the time this runs, so a
- * throw here is not retryable — it would simply lose the rest of the list, and one
- * unreachable person must not silently cost everybody after them their message. A
- * Telegram-side refusal (blocked bot) arrives as a `Response` this never inspects and is
- * genuinely nothing to do about; only a transport throw is caught, counted and stepped
- * over. Cancellation is not a failure and is rethrown.
- */
-fun telegramGiveUpDied(bot: TelegramBot): suspend (List<Long>) -> Unit = { userIds ->
-    for (userId in userIds) {
-        try {
-            message { GIVE_UP_DIED }.send(userId, bot)
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            adapterLogger.warn("give-up died notice: outcome=threw cause=${e.javaClass.simpleName}")
-        }
-    }
 }
 
 /**

@@ -12,7 +12,7 @@ class SchemaDriftTest : StringSpec({
         transaction(db) {
             val tables = arrayOf(
                 Requests, ChatSettingsTable, FxRates, SentMessages, SentMessageRefs,
-                PersonSettingsTable, NameGiveUps, PendingAnnouncements, DoneRefusals,
+                PersonSettingsTable, PendingAnnouncements, DoneRefusals,
             )
             // One-directional: this lists the statements Exposed would run to bring the
             // database up to what Tables.kt declares, so it catches a column renamed or

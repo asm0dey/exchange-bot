@@ -57,9 +57,8 @@ private const val FEED = """{"result":"success","base_code":"EUR","rates":{"RUB"
  * assigning every field into `Registry` because the handlers under test are top-level
  * functions that reach their dependencies through it.
  *
- * A [NameLookup] and `Registry.giveUpService` are wired deliberately: `GiveUpService`
- * refuses with "no route" when neither side has an `@username`, so a fixture without a
- * lookup would make every give-up test assert against a service that never ran.
+ * A [NameLookup] is wired deliberately: a done names the counterparty it asks, and
+ * somebody with no stored handle only has a name because this can look one up.
  *
  * The batcher's sink collects instead of sending. `telegramSink` is exercised on its own,
  * directly, further down — the point of that test is what it RECORDS, which is invisible
@@ -72,7 +71,6 @@ private class PrivateFixture(name: String) {
     val requests = RequestRepository(ds, crypto, clock)
     val chats = ChatSettingsRepository(ds, crypto, clock)
     val people = PersonSettingsRepository(ds, crypto, clock)
-    val giveUps = NameGiveUpRepository(ds, crypto, clock)
     val refusals = DoneRefusalRepository(ds, clock)
     val pending = PendingAnnouncementRepository(ds, crypto, clock)
     val messages = MessageLogRepository(ds, crypto, clock)
@@ -95,7 +93,7 @@ private class PrivateFixture(name: String) {
         Registry.settings = chats
         Registry.rates = rates
         Registry.people = people
-        Registry.giveUps = giveUps
+        Registry.refusals = refusals
         Registry.pending = pending
         Registry.messages = messages
         Registry.service = RequestService(requests, chats, rates)
@@ -104,13 +102,12 @@ private class PrivateFixture(name: String) {
         Registry.names = NameLookup { handles[it] }
         Registry.lifecycle = LifecycleService(requests, chats, rates, people, refusals, Registry.names)
         Registry.buttons = ButtonService(messages, requests)
-        Registry.forget = ForgetService(requests, messages, people, giveUps, pending)
+        Registry.forget = ForgetService(requests, messages, people, refusals, pending)
         Registry.admin = AdminService(chats, client)
         Registry.interests = InterestService(
-            requests, chats, people, rates, client, giveUps, pending,
+            requests, chats, people, rates, client, pending,
             MembershipProbe { _, _ -> true },
         )
-        Registry.giveUpService = GiveUpService(requests, giveUps, Registry.names)
         Registry.batcher = AnnouncementBatcher(
             requests, chats, pending, Registry.interests, rates,
             { announcements, pings -> delivered += announcements to pings },
@@ -194,31 +191,6 @@ private fun throwingBot(): TelegramBot = TelegramBot(
     token = "000:fake-token-for-tests",
     httpClient = HttpClient(MockEngine { throw java.io.IOException("connection refused") }),
 )
-
-/**
- * Blows up on the FIRST call and records every one after it — one unreachable recipient
- * partway through a list, which is the shape that silently costs everybody after them
- * their message if a loop has no per-recipient catch.
- */
-private fun throwingOnceBot(sink: MutableList<Call>): TelegramBot {
-    var thrown = false
-    return TelegramBot(
-        token = "000:fake-token-for-tests",
-        httpClient = HttpClient(MockEngine { request ->
-            if (!thrown) {
-                thrown = true
-                throw java.io.IOException("connection refused")
-            }
-            val bytes = (request.body as? OutgoingContent.ByteArrayContent)?.bytes() ?: ByteArray(0)
-            sink += Call(request.url.encodedPath.substringAfterLast('/'), bytes.decodeToString())
-            respond(
-                """{"ok":true,"result":{"message_id":1,"date":0,"chat":{"id":-100,"type":"group"}}}""",
-                HttpStatusCode.OK,
-                headersOf(HttpHeaders.ContentType, "application/json"),
-            )
-        }),
-    )
-}
 
 /** A `getChatMember` success carrying [status], with only the fields that variant requires. */
 private fun memberResult(status: String): String = when (status) {
@@ -357,77 +329,6 @@ class PrivateCommandTest : StringSpec({
         val sent = mutableListOf<Call>()
         tif(updateFor(DM, ChatType.Private, "/tif 7"), recordingBot(sent))
         sent.single().body shouldContain "group"
-    }
-
-    "a give-up press discloses nothing until the other side presses too" {
-        val f = PrivateFixture("givepress")
-        val a = f.requests.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
-        val b = f.requests.create(NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
-        val sent = mutableListOf<Call>()
-        giveUpCallback(a.refToken, b.refToken, callbackFrom(1L), recordingBot(sent))
-        sent.joinToString { it.body } shouldNotContain "@ann"
-        sent.joinToString { it.body } shouldNotContain "@bob"
-        f.giveUps.stanceOf(a.refToken, b.refToken) shouldBe Stance.OFFERED
-        // The peer is told about THEIR OWN interest, not the presser's.
-        val ask = sent.single { it.path == "sendMessage" }
-        ask.body shouldContain "buy 1,000 EUR"
-        // And nothing is recorded against the peer's private chat: neither has pressed
-        // anything that would justify storing a link between the two.
-        f.messages.logged(2L, 1L) shouldBe null
-    }
-
-    "a forged give-up payload, pressed by someone who owns neither request, discloses nothing" {
-        val f = PrivateFixture("giveforged")
-        val a = f.requests.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
-        val b = f.requests.create(NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
-        f.giveUps.record(b.refToken, a.refToken, 2L, Stance.OFFERED)
-        val sent = mutableListOf<Call>()
-        giveUpCallback(a.refToken, b.refToken, callbackFrom(99L), recordingBot(sent))
-        sent.joinToString { it.body } shouldNotContain "@ann"
-        sent.joinToString { it.body } shouldNotContain "@bob"
-        f.giveUps.stanceOf(a.refToken, b.refToken) shouldBe null
-        sent.none { it.path == "sendMessage" } shouldBe true
-    }
-
-    "both sides pressing passes each the other's handle, and both messages are recorded" {
-        val f = PrivateFixture("givedisclose")
-        val a = f.requests.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
-        val b = f.requests.create(NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
-        val sent = mutableListOf<Call>()
-        giveUpCallback(a.refToken, b.refToken, callbackFrom(1L), recordingBot(sent))
-        sent.clear()
-        giveUpCallback(b.refToken, a.refToken, callbackFrom(2L), recordingBot(sent))
-        val bodies = sent.filter { it.path == "sendMessage" }
-        bodies shouldHaveSize 2
-        bodies.joinToString { it.body } shouldContain "@ann"
-        bodies.joinToString { it.body } shouldContain "@bob"
-        // Both people are named on each disclosure, so /forget from either side reaches it.
-        f.messages.logged(1L, 1L).shouldNotBeNull().refTokens shouldContainExactlyInAnyOrder
-            listOf(a.refToken, b.refToken)
-        f.messages.messagesForUser(2L, null).map { it.chatId } shouldContain 1L
-    }
-
-    "a decline by the owner is recorded, and the pairing is suppressed for both" {
-        val f = PrivateFixture("declinepress")
-        val a = f.requests.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
-        val b = f.requests.create(NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
-        val sent = mutableListOf<Call>()
-        declineCallback(a.refToken, b.refToken, callbackFrom(1L), recordingBot(sent))
-        f.giveUps.stanceOf(a.refToken, b.refToken) shouldBe Stance.DECLINED
-        f.giveUps.declined(b.refToken, a.refToken) shouldBe true
-        sent.single().path shouldBe "answerCallbackQuery"
-        sent.single().body shouldNotContain "@ann"
-    }
-
-    "a decline pressed by someone who owns neither request writes nothing" {
-        val f = PrivateFixture("declineforged")
-        val a = f.requests.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
-        val b = f.requests.create(NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
-        val sent = mutableListOf<Call>()
-        declineCallback(a.refToken, b.refToken, callbackFrom(99L), recordingBot(sent))
-        f.giveUps.stanceOf(a.refToken, b.refToken) shouldBe null
-        sent.joinToString { it.body } shouldNotContain "@ann"
-        sent.joinToString { it.body } shouldNotContain "@bob"
     }
 
     "restating a residual makes a new request rather than rewriting the original" {
@@ -653,65 +554,9 @@ class PrivateCommandTest : StringSpec({
             Handle("bob", "The Group")
         telegramNames(botReplying(chatResult(null, null, null))).handleFor(1L) shouldBe
             Handle(null, "this person")
-        // Null is what GiveUpService already reads as "no route".
+        // Null is what every naming site reads as "keep the label they already had".
         telegramNames(refusingBot(mutableListOf())).handleFor(1L) shouldBe null
         telegramNames(throwingBot()).handleFor(1L) shouldBe null
-    }
-
-    "the give-up died notice reaches each person, and names nobody" {
-        val sent = mutableListOf<Call>()
-        telegramGiveUpDied(recordingBot(sent))(listOf(7L, 8L))
-
-        sent shouldHaveSize 2
-        sent.map { it.path } shouldBe listOf("sendMessage", "sendMessage")
-        // A private chat's id IS the person's user id, so these are the two recipients.
-        sent[0].body shouldContain """"chat_id":7"""
-        sent[1].body shouldContain """"chat_id":8"""
-        // Names nobody: no handle, no mention link, no counterparty id, no amount.
-        sent.forEach { call ->
-            call.body shouldNotContain "@"
-            call.body shouldNotContain "tg://user"
-            call.body shouldContain "nothing was passed on"
-        }
-    }
-
-    "one unreachable person does not cost everybody after them their notice" {
-        val sent = mutableListOf<Call>()
-        // The rows are already deleted when this runs, so a throw is not retryable —
-        // it would simply lose the rest of the list.
-        telegramGiveUpDied(throwingOnceBot(sent))(listOf(7L, 8L, 9L))
-
-        sent shouldHaveSize 2
-        sent[0].body shouldContain """"chat_id":8"""
-        sent[1].body shouldContain """"chat_id":9"""
-    }
-
-    // ---- Fix 5: the presser is never told a delivery that did not happen ----
-
-    "a disclosure that could not be delivered is not reported as delivered" {
-        val f = PrivateFixture("disclosefail")
-        val a = f.requests.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
-        val b = f.requests.create(NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
-        // Both sides have agreed, so the second press discloses.
-        f.giveUps.record(b.refToken, a.refToken, 2L, Stance.OFFERED)
-        val sent = mutableListOf<Call>()
-        giveUpCallback(a.refToken, b.refToken, callbackFrom(1L), refusingBot(sent))
-        val alert = sent.single { it.path == "answerCallbackQuery" }.body
-        alert shouldContain "couldn't get a message through to either of you"
-        alert shouldNotContain "I've passed your names"
-        // Nothing was recorded, because nothing arrived.
-        f.messages.logged(1L, 1L) shouldBe null
-        f.messages.logged(2L, 1L) shouldBe null
-    }
-
-    "a disclosure that lands is still reported as delivered" {
-        val f = PrivateFixture("discloseok")
-        val a = f.requests.create(NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
-        val b = f.requests.create(NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
-        f.giveUps.record(b.refToken, a.refToken, 2L, Stance.OFFERED)
-        val sent = mutableListOf<Call>()
-        giveUpCallback(a.refToken, b.refToken, callbackFrom(1L), recordingBot(sent))
-        sent.single { it.path == "answerCallbackQuery" }.body shouldContain "I've passed your names"
     }
 
     // ---- Fix 2: the hint every remaining refusal shares ----

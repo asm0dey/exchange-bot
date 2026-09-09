@@ -159,10 +159,4 @@ class MatcherTest : StringSpec({
         val a = req(Verb.SELL, "1000", "EUR")
         findCounterparties(a, listOf(req(Verb.BUY, "999", "EUR")), RATE, 20) shouldHaveSize 1
     }
-    "a suppressed pairing is not a counterparty, and reappears when the suppression lifts" {
-        val a = req(Verb.SELL, "1000", "EUR")
-        val b = req(Verb.BUY, "1000", "EUR")
-        findCounterparties(a, listOf(b), RATE, 20, suppressed = { _, _ -> true }).shouldBeEmpty()
-        findCounterparties(a, listOf(b), RATE, 20, suppressed = { _, _ -> false }) shouldHaveSize 1
-    }
 })

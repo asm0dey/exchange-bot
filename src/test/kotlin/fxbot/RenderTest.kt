@@ -63,8 +63,6 @@ class RenderTest : StringSpec({
         (Cb.done(a, b).toByteArray().size <= 64) shouldBe true
         (Cb.cancel(a).toByteArray().size <= 64) shouldBe true
         (Cb.reopen(a).toByteArray().size <= 64) shouldBe true
-        (Cb.giveUp(a, b).toByteArray().size <= 64) shouldBe true
-        (Cb.decline(a, b).toByteArray().size <= 64) shouldBe true
         // The longest payload of the lot: "restate?a=" + 22 + "&b=" + 22.
         Cb.restate(a, b).toByteArray().size shouldBe 57
         // "yes?a=" + 22 + "&b=" + 22.

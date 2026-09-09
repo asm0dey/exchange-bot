@@ -18,13 +18,11 @@ class Housekeeping(
     private val settings: ChatSettingsRepository,
     private val rates: RateService,
     private val log: MessageLogRepository,
-    private val giveUps: NameGiveUpRepository,
+    private val refusals: DoneRefusalRepository,
     private val pending: PendingAnnouncementRepository,
     private val clock: Clock = Clock.systemUTC(),
     /** Hands the lapsed tokens to the message-editing pass. Defaulted so tests need no bot. */
     private val onClosed: suspend (List<String>) -> Unit = {},
-    /** Tells whoever was still waiting on a give-up whose peer request closed. Names nobody. */
-    private val onGiveUpDied: suspend (List<Long>) -> Unit = {},
 ) {
     /**
      * Lapses what is past its time in force, prunes the message record, and drops the rows
@@ -34,23 +32,21 @@ class Housekeeping(
      * Order matters: the lapsing runs first, so the two `dropClosed` passes below see the
      * showings that just expired as closed and clean up after them in the same sweep.
      *
-     * The two hooks are INDEPENDENT of each other and neither can fail the task. Their
-     * rows are already deleted by the time they run, so a db-scheduler retry would find
-     * nothing left to tell anybody about — letting one throw would permanently lose the
-     * other's notifications, which is exactly the loss these hooks exist to prevent.
+     * The hook cannot fail the task: what it is told about is already committed by the
+     * time it runs, so a db-scheduler retry would sweep nothing and re-run the whole task
+     * for a message it could not resend anyway.
      */
     suspend fun sweep(): Int {
         val expired = requests.expireDue(clock.instant())
         val pruned = log.prune(clock.instant().minus(RETENTION))
-        val bereaved = giveUps.dropClosed()
+        val staleRefusals = refusals.dropClosed()
         val stalePending = pending.dropClosed() + pending.dropOlderThan(clock.instant().minus(PENDING_MAX_AGE))
-        logger.info("sweep: expired=${expired.size} pruned=$pruned giveUpsTold=${bereaved.size} pending=$stalePending")
+        logger.info("sweep: expired=${expired.size} pruned=$pruned refusals=$staleRefusals pending=$stalePending")
         if (expired.isNotEmpty()) fire("closed") { onClosed(expired) }
-        if (bereaved.isNotEmpty()) fire("giveUpDied") { onGiveUpDied(bereaved) }
         return expired.size
     }
 
-    /** Runs one hook, logging a fixed outcome label if it throws. Cancellation is not a failure. */
+    /** Runs the hook, logging a fixed outcome label if it throws. Cancellation is not a failure. */
     private suspend fun fire(hook: String, body: suspend () -> Unit) {
         try {
             body()
