@@ -1,6 +1,7 @@
 package fxbot
 
 import io.kotest.core.spec.style.StringSpec
+import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import io.kotest.matchers.string.shouldNotContain
@@ -170,6 +171,19 @@ class RenderTest : StringSpec({
         val text = renderStatus(many, viewerId = 3, limit = 20)
         text shouldContain "+5 more"
         text shouldContain "yours"
+    }
+
+    "a private reply names its counterparties and offers a done for each" {
+        val mine = req(userId = 1L, username = "bob")
+        val theirs = req(userId = 2L, username = "ann")
+        val stated = InterestResult.Stated(
+            interest = mine, showings = emptyList(),
+            shown = listOf(ShownInterest(mine, listOf(Counterparty(theirs, null, java.math.BigDecimal.ZERO)))),
+            status = RateStatus.Unavailable, appeared = emptyList(),
+        )
+        renderStated(stated) shouldContain "@ann"
+        renderStated(stated) shouldNotContain "no names"
+        statedButtons(stated).map { it.data } shouldContain Cb.done(mine.refToken, theirs.refToken)
     }
 
     "a stored handle beats a looked-up display name, and no lookup is made for it" {

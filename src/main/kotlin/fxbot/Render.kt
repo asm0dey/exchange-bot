@@ -173,29 +173,6 @@ fun announcementButtons(shown: List<ShownInterest>, book: NameBook = NameBook.EM
     }
 
 /**
- * The bot-side ping: side and stated amount, nothing else. No handle, no name, no user
- * id, no chat, no hint of which chats are shared (ADR 0007).
- */
-fun renderAppeared(mine: List<ShownInterest>): String {
-    val text = StringBuilder("Someone matches an interest you have with me:")
-    for (s in mine) {
-        text.append("\n• your ").append(describe(s.request)).append(':')
-        for (c in s.found) text.append("\n   ↳ someone wants to ").append(describe(c.request))
-    }
-    text.append("\nI haven't told them who you are. Offer to pass your name and I'll ask them the same.")
-    return text.toString()
-}
-
-/**
- * The two choices a pairing offers, in one place: every message that puts a
- * pairing in front of somebody offers exactly this pair, with exactly these words.
- */
-internal fun nameGiveUpButtons(mine: Request, theirs: Request): List<Button> = listOf(
-    Button("🤝 Pass my name (${describe(theirs)})", Cb.giveUp(mine.refToken, theirs.refToken)),
-    Button("🚫 Not this one", Cb.decline(mine.refToken, theirs.refToken)),
-)
-
-/**
  * What a just-closed done or cancel offers: undo, and — when the presser was left holding
  * more than the swap took — restating what is left, in one press. Said once, so the
  * command path and the button path cannot drift apart.
@@ -232,21 +209,18 @@ internal fun noticeButtons(n: Notice): List<Button> =
             },
         )
 
-fun appearedButtons(mine: List<ShownInterest>): List<Button> =
-    mine.flatMap { s -> s.found.flatMap { c -> nameGiveUpButtons(s.request, c.request) } }
-
-/** The immediate private reply: what was found, and where this is about to be shown. */
-fun renderStated(r: InterestResult.Stated): String {
+/** The immediate private reply: who matches, and where this is about to be shown. */
+fun renderStated(r: InterestResult.Stated, book: NameBook = NameBook.EMPTY): String {
     val text = StringBuilder("Noted: ${describe(r.interest)} (${r.interest.shortId}).")
-    if (r.found.isEmpty()) {
+    val found = r.shown.flatMap { it.found }
+    if (found.isEmpty()) {
         text.append("\nNobody matches yet — you're waiting.")
     } else {
-        text.append(
-            if (r.found.size == 1) "\n1 person matches, no names either way:"
-            else "\n${r.found.size} people match, no names either way:",
-        )
-        for (c in r.found) text.append("\n• someone wants to ").append(describe(c.request))
-        text.append("\nOffer to pass your name and I'll ask them the same.")
+        text.append(if (found.size == 1) "\n1 person matches:" else "\n${found.size} people match:")
+        for (c in found) {
+            text.append("\n• ").append(mentionOf(c.request, book)).append(" — ").append(describe(c.request))
+        }
+        text.append('\n').append(AGREE_LINE)
     }
     text.append(
         when (r.showings.size) {
@@ -260,12 +234,36 @@ fun renderStated(r: InterestResult.Stated): String {
 }
 
 /**
- * The pairings this statement found, each offered on the same two terms every other
- * message offers them on, plus one way out of the interest itself.
+ * A done per pairing, each naming the row it was found against, plus one way out of the
+ * interest itself. The two tokens on a button are always in the same scope, which is what
+ * [LifecycleService.done]'s pairing check requires.
  */
-fun statedButtons(r: InterestResult.Stated): List<Button> =
-    r.found.flatMap { c -> nameGiveUpButtons(r.interest, c.request) } +
-        Button("✖️ Cancel ${r.interest.shortId}", Cb.cancel(r.interest.refToken))
+fun statedButtons(r: InterestResult.Stated, book: NameBook = NameBook.EMPTY): List<Button> =
+    r.shown.flatMap { s ->
+        s.found.map { c ->
+            Button("✅ Done with ${plainName(c.request, book)}", Cb.done(s.request.refToken, c.request.refToken))
+        }
+    } + Button("✖️ Cancel ${r.interest.shortId}", Cb.cancel(r.interest.refToken))
+
+/** Somebody you already told the bot about has just gained a counterparty. */
+fun renderAppeared(mine: List<ShownInterest>, book: NameBook = NameBook.EMPTY): String {
+    val text = StringBuilder("Someone matches an interest you have with me:")
+    for (s in mine) {
+        text.append("\n• your ").append(describe(s.request)).append(':')
+        for (c in s.found) {
+            text.append("\n   ↳ ").append(mentionOf(c.request, book)).append(" — ").append(describe(c.request))
+        }
+    }
+    text.append('\n').append(AGREE_LINE)
+    return text.toString()
+}
+
+fun appearedButtons(mine: List<ShownInterest>, book: NameBook = NameBook.EMPTY): List<Button> =
+    mine.flatMap { s ->
+        s.found.map { c ->
+            Button("✅ Done with ${plainName(c.request, book)}", Cb.done(s.request.refToken, c.request.refToken))
+        }
+    }
 
 /** Each interest once, and where it still rests. A chat whose showing has lapsed is simply absent. */
 fun renderStandings(standings: List<InterestStanding>): String {

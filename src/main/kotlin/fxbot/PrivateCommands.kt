@@ -53,8 +53,10 @@ internal suspend fun handlePrivatePost(verb: Verb, update: ProcessedUpdate, bot:
             logCommand(command, "stated")
             // At once, and never waiting for the batch: the counterparties found, and
             // where this is about to be shown.
-            val text = renderStated(result)
-            val buttons = statedButtons(result)
+            val everyone = result.shown.flatMap { s -> listOf(s.request) + s.found.map { it.request } }
+            val book = nameBookFor(everyone, Registry.names)
+            val text = renderStated(result, book)
+            val buttons = statedButtons(result, book)
             val sent = message { text }
                 .options { parseMode = ParseMode.HTML }
                 .inlineKeyboardMarkup { buttons.forEach { b -> b.label callback b.data; br() } }
@@ -66,8 +68,7 @@ internal suspend fun handlePrivatePost(verb: Verb, update: ProcessedUpdate, bot:
             sent?.messageId?.let { id ->
                 Registry.messages.record(
                     chat.id, id,
-                    listOf(result.interest.refToken) + result.found.map { it.request.refToken },
-                    listOf(result.interest.userId) + result.found.map { it.request.userId },
+                    everyone.map { it.refToken }, everyone.map { it.userId },
                     text, buttons,
                 )
             }
@@ -208,11 +209,10 @@ class AnnouncementNotSent : RuntimeException("Telegram refused an announcement s
  * an unrecorded message degrades to an all-or-nothing keyboard strip and a token named by
  * a button but not recorded loses that button on the first refresh.
  *
- * A ping is deliberately NOT recorded. Its give-up buttons name the COUNTERPARTY's ref
- * token, so recording it would store that person's user ref against the recipient's
- * private chat — a stored link between two people with no chat, before either of
- * them pressed anything. A give-up button that later goes dead instead degrades to
- * `GiveUpService`'s existing "no longer waiting" refusal, which names nobody.
+ * A ping is recorded on the same terms, and for the stronger reason: it NAMES people, so
+ * a /forget from either side has to be able to reach it (ADR 0005). Its done buttons name
+ * the counterparty's ref token, and an unrecorded token loses its button on the first
+ * refresh.
  */
 fun telegramSink(bot: TelegramBot) = AnnouncementSink { announcements, pings ->
     // Counted here and thrown ONCE below, rather than thrown at the first refusal: a throw
@@ -243,12 +243,15 @@ fun telegramSink(bot: TelegramBot) = AnnouncementSink { announcements, pings ->
         Registry.messages.record(a.chatId, sent.messageId, a.refTokens, a.userIds, a.text, a.buttons)
     }
     for (p in pings) {
-        // Not checked, and deliberately: nothing about a ping is written down, so there is
-        // nothing to retry — `AnnouncementBatcher` drains the token set before the send.
-        // Throwing here would only re-send the announcements above, which DID land.
-        message { p.text }
+        // Not retried, and deliberately: nothing about a ping is persisted, so a refused send
+        // has nothing to re-render from — the batcher drained the token set before this ran.
+        val sent = message { p.text }
+            .options { parseMode = ParseMode.HTML }
             .inlineKeyboardMarkup { p.buttons.forEach { b -> b.label callback b.data; br() } }
-            .send(p.userId, bot)
+            .sendReturning(p.userId, bot)
+            .getOrNull()
+        // Recorded because it NAMES somebody now: a /forget from either person has to reach it.
+        if (sent != null) Registry.messages.record(p.userId, sent.messageId, p.refTokens, p.userIds, p.text, p.buttons)
     }
     // After the pings, which are nobody's retry and are independent of any chat that
     // refused above.

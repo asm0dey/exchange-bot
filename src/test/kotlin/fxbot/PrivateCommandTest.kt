@@ -274,19 +274,24 @@ class PrivateCommandTest : StringSpec({
         sent.last().body shouldContain "1 group"
     }
 
-    "the private reply is recorded against every ref token its buttons name" {
+    "the private reply names its counterparty and is recorded against every token it names" {
         val f = PrivateFixture("privrecord")
-        // Somebody to be found, so the reply carries give-up buttons naming THEIR token.
+        // Somebody to be found, so the reply carries a done button naming THEIR token.
         val peer = f.requests.create(
             NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7, "i2",
         )
         val sent = mutableListOf<Call>()
         sell(updateFor(DM, ChatType.Private, "/sell 10 EUR for RUB"), recordingBot(sent))
         val mine = f.requests.resting(NO_CHAT_ID).single { it.userId == 1L }
+        val showing = f.requests.resting(GROUP).single { it.userId == 1L }
         // recordingBot answers every send with message_id 1.
         val logged = f.messages.logged(DM, 1L).shouldNotBeNull()
-        logged.refTokens shouldContainExactlyInAnyOrder listOf(mine.refToken, peer.refToken)
-        logged.buttons.map { it.data } shouldContain Cb.giveUp(mine.refToken, peer.refToken)
+        // The counterparty is named in the text, not hidden behind "someone".
+        logged.text.shouldNotBeNull() shouldContain "@ann"
+        // The chatless row, its showing, and the counterparty found against the chatless row.
+        logged.refTokens shouldContainExactlyInAnyOrder
+            listOf(mine.refToken, showing.refToken, peer.refToken)
+        logged.buttons.map { it.data } shouldContain Cb.done(mine.refToken, peer.refToken)
         // Every token a button names is recorded, or ButtonService.refreshFor drops it.
         logged.buttons.forEach { b -> logged.refTokens.any { it in b.data } shouldBe true }
     }
@@ -475,7 +480,7 @@ class PrivateCommandTest : StringSpec({
         sent.none { it.path == "sendMessage" } shouldBe true
     }
 
-    "the sink records each announcement against every token its buttons name, and records no ping" {
+    "the sink records each announcement and each ping against every token its buttons name" {
         val f = PrivateFixture("sink")
         val a = f.requests.create(GROUP, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
         val b = f.requests.create(GROUP, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
@@ -483,6 +488,7 @@ class PrivateCommandTest : StringSpec({
             Button("✅ Done with ann", Cb.done(a.refToken, b.refToken)),
             Button("✖️ Cancel ${a.shortId}", Cb.cancel(a.refToken)),
         )
+        val pingButtons = listOf(Button("✅ Done with bob", Cb.done(b.refToken, a.refToken)))
         val sent = mutableListOf<Call>()
         telegramSink(recordingBot(sent)).deliver(
             listOf(
@@ -491,7 +497,12 @@ class PrivateCommandTest : StringSpec({
                     listOf(a.refToken, b.refToken), listOf(1L, 2L),
                 ),
             ),
-            listOf(Ping(2L, "Someone matches an interest you have with me:", nameGiveUpButtons(b, a))),
+            listOf(
+                Ping(
+                    2L, "Someone matches an interest you have with me:", pingButtons,
+                    listOf(b.refToken, a.refToken), listOf(2L, 1L),
+                ),
+            ),
         )
         val logged = f.messages.logged(GROUP, 1L).shouldNotBeNull()
         // The exact sent text, with no status line, and the same buttons in the same order.
@@ -501,10 +512,12 @@ class PrivateCommandTest : StringSpec({
         logged.refTokens shouldContainExactlyInAnyOrder listOf(a.refToken, b.refToken)
         // Paired 1:1 with each token's real owner, so /forget keys off the right person.
         f.messages.messagesForUser(2L, GROUP) shouldHaveSize 1
-        // The ping is deliberately NOT recorded: its give-up button names the
-        // counterparty's token, and storing that against this person's private chat would
-        // link two people with no chat before either pressed anything.
-        f.messages.logged(2L, 1L) shouldBe null
+        // The ping IS recorded now: it names somebody, so a /forget from either side has
+        // to reach it, and a token its button names would otherwise lose that button.
+        val ping = f.messages.logged(2L, 1L).shouldNotBeNull()
+        ping.buttons shouldBe pingButtons
+        ping.refTokens shouldContainExactlyInAnyOrder listOf(a.refToken, b.refToken)
+        f.messages.messagesForUser(1L, 2L) shouldHaveSize 1
         sent.filter { it.path == "sendMessage" } shouldHaveSize 2
     }
 

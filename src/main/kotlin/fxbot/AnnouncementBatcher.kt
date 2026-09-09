@@ -29,8 +29,14 @@ data class Announcement(
     val userIds: List<Long>,
 )
 
-/** One "a counterparty appeared" message the bot owes one person on the bot-side. */
-data class Ping(val userId: Long, val text: String, val buttons: List<Button>)
+/** One "a counterparty appeared" message the bot owes one person. */
+data class Ping(
+    val userId: Long,
+    val text: String,
+    val buttons: List<Button>,
+    val refTokens: List<String>,
+    val userIds: List<Long>,
+)
 
 /**
  * Where a flush's output goes. The Telegram layer sends and records; a test collects.
@@ -76,7 +82,8 @@ fun interface AnnouncementSink {
  * later window for the life of the process.
  *
  * A ping has no such backstop — nothing about one is written down — so a failed ping is
- * counted and gone.
+ * counted and gone. What IS written down, once it lands, is the message itself: a ping
+ * names people now, so [MessageLogRepository] has to hold it for /forget to redact.
  */
 class AnnouncementBatcher(
     private val requests: RequestRepository,
@@ -210,7 +217,15 @@ class AnnouncementBatcher(
             .map { ShownInterest(it, interests.counterparties(it)) }
             .filter { it.found.isNotEmpty() }
         if (mine.isEmpty()) return
-        sink.deliver(emptyList(), listOf(Ping(userId, renderAppeared(mine), appearedButtons(mine))))
+        val book = nameBookFor(mine.flatMap { s -> s.found.map { it.request } }, names)
+        val ping = Ping(
+            userId = userId,
+            text = renderAppeared(mine, book),
+            buttons = appearedButtons(mine, book),
+            refTokens = mine.map { it.request.refToken } + mine.flatMap { s -> s.found.map { it.request.refToken } },
+            userIds = mine.map { it.request.userId } + mine.flatMap { s -> s.found.map { it.request.userId } },
+        )
+        sink.deliver(emptyList(), listOf(ping))
     }
 
     /** Pending rows carry a chat REF; the real id comes out of the interest's own showings. */

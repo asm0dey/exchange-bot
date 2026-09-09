@@ -3,6 +3,7 @@ package fxbot
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.collections.shouldBeEmpty
+import io.kotest.matchers.collections.shouldContainExactlyInAnyOrder
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
@@ -184,10 +185,20 @@ class AnnouncementBatcherTest : StringSpec({
         val text = f.pings.single().text
         text shouldContain "sell 1,000 EUR"
         Regex("buy 1,000 EUR").findAll(text).count() shouldBe 2
-        f.pings.single().buttons shouldHaveSize 4
-        // Side and stated amount only — never a handle, a name, a user id, or a chat.
-        text.contains("ann") shouldBe false
-        text.contains("cat") shouldBe false
+        // One done per counterparty now, each pairing bob's own row with theirs.
+        val mine = f.requests.resting(NO_CHAT_ID).single { it.userId == 1L }
+        f.pings.single().buttons shouldHaveSize 2
+        f.pings.single().buttons.map { it.data } shouldContainExactlyInAnyOrder listOf(
+            Cb.done(mine.refToken, a.interest.refToken),
+            Cb.done(mine.refToken, c.interest.refToken),
+        )
+        // Both counterparties are named, and both are recorded so /forget can reach them.
+        text shouldContain "@ann"
+        text shouldContain "@cat"
+        f.pings.single().refTokens shouldContainExactlyInAnyOrder listOf(
+            mine.refToken, a.interest.refToken, c.interest.refToken,
+        )
+        f.pings.single().userIds shouldContainExactlyInAnyOrder listOf(1L, 2L, 3L)
     }
 
     "an announcement is re-rendered from live state, not replayed" {
@@ -198,7 +209,7 @@ class AnnouncementBatcherTest : StringSpec({
         f.batcher.flush(1L)
         f.announcements.single().text shouldContain "@ann"
         f.announcements.single().refTokens shouldHaveSize 2
-        r.found.shouldBeEmpty() // nothing was known at statement time
+        r.shown.flatMap { it.found }.shouldBeEmpty() // nothing was known at statement time
     }
 
     "an announcement whose showings have all closed is dropped" {
@@ -306,8 +317,9 @@ class AnnouncementBatcherTest : StringSpec({
         val text = f.pings.single().text
         text shouldContain "sell 1,000 EUR"
         text shouldContain "sell 5,000 GBP"
-        Regex("someone wants to buy").findAll(text).count() shouldBe 2
-        text.contains("ann") shouldBe false
-        text.contains("cat") shouldBe false
+        // One counterparty under each of his interests, each named.
+        Regex("buy 1,000 EUR|buy 5,000 GBP").findAll(text).count() shouldBe 2
+        text shouldContain "@ann"
+        text shouldContain "@cat"
     }
 })

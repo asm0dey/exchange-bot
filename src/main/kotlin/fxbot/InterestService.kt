@@ -46,7 +46,8 @@ sealed interface InterestResult {
     data class Stated(
         val interest: Request,
         val showings: List<Request>,
-        val found: List<Counterparty>,
+        /** The chatless row first, then each showing — every place this interest just landed. */
+        val shown: List<ShownInterest>,
         val status: RateStatus,
         val appeared: List<CounterpartyAppeared>,
     ) : InterestResult
@@ -111,25 +112,53 @@ class InterestService(
             NO_CHAT_ID, userId, username, sideFor(verb, mine, pair), mine, amount, pair,
             NO_CHAT_TIF_DAYS, interestToken,
         )
-        val showings = fanOutChats(userId, pair).map { chat ->
+        val shownIn = fanOutChats(userId, pair).map { chat ->
             // The chat's own orientation, so the side reads correctly to everyone there.
-            requests.create(
+            chat to requests.create(
                 chat.chatId, userId, username, sideFor(verb, mine, chat.pair), mine, amount, chat.pair,
                 chat.tifDays, interestToken,
             ).also { pending.add(chat.chatId, interestToken, userId) }
         }
+        val showings = shownIn.map { it.second }
 
-        val found = counterparties(interest)
+        val botWide = counterparties(interest)
+        val shown = named(
+            listOf(ShownInterest(interest, botWide)) +
+                shownIn.map { (chat, showing) -> ShownInterest(showing, counterpartiesIn(showing, chat)) },
+        )
         return InterestResult.Stated(
             interest = interest,
             showings = showings,
-            found = found,
+            shown = shown,
             status = rates.status(pair),
-            // Symmetric: each side's leftover was already judged against its own number,
-            // so everyone this interest found has just gained it in return.
-            appeared = found.map { CounterpartyAppeared(it.request.userId, it.request.refToken) },
+            // Symmetric: each side's leftover was already judged against its own number, so
+            // everyone found with no chat behind them has just gained a counterparty in return.
+            // The people found in a SHOWING hear about it in that chat's announcement instead.
+            appeared = botWide.map { CounterpartyAppeared(it.request.userId, it.request.refToken) },
         )
     }
+
+    /**
+     * The same person found in two of your groups is one counterparty, not two. First
+     * occurrence wins, so the pairing offered is the one in the place listed first.
+     */
+    private fun named(shown: List<ShownInterest>): List<ShownInterest> {
+        val seen = mutableSetOf<Long>()
+        return shown.map { s -> s.copy(found = s.found.filter { seen.add(it.request.userId) }) }
+    }
+
+    /**
+     * The counterparties a showing has in ITS OWN chat, judged at that chat's tolerance —
+     * the same reading [AnnouncementBatcher] will announce there. Nothing about the
+     * bot-side suppression applies: in a chat everyone can already see everyone.
+     */
+    private fun counterpartiesIn(showing: Request, chat: ChatSettings): List<Counterparty> =
+        findCounterparties(
+            showing,
+            requests.resting(showing.chatId),
+            rates.status(showing.pair).rate,
+            chat.tolerancePct,
+        )
 
     /**
      * The counterparties resting in the bot for [subject]. Each side is judged at

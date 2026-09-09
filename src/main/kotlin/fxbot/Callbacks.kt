@@ -302,8 +302,10 @@ private suspend fun restatePrivately(
         }
         is InterestResult.Stated -> {
             logCommand("restate_button", "stated")
-            val text = renderStated(result)
-            val buttons = statedButtons(result)
+            val everyone = result.shown.flatMap { s -> listOf(s.request) + s.found.map { it.request } }
+            val book = nameBookFor(everyone, Registry.names)
+            val text = renderStated(result, book)
+            val buttons = statedButtons(result, book)
             val sent = message { text }
                 .options { parseMode = ParseMode.HTML }
                 .inlineKeyboardMarkup { buttons.forEach { b -> b.label callback b.data; br() } }
@@ -312,8 +314,7 @@ private suspend fun restatePrivately(
             sent?.messageId?.let { id ->
                 Registry.messages.record(
                     userId, id,
-                    listOf(result.interest.refToken) + result.found.map { it.request.refToken },
-                    listOf(result.interest.userId) + result.found.map { it.request.userId },
+                    everyone.map { it.refToken }, everyone.map { it.userId },
                     text, buttons,
                 )
             }

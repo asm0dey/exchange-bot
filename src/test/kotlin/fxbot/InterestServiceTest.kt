@@ -2,6 +2,7 @@ package fxbot
 
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.collections.shouldBeEmpty
+import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldContainExactlyInAnyOrder
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
@@ -22,6 +23,8 @@ import java.time.temporal.ChronoUnit
 
 private val T0 = Instant.parse("2026-09-06T12:00:00Z")
 private val EURRUB = CurrencyPair("EUR", "RUB")
+private const val GROUP = -100L
+private const val OTHER_GROUP = -200L
 
 /** Everything an InterestService needs, plus the repositories a test wants to look at. */
 private class InterestFixture(
@@ -77,7 +80,7 @@ class InterestServiceTest : StringSpec({
         a.interest.pair shouldBe EURRUB
         b.interest.pair shouldBe EURRUB
         b.interest.side shouldBe a.interest.side
-        b.found.shouldBeEmpty()
+        b.shown.flatMap { it.found }.shouldBeEmpty()
     }
 
     "an interest rests in the bot and in every fitting chat" {
@@ -156,7 +159,9 @@ class InterestServiceTest : StringSpec({
         f.requests.create(-100L, 9L, "chatonly", Side.BID, "EUR", BigDecimal("10"), EURRUB, 7)
         val r = f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "RUB")
         r.shouldBeInstanceOf<InterestResult.Stated>()
-        r.found.shouldBeEmpty()
+        // The chatless row — the first entry — sees only what rests with no chat behind it.
+        // bob's SHOWING in -100 does find that person, and says so in its own entry.
+        r.shown.first().found.shouldBeEmpty()
     }
 
     "each side of a pairing with no chat is judged at its own tolerance" {
@@ -165,14 +170,14 @@ class InterestServiceTest : StringSpec({
         f.svc.state(1L, "bob", Verb.SELL, "4", "EUR", "RUB")
         val r = f.svc.state(2L, "ann", Verb.BUY, "2", "EUR", "RUB")
         r.shouldBeInstanceOf<InterestResult.Stated>()
-        r.found shouldHaveSize 1 // ann has nothing left over; bob's 50% leftover is within his own 50
+        r.shown.flatMap { it.found } shouldHaveSize 1 // ann has nothing left over; bob's 50% leftover is within his own 50
 
         val g = InterestFixture("owntolerance2").withRate()
         g.people.save(PersonSettings(1L, 20))
         g.svc.state(1L, "bob", Verb.SELL, "4", "EUR", "RUB")
         val s = g.svc.state(2L, "ann", Verb.BUY, "2", "EUR", "RUB")
         s.shouldBeInstanceOf<InterestResult.Stated>()
-        s.found.shouldBeEmpty() // bob's own 20 excludes it, so they are not counterparties
+        s.shown.flatMap { it.found }.shouldBeEmpty() // bob's own 20 excludes it, so they are not counterparties
     }
 
     "a pairing is suppressed while a live showing already pairs the two in some chat" {
@@ -180,7 +185,7 @@ class InterestServiceTest : StringSpec({
         f.svc.state(1L, "bob", Verb.SELL, "1000", "EUR", "RUB")
         val r = f.svc.state(2L, "ann", Verb.BUY, "1000", "EUR", "RUB")
         r.shouldBeInstanceOf<InterestResult.Stated>()
-        r.found.shouldBeEmpty() // they can already see each other by name in -100
+        r.shown.first().found.shouldBeEmpty() // they can already see each other by name in -100
 
         // Close bob's showing in that chat only; the anonymous route comes back.
         val bobsShowing = f.requests.resting(-100L).single { it.userId == 1L }
@@ -195,7 +200,7 @@ class InterestServiceTest : StringSpec({
         f.svc.state(1L, "bob", Verb.SELL, "1000", "EUR", "RUB")
         val r = f.svc.state(2L, "ann", Verb.SELL, "100000", "RUB", "EUR")
         r.shouldBeInstanceOf<InterestResult.Stated>()
-        r.found.shouldBeEmpty()
+        r.shown.first().found.shouldBeEmpty()
 
         // An admin repairs the chat. The showings still carry EUR/RUB; only the chat has
         // moved. Pricing them at the chat's NEW pair would read ann's 100000 RUB as
@@ -213,14 +218,14 @@ class InterestServiceTest : StringSpec({
         f.svc.state(1L, "bob", Verb.SELL, "1000", "EUR", "RUB")
         val r = f.svc.state(2L, "ann", Verb.BUY, "500", "EUR", "RUB")
         r.shouldBeInstanceOf<InterestResult.Stated>()
-        r.found shouldHaveSize 1
+        r.shown.first().found shouldHaveSize 1
     }
 
     "a declined pairing is suppressed for both" {
         val f = InterestFixture("declined").withRate()
         val a = f.svc.state(1L, "bob", Verb.SELL, "1000", "EUR", "RUB") as InterestResult.Stated
         val b = f.svc.state(2L, "ann", Verb.BUY, "1000", "EUR", "RUB") as InterestResult.Stated
-        b.found shouldHaveSize 1
+        b.shown.flatMap { it.found } shouldHaveSize 1
         f.giveUps.record(b.interest.refToken, a.interest.refToken, 2L, Stance.DECLINED)
         f.svc.counterparties(b.interest).shouldBeEmpty()
         f.svc.counterparties(a.interest).shouldBeEmpty()
@@ -291,6 +296,27 @@ class InterestServiceTest : StringSpec({
         (f.svc.state(1L, "bob", Verb.SELL, "lots", "EUR", "RUB") as InterestResult.Rejected).reason shouldContain "amount"
         (f.svc.state(1L, "bob", Verb.SELL, "10", "XYZ", "RUB") as InterestResult.Rejected).reason shouldContain "XYZ"
         (f.svc.state(1L, "bob", Verb.SELL, "10", "EUR", "EUR") as InterestResult.Rejected).reason shouldContain "two different"
+    }
+
+    "a statement reports counterparties from its showings as well as bot-wide" {
+        val f = InterestFixture("stated_shown")
+        f.chats.save(ChatSettings(GROUP, EURRUB, 20, 7, fanOut = true))
+        val inGroup = f.requests.create(GROUP, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7)
+        val r = f.svc.state(1L, "bob", Verb.SELL, "1000", "EUR", "RUB")
+        r.shouldBeInstanceOf<InterestResult.Stated>()
+        r.shown.first().request.chatId shouldBe NO_CHAT_ID
+        r.shown.flatMap { s -> s.found.map { it.request.refToken } } shouldContain inGroup.refToken
+    }
+
+    "nobody is named twice in one reply" {
+        val f = InterestFixture("stated_dedup")
+        f.chats.save(ChatSettings(GROUP, EURRUB, 20, 7, fanOut = true))
+        f.chats.save(ChatSettings(OTHER_GROUP, EURRUB, 20, 7, fanOut = true))
+        f.requests.create(GROUP, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7)
+        f.requests.create(OTHER_GROUP, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7)
+        val r = f.svc.state(1L, "bob", Verb.SELL, "1000", "EUR", "RUB")
+        r.shouldBeInstanceOf<InterestResult.Stated>()
+        r.shown.flatMap { s -> s.found.map { it.request.userId } } shouldBe listOf(2L)
     }
 
     "status lists each interest once, with where it still rests" {
