@@ -98,6 +98,7 @@ tasks.register<JavaExec>("keygen") {
 tasks.shadowJar {
     // build/libs/exchange-bot-<version>.jar, not "-all" — this is the release artifact.
     archiveClassifier.set("")
+    destinationDirectory.set(layout.buildDirectory.dir("release"))
     // tinylog, flyway and the JDBC drivers all ship META-INF/services entries; without
     // merging, the last jar in wins and the rest silently disappear.
     mergeServiceFiles()
