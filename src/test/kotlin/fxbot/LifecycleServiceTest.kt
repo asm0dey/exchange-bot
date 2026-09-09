@@ -384,11 +384,12 @@ class LifecycleServiceTest : StringSpec({
     "a done with nobody on the other side closes nothing at all" {
         val (svc, repo) = lifecycle("nopeernoresidual")
         val mine = repo.create(-100L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("600"), EURRUB, 7)
-        // A done is a statement about a swap, and a swap has a counterparty, so there is no
-        // longer a route that closes the caller's own request alone. Task 6 makes this
-        // resolve whoever the bot would have suggested instead of refusing outright.
-        svc.doneByShortId(-100L, 1L, mine.shortId, NamedPeer.Nobody)
-            .shouldBeInstanceOf<ActionResult.Denied>()
+        // A done is a statement about a swap, and a swap has a counterparty. With nobody
+        // else here to have swapped with, this resolves to a refusal that points at
+        // /cancel instead of closing the caller's own request alone.
+        val r = svc.doneByShortId(-100L, 1L, mine.shortId, NamedPeer.Nobody)
+        r.shouldBeInstanceOf<ActionResult.Gone>()
+        r.text shouldContain "/cancel ${mine.shortId}"
         repo.byRefToken(mine.refToken)!!.state shouldBe RequestState.OPEN
     }
 
@@ -464,14 +465,15 @@ class LifecycleServiceTest : StringSpec({
         f.stateOf(alone) shouldBe RequestState.OPEN
     }
 
-    "a private /done with nobody named closes nothing" {
+    "a private /done with nobody named resolves to the sole match, and still only asks" {
         val f = ConsentFixture("donenobody")
         val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
         val theirs = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
-        // Task 6 makes this resolve whoever the bot would have suggested; until then it
-        // refuses, and either way it never closes the caller's own request on its own.
-        f.svc.doneByShortId(NO_CHAT_ID, 1L, mine.shortId, NamedPeer.Nobody)
-            .shouldBeInstanceOf<ActionResult.Denied>()
+        // Task 6: no handle typed resolves to whoever the bot would have suggested —
+        // here, the sole match — and it never closes the caller's own request on its own.
+        val r = f.svc.doneByShortId(NO_CHAT_ID, 1L, mine.shortId, NamedPeer.Nobody)
+        r.shouldBeInstanceOf<ActionResult.Asked>()
+        r.peerToken shouldBe theirs.refToken
         f.stateOf(mine) shouldBe RequestState.OPEN
         f.stateOf(theirs) shouldBe RequestState.OPEN
     }
@@ -691,5 +693,58 @@ class LifecycleServiceTest : StringSpec({
         val r = f.svc.done(1L, mine.refToken, uninvolved.refToken)
         r.shouldBeInstanceOf<ActionResult.Asked>()
         f.requests.byRefToken(uninvolved.refToken)!!.state shouldBe RequestState.OPEN
+    }
+
+    // --- Task 6: /done with no handle typed resolves whoever the bot would have
+    // suggested — one of them asked, several of them offered as a choice, none of them
+    // pointed at /cancel.
+
+    "one counterparty and no handle typed: they are asked" {
+        val f = AskFixture("done_sole")
+        val mine = f.rest(-100L, 1L, "bob", Side.OFFER)
+        val theirs = f.rest(-100L, 2L, "ann", Side.BID)
+        val r = f.svc.doneByShortId(-100L, 1L, mine.shortId, NamedPeer.Nobody)
+        r.shouldBeInstanceOf<ActionResult.Asked>()
+        r.peerToken shouldBe theirs.refToken
+    }
+
+    "several counterparties and no handle typed: nothing is asked and nothing closes" {
+        val f = AskFixture("done_several")
+        val mine = f.rest(-100L, 1L, "bob", Side.OFFER)
+        val one = f.rest(-100L, 2L, "ann", Side.BID)
+        val two = f.rest(-100L, 3L, "cat", Side.BID)
+        val r = f.svc.doneByShortId(-100L, 1L, mine.shortId, NamedPeer.Nobody)
+        r.shouldBeInstanceOf<ActionResult.Choose>()
+        r.mineToken shouldBe mine.refToken
+        r.candidates.map { it.refToken } shouldContainExactlyInAnyOrder listOf(one.refToken, two.refToken)
+        f.requests.byRefToken(one.refToken)!!.state shouldBe RequestState.OPEN
+        f.requests.byRefToken(two.refToken)!!.state shouldBe RequestState.OPEN
+    }
+
+    "no counterparty at all: the refusal points at cancel" {
+        val f = AskFixture("done_none")
+        val mine = f.rest(-100L, 1L, "bob", Side.OFFER)
+        val r = f.svc.doneByShortId(-100L, 1L, mine.shortId, NamedPeer.Nobody)
+        r.shouldBeInstanceOf<ActionResult.Gone>()
+        r.text shouldContain "/cancel ${mine.shortId}"
+        f.requests.byRefToken(mine.refToken)!!.state shouldBe RequestState.OPEN
+    }
+
+    "a named counterparty still resolves" {
+        val f = AskFixture("done_named")
+        val mine = f.rest(-100L, 1L, "bob", Side.OFFER)
+        val theirs = f.rest(-100L, 2L, "ann", Side.BID)
+        f.rest(-100L, 3L, "cat", Side.BID)
+        val r = f.svc.doneByShortId(-100L, 1L, mine.shortId, NamedPeer.Somebody(2L))
+        r.shouldBeInstanceOf<ActionResult.Asked>()
+        r.peerToken shouldBe theirs.refToken
+    }
+
+    "a name nothing here belongs to refuses" {
+        val f = AskFixture("done_unplaceable")
+        val mine = f.rest(-100L, 1L, "bob", Side.OFFER)
+        f.rest(-100L, 2L, "ann", Side.BID)
+        f.svc.doneByShortId(-100L, 1L, mine.shortId, NamedPeer.Unplaceable)
+            .shouldBeInstanceOf<ActionResult.Denied>()
     }
 })

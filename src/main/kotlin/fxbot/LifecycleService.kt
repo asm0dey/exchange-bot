@@ -60,6 +60,16 @@ sealed interface ActionResult {
         val myToken: String,
         val peerToken: String,
     ) : ActionResult
+
+    /**
+     * More than one person could be meant, so nobody is asked and nothing closes. The
+     * declarer picks, and the pick is an ordinary done.
+     */
+    data class Choose(
+        override val text: String,
+        val mineToken: String,
+        val candidates: List<Request>,
+    ) : ActionResult
 }
 
 /** Fixed outcome label for command-surface logging — never the [ActionResult.text] itself,
@@ -69,6 +79,7 @@ internal fun ActionResult.outcomeLabel(): String = when (this) {
     is ActionResult.Denied -> "denied"
     is ActionResult.Gone -> "gone"
     is ActionResult.Asked -> "asked"
+    is ActionResult.Choose -> "choose"
 }
 
 /**
@@ -270,12 +281,14 @@ class LifecycleService(
             ?.let { RestateOffer(mine.refToken, theirs.refToken, it, mine.statedCurrency) }
 
     /**
-     * The typed form. What is left here is the part [done] cannot see: a typed name
-     * resolves to a PERSON, and this decides which request of theirs, if any, that means.
+     * The typed form. A done means a swap, and a swap has a counterparty, so there is no
+     * longer any route that closes a request without asking somebody: a name nothing here
+     * belongs to refuses, and no name at all resolves to whoever the bot would have
+     * suggested — one of them asked, several of them offered as a choice.
      *
-     * Every refusal is [NOT_A_PAIR], deliberately: a distinct "nobody by that name rests
-     * anything here" would answer, for any handle a stranger cares to type, whether that
-     * person is resting anything with the bot.
+     * The refusal for an unplaceable name is [NOT_A_PAIR], deliberately: a distinct "nobody
+     * by that name rests anything" would answer, for any handle a stranger cares to type,
+     * whether that person is resting anything with the bot.
      */
     suspend fun doneByShortId(chatId: Long, userId: Long, shortId: String, peer: NamedPeer): ActionResult {
         val mine = requests.byShortId(chatId, shortId)
@@ -283,14 +296,44 @@ class LifecycleService(
             // ever sent under an HTML parse mode by some future caller.
             ?: return ActionResult.Gone("I can't find a waiting request called ${escapeHtml(shortId)} here.")
         if (mine.userId != userId) return ActionResult.Denied("That's not your request.")
-        val noChat = chatId == NO_CHAT_ID
-        // In a chat an unplaceable name stays what it has always been — nobody was named,
-        // and the caller's own request closes alone.
-        if (noChat && peer is NamedPeer.Unplaceable) return ActionResult.Denied(NOT_A_PAIR)
-        val theirs = (peer as? NamedPeer.Somebody)
-            ?.let { named -> requests.resting(chatId).firstOrNull { it.userId == named.userId } }
-            ?: return ActionResult.Denied(NOT_A_PAIR)
-        return done(userId, mine.refToken, theirs.refToken)
+        if (peer is NamedPeer.Unplaceable) return ActionResult.Denied(NOT_A_PAIR)
+        if (peer is NamedPeer.Somebody) {
+            val theirs = requests.resting(chatId).firstOrNull { it.userId == peer.userId }
+                ?: return ActionResult.Denied(NOT_A_PAIR)
+            return done(userId, mine.refToken, theirs.refToken)
+        }
+        val candidates = candidatesFor(mine)
+        return when (candidates.size) {
+            0 -> ActionResult.Gone(
+                "I can't see anyone here you could have swapped with. " +
+                    "If you just want the request gone, /cancel ${mine.shortId}.",
+            )
+            1 -> done(userId, mine.refToken, candidates.single().refToken)
+            else -> ActionResult.Choose(
+                "More than one person here could be the one. Which of them?",
+                mine.refToken,
+                candidates,
+            )
+        }
+    }
+
+    /**
+     * Who the bot would suggest for [r] right now, judged the way that scope judges: a
+     * chat's own size tolerance for a showing or a typed request, each person's own for
+     * a request with no chat behind it.
+     */
+    private fun candidatesFor(r: Request): List<Request> {
+        val resting = requests.resting(r.chatId)
+        val rate = rates.status(r.pair).rate
+        val found = if (r.chatId == NO_CHAT_ID) {
+            findCounterparties(
+                r, resting, rate, people.get(r.userId).tolerancePct,
+                peerTolerancePct = { people.get(it.userId).tolerancePct },
+            )
+        } else {
+            findCounterparties(r, resting, rate, settings.get(r.chatId).tolerancePct)
+        }
+        return found.map { it.request }
     }
 
     /**

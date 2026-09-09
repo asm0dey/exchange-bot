@@ -109,6 +109,14 @@ private suspend fun respond(
                 answerCallbackQuery(it).options { text = result.text; showAlert = true }.send(user.id, bot)
             }
         }
+        is ActionResult.Choose -> {
+            // No callback today produces this — `doneByShortId` is the only source, and
+            // it is reached from the typed `/done` command through `replyToDecision`, not
+            // through here. This branch only keeps `respond`'s `when` exhaustive; Task 7
+            // wires `chooseButtons` onto whichever surface ends up sending it.
+            queryId?.let { answerCallbackQuery(it).send(user.id, bot) }
+            message { result.text }.send(update.getChat().id, bot)
+        }
     }
 }
 

@@ -117,6 +117,12 @@ fun suggestionButtons(subject: Request, found: List<Counterparty>, book: NameBoo
         Button("✅ Done with ${plainName(c.request, book)}", Cb.done(subject.refToken, c.request.refToken))
     } + Button("✖️ Cancel my request", Cb.cancel(subject.refToken))
 
+/** One button per person the declarer could have meant; pressing one is an ordinary done. */
+fun chooseButtons(r: ActionResult.Choose, book: NameBook = NameBook.EMPTY): List<Button> =
+    r.candidates.map { c ->
+        Button("✅ Done with ${plainName(c, book)}", Cb.done(r.mineToken, c.refToken))
+    }
+
 fun renderStatus(requests: List<Request>, viewerId: Long, limit: Int = 20, book: NameBook = NameBook.EMPTY): String {
     if (requests.isEmpty()) return "Nothing waiting in this chat right now."
     val shown = requests.take(limit)
