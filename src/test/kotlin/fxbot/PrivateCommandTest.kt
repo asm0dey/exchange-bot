@@ -754,7 +754,10 @@ class PrivateCommandTest : StringSpec({
         toNobody.single().body shouldContain "aren't a pair"
         // Neither closed the caller's own interest, and neither closed anybody else's.
         f.requests.byRefToken(mine.refToken)!!.state shouldBe RequestState.OPEN
-        toResting.single().body shouldContain "Nothing's closed yet"
+        // Two messages now go out for an ask: the declarer's own notice, and the question
+        // to the counterparty (Task 7) — keyed on text, not count, for the same reason the
+        // sibling test above is.
+        toResting.first { it.body.contains("Nothing's closed yet") }.shouldNotBeNull()
     }
 
     "a private /done closes both interests once the counterparty confirms" {

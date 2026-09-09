@@ -15,6 +15,8 @@ object Cb {
     const val GIVE_UP = "giveup"
     const val DECLINE = "decline"
     const val RESTATE = "restate"
+    const val CONFIRM = "yes"
+    const val REFUSE = "no"
 
     fun done(mine: String, theirs: String) = "$DONE?a=$mine&b=$theirs"
     fun cancel(token: String) = "$CANCEL?t=$token"
@@ -22,6 +24,14 @@ object Cb {
     fun giveUp(mine: String, theirs: String) = "$GIVE_UP?a=$mine&b=$theirs"
     fun decline(mine: String, theirs: String) = "$DECLINE?a=$mine&b=$theirs"
     fun restate(mine: String, theirs: String) = "$RESTATE?a=$mine&b=$theirs"
+
+    /**
+     * Answering a done. `a` is the DECLARER's request and `b` the request of the person
+     * being asked — the reverse of [done]'s ownership, and checked as such: a press is
+     * honoured only when the presser owns `b`.
+     */
+    fun confirm(declarer: String, mine: String) = "$CONFIRM?a=$declarer&b=$mine"
+    fun refuse(declarer: String, mine: String) = "$REFUSE?a=$declarer&b=$mine"
 }
 
 data class Button(val label: String, val data: String)
@@ -197,6 +207,24 @@ internal fun decisionButtons(result: ActionResult.Ok): List<Button> =
     listOf(Button("↩️ Reopen", Cb.reopen(result.touchedTokens.first()))) +
         listOfNotNull(
             result.restate?.let {
+                Button(
+                    "➕ State the rest (${formatAmount(it.amount)} ${it.currency})",
+                    Cb.restate(it.myToken, it.peerToken),
+                )
+            },
+        )
+
+/** The two answers a done allows, in one place so every ask offers exactly these words. */
+fun askButtons(r: ActionResult.Asked): List<Button> = listOf(
+    Button("✅ Yes, we did", Cb.confirm(r.myToken, r.peerToken)),
+    Button("✖️ No, we didn't", Cb.refuse(r.myToken, r.peerToken)),
+)
+
+/** What the other side of a confirmed done is offered: undo, and whatever it left them holding. */
+internal fun noticeButtons(n: Notice): List<Button> =
+    listOf(Button("↩️ Reopen", Cb.reopen(n.reopenToken))) +
+        listOfNotNull(
+            n.restate?.let {
                 Button(
                     "➕ State the rest (${formatAmount(it.amount)} ${it.currency})",
                     Cb.restate(it.myToken, it.peerToken),

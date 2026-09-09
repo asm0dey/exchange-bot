@@ -82,24 +82,29 @@ private suspend fun respond(
             // Dismisses the client's loading spinner without a popup — the outcome is
             // announced to the whole group below, since it may affect the other side too.
             queryId?.let { answerCallbackQuery(it).send(user.id, bot) }
+            if (result.touchedTokens.isEmpty()) {
+                // Nothing changed state — `refuse` is the only source of this today — so
+                // there is nothing to announce: no message, no keyboard, no refresh pass,
+                // no notice. The spinner dismissal above is the only answer the press gets.
+                return
+            }
             // HTML: the text may carry a `mention(...)` link/@name built by LifecycleService.
             val reply = message { result.text }.options { parseMode = ParseMode.HTML }
-            if (result.touchedTokens.isEmpty() || !undoable) {
-                reply.send(update.getChat().id, bot)
-            } else {
+            if (undoable) {
                 // Undo, one press away, plus whatever the swap left the presser holding. The
                 // undo names the presser's own closed request, so pressing it never risks
                 // reviving a request that belongs to whoever else was named above.
                 reply.inlineKeyboardMarkup { decisionButtons(result).forEach { b -> b.label callback b.data; br() } }
                     .send(update.getChat().id, bot)
+            } else {
+                reply.send(update.getChat().id, bot)
             }
-            if (result.touchedTokens.isNotEmpty()) Registry.buttons.refreshFor(result.touchedTokens, bot)
+            Registry.buttons.refreshFor(result.touchedTokens, bot)
+            result.notify?.let { sendNotice(it, bot) }
         }
         is ActionResult.Asked -> {
-            // Task 7 delivers the question.
-            queryId?.let { answerCallbackQuery(it).send(user.id, bot) }
-            // HTML: the text names the counterparty via `mention(...)`.
-            message { result.text }.options { parseMode = ParseMode.HTML }.send(update.getChat().id, bot)
+            queryId?.let { answerCallbackQuery(it).options { text = result.text }.send(user.id, bot) }
+            sendAsk(result, bot)
         }
         is ActionResult.Denied, is ActionResult.Gone -> {
             // Private to the presser: a refusal is not the group's business. This also
@@ -110,14 +115,37 @@ private suspend fun respond(
             }
         }
         is ActionResult.Choose -> {
-            // No callback today produces this — `doneByShortId` is the only source, and
-            // it is reached from the typed `/done` command through `replyToDecision`, not
-            // through here. This branch only keeps `respond`'s `when` exhaustive; Task 7
-            // wires `chooseButtons` onto whichever surface ends up sending it.
             queryId?.let { answerCallbackQuery(it).send(user.id, bot) }
-            message { result.text }.send(update.getChat().id, bot)
+            sendChoice(update.getChat().id, result, bot)
         }
     }
+}
+
+/**
+ * The counterparty's answer. Nothing here is trusted: the presser is re-derived from
+ * `callback_query.from.id`, both rows are re-read, and [LifecycleService.confirm] honours
+ * the press only when the presser owns the request `b` names.
+ */
+@CommandHandler.CallbackQuery(["yes"], autoAnswer = false)
+suspend fun confirmDoneCallback(a: String?, b: String?, update: ProcessedUpdate, bot: TelegramBot) {
+    val result = if (a == null || b == null) ActionResult.Denied(BROKEN_BUTTON)
+        else Registry.lifecycle.confirm(update.getUser().id, a, b)
+    logCommand("confirm_button", result.outcomeLabel())
+    respond(result, update, bot)
+}
+
+/**
+ * Saying no. Nothing closes, both requests keep resting, and the refusal is counted
+ * against the declarer — never against the person refusing.
+ */
+@CommandHandler.CallbackQuery(["no"], autoAnswer = false)
+suspend fun refuseDoneCallback(a: String?, b: String?, update: ProcessedUpdate, bot: TelegramBot) {
+    val result = if (a == null || b == null) ActionResult.Denied(BROKEN_BUTTON)
+        else Registry.lifecycle.refuse(update.getUser().id, a, b)
+    logCommand("refuse_button", result.outcomeLabel())
+    // An empty `touchedTokens` means `respond` answers the press without a keyboard and
+    // without a refresh pass — which is exactly right: nothing changed state.
+    respond(result, update, bot)
 }
 
 /**

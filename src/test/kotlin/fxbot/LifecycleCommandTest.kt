@@ -4,11 +4,14 @@ import eu.vendeli.tgbot.TelegramBot
 import eu.vendeli.tgbot.types.User
 import eu.vendeli.tgbot.types.chat.Chat
 import eu.vendeli.tgbot.types.chat.ChatType
+import eu.vendeli.tgbot.types.common.CallbackQuery
 import eu.vendeli.tgbot.types.common.Update
+import eu.vendeli.tgbot.types.component.CallbackQueryUpdate
 import eu.vendeli.tgbot.types.component.MessageUpdate
 import eu.vendeli.tgbot.types.msg.Message
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.collections.shouldHaveSize
+import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import io.kotest.matchers.string.shouldNotContain
@@ -20,7 +23,11 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.OutgoingContent
 import io.ktor.http.headersOf
+import java.math.BigDecimal
 import kotlin.time.Instant
+
+/** The one group these fixtures use — mirrors `PrivateCommandTest`'s constant of the same name. */
+private const val GROUP = -100L
 
 /**
  * Covers the `replyToDecision` fix (`LifecycleCommands.kt`): HTML parse mode must apply
@@ -73,8 +80,25 @@ private class LifecycleCommandFixture(name: String) {
         Registry.requests = requests
         Registry.messages = messages
         Registry.settings = settings
-        Registry.lifecycle = LifecycleService(requests, settings, rates, people, refusals, NameLookup { null })
+        Registry.names = NameLookup { null }
+        Registry.lifecycle = LifecycleService(requests, settings, rates, people, refusals, Registry.names)
         Registry.buttons = ButtonService(messages, requests)
+    }
+
+    /** A resting request, with sensible defaults for everything a done/ask test doesn't care about. */
+    fun rest(chatId: Long, userId: Long, username: String, side: Side): Request =
+        requests.create(chatId, userId, username, side, "EUR", BigDecimal("1000"), CurrencyPair("EUR", "RUB"), 7)
+
+    /** A `/done ...`-shaped update, typed by [userId] in the fixture's one group. */
+    fun groupUpdate(userId: Long, text: String): MessageUpdate = updateFor(GROUP, ChatType.Group, text, userId)
+
+    /** A press, in the fixture's one group — the shape `PrivateCommandTest`'s `callbackFrom` uses. */
+    fun callback(userId: Long, chatId: Long = GROUP): CallbackQueryUpdate {
+        val chat = Chat(id = chatId, type = ChatType.Group)
+        val user = User(id = userId, isBot = false, firstName = "P$userId")
+        val message = Message(messageId = 1L, date = Instant.fromEpochSeconds(0), chat = chat, from = user)
+        val query = CallbackQuery(id = "q1", from = user, message = message, chatInstance = "ci")
+        return CallbackQueryUpdate(updateId = 1, origin = Update(updateId = 1), callbackQuery = query)
     }
 }
 
@@ -153,5 +177,66 @@ class LifecycleCommandTest : StringSpec({
 
         val confirmation = sent.first { it.path == "sendMessage" }
         confirmation.body shouldContain "\"parse_mode\":\"HTML\""
+    }
+
+    "a done sends the question to the counterparty and tells the declarer nothing closed" {
+        val f = LifecycleCommandFixture("cmd_ask")
+        val mine = f.rest(GROUP, 1L, "bob", Side.OFFER)
+        f.rest(GROUP, 2L, "ann", Side.BID)
+        val calls = mutableListOf<Call>()
+        val bot = recordingBot(calls)
+        done(f.groupUpdate(1L, "/done ${mine.shortId}"), bot)
+        val sent = calls.filter { it.path == "sendMessage" }
+        sent shouldHaveSize 2
+        sent.first { it.body.contains("Did you?") }.body shouldContain "\"yes?a="
+        sent.first { it.body.contains("Did you?") }.body shouldContain "\"no?a="
+        sent.first { it.body.contains("Nothing's closed yet") }.shouldNotBeNull()
+    }
+
+    "a Yes closes both and tells the declarer where they spoke" {
+        val f = LifecycleCommandFixture("cmd_yes")
+        val mine = f.rest(GROUP, 1L, "bob", Side.OFFER)
+        val theirs = f.rest(GROUP, 2L, "ann", Side.BID)
+        val calls = mutableListOf<Call>()
+        val bot = recordingBot(calls)
+        confirmDoneCallback(mine.refToken, theirs.refToken, f.callback(2L), bot)
+        f.requests.byRefToken(mine.refToken)!!.state shouldBe RequestState.DONE
+        calls.count { it.path == "sendMessage" && it.body.contains("Marked done") } shouldBe 2
+    }
+
+    "a No closes nothing and the declarer is not told" {
+        val f = LifecycleCommandFixture("cmd_no")
+        val mine = f.rest(GROUP, 1L, "bob", Side.OFFER)
+        val theirs = f.rest(GROUP, 2L, "ann", Side.BID)
+        val calls = mutableListOf<Call>()
+        val bot = recordingBot(calls)
+        refuseDoneCallback(mine.refToken, theirs.refToken, f.callback(2L), bot)
+        f.requests.byRefToken(mine.refToken)!!.state shouldBe RequestState.OPEN
+        calls.none { it.path == "sendMessage" } shouldBe true
+    }
+
+    // Cb.confirm/refuse deliberately reverse `done`'s ownership: `a` is always the
+    // declarer's request, and a press is honoured only when the presser owns `b`. These
+    // pin that direction — the declarer pressing their own ask must not authorize it.
+    "confirmDoneCallback only honours the peer who owns b, not the declarer who owns a" {
+        val f = LifecycleCommandFixture("cmd_yes_wrong_presser")
+        val mine = f.rest(GROUP, 1L, "bob", Side.OFFER)
+        val theirs = f.rest(GROUP, 2L, "ann", Side.BID)
+        val calls = mutableListOf<Call>()
+        val bot = recordingBot(calls)
+        confirmDoneCallback(mine.refToken, theirs.refToken, f.callback(1L), bot)
+        f.requests.byRefToken(mine.refToken)!!.state shouldBe RequestState.OPEN
+        f.requests.byRefToken(theirs.refToken)!!.state shouldBe RequestState.OPEN
+    }
+
+    "refuseDoneCallback only honours the peer who owns b, not the declarer who owns a" {
+        val f = LifecycleCommandFixture("cmd_no_wrong_presser")
+        val mine = f.rest(GROUP, 1L, "bob", Side.OFFER)
+        val theirs = f.rest(GROUP, 2L, "ann", Side.BID)
+        val calls = mutableListOf<Call>()
+        val bot = recordingBot(calls)
+        refuseDoneCallback(mine.refToken, theirs.refToken, f.callback(1L), bot)
+        f.requests.byRefToken(mine.refToken)!!.state shouldBe RequestState.OPEN
+        f.requests.byRefToken(theirs.refToken)!!.state shouldBe RequestState.OPEN
     }
 })

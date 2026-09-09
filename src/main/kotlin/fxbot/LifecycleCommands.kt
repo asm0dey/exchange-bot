@@ -10,6 +10,7 @@ import eu.vendeli.tgbot.types.component.MessageUpdate
 import eu.vendeli.tgbot.types.component.ParseMode
 import eu.vendeli.tgbot.types.component.ProcessedUpdate
 import eu.vendeli.tgbot.types.component.getChat
+import eu.vendeli.tgbot.types.component.getOrNull
 import eu.vendeli.tgbot.types.component.getUser
 import eu.vendeli.tgbot.types.component.isSuccess
 import eu.vendeli.tgbot.types.msg.EntityType
@@ -37,11 +38,18 @@ private suspend fun replyToDecision(
     result: ActionResult,
     undoable: Boolean = true,
 ) {
-    if (result is ActionResult.Asked) {
-        // Task 7 delivers the question.
-        // HTML: the text names the counterparty via `mention(...)`.
-        message { result.text }.options { parseMode = ParseMode.HTML }.send(chatId, bot)
-        return
+    when (result) {
+        is ActionResult.Asked -> {
+            // HTML: the text names the counterparty via `mention(...)`.
+            message { result.text }.options { parseMode = ParseMode.HTML }.send(chatId, bot)
+            sendAsk(result, bot)
+            return
+        }
+        is ActionResult.Choose -> {
+            sendChoice(chatId, result, bot)
+            return
+        }
+        else -> {}
     }
     val reply = message { result.text }.let {
         if (result is ActionResult.Ok) it.options { parseMode = ParseMode.HTML } else it
@@ -57,6 +65,46 @@ private suspend fun replyToDecision(
         reply.send(chatId, bot)
     }
     Registry.buttons.refreshFor(result.touchedTokens, bot)
+    result.notify?.let { sendNotice(it, bot) }
+}
+
+/**
+ * The question, where the counterparty spoke. Recorded against BOTH people, because it
+ * names the declarer and a `/forget` from either side must reach it (ADR 0005).
+ */
+internal suspend fun sendAsk(r: ActionResult.Asked, bot: TelegramBot) {
+    val buttons = askButtons(r)
+    val sent = message { r.question }
+        .options { parseMode = ParseMode.HTML }
+        .inlineKeyboardMarkup { buttons.forEach { b -> b.label callback b.data; br() } }
+        .sendReturning(r.peerChatId, bot)
+        .getOrNull()
+    sent?.messageId?.let { id ->
+        Registry.messages.record(
+            r.peerChatId, id,
+            listOf(r.myToken, r.peerToken),
+            listOf(r.declarerUserId, r.peerUserId),
+            r.question, buttons,
+        )
+    }
+}
+
+/** The other side of a confirmed done, told where THEY spoke rather than where the press happened. */
+internal suspend fun sendNotice(n: Notice, bot: TelegramBot) {
+    val buttons = noticeButtons(n)
+    message { n.text }
+        .options { parseMode = ParseMode.HTML }
+        .inlineKeyboardMarkup { buttons.forEach { b -> b.label callback b.data; br() } }
+        .send(n.chatId, bot)
+}
+
+/** Nobody is asked and nothing closes — the declarer just picks. */
+internal suspend fun sendChoice(chatId: Long, r: ActionResult.Choose, bot: TelegramBot) {
+    val book = nameBookFor(r.candidates, Registry.names)
+    val buttons = chooseButtons(r, book)
+    message { r.text }
+        .inlineKeyboardMarkup { buttons.forEach { b -> b.label callback b.data; br() } }
+        .send(chatId, bot)
 }
 
 /**

@@ -66,10 +66,17 @@ class RenderTest : StringSpec({
         (Cb.decline(a, b).toByteArray().size <= 64) shouldBe true
         // The longest payload of the lot: "restate?a=" + 22 + "&b=" + 22.
         Cb.restate(a, b).toByteArray().size shouldBe 57
+        // "yes?a=" + 22 + "&b=" + 22.
+        Cb.confirm(a, b).toByteArray().size shouldBe 53
+        (Cb.refuse(a, b).toByteArray().size <= 64) shouldBe true
     }
     "callback data uses the framework's query syntax" {
         Cb.cancel("tok") shouldBe "cancel?t=tok"
         Cb.done("x", "y") shouldBe "done?a=x&b=y"
+    }
+    "confirm and refuse reverse done's ownership: a is the declarer, b the person asked" {
+        Cb.confirm("declarer", "asked") shouldBe "yes?a=declarer&b=asked"
+        Cb.refuse("declarer", "asked") shouldBe "no?a=declarer&b=asked"
     }
 
     "a suggestion names each counterparty and how to reach them" {
@@ -113,6 +120,49 @@ class RenderTest : StringSpec({
         buttons[0].label shouldContain "alice"
         buttons[0].data shouldBe Cb.done("s".repeat(22), "c".repeat(22))
         buttons[1].data shouldBe Cb.cancel("s".repeat(22))
+    }
+
+    "one choose button per candidate, each an ordinary done with the declarer's own token" {
+        val mine = r(Verb.SELL, "1000", "EUR", 1, "bob", token = "m".repeat(22))
+        val alice = r(Verb.BUY, "900", "EUR", 2, "alice", token = "a".repeat(22))
+        val carol = r(Verb.BUY, "300", "EUR", 3, "carol", token = "c".repeat(22))
+        val result = ActionResult.Choose("More than one person here could be the one. Which of them?", mine.refToken, listOf(alice, carol))
+        val buttons = chooseButtons(result)
+        buttons.size shouldBe 2
+        buttons[0].label shouldContain "alice"
+        buttons[0].data shouldBe Cb.done(mine.refToken, alice.refToken)
+        buttons[1].label shouldContain "carol"
+        buttons[1].data shouldBe Cb.done(mine.refToken, carol.refToken)
+    }
+
+    "askButtons offers exactly Yes and No, built from myToken and peerToken" {
+        val asked = ActionResult.Asked(
+            text = "Asked @ann to confirm. Nothing's closed yet.",
+            declarerUserId = 1L,
+            peerUserId = 2L,
+            peerChatId = 2L,
+            question = "@bob says you two swapped 1,000 EUR. Did you?",
+            myToken = "m".repeat(22),
+            peerToken = "p".repeat(22),
+        )
+        val buttons = askButtons(asked)
+        buttons.size shouldBe 2
+        buttons[0].data shouldBe Cb.confirm("m".repeat(22), "p".repeat(22))
+        buttons[1].data shouldBe Cb.refuse("m".repeat(22), "p".repeat(22))
+    }
+
+    "noticeButtons offers Reopen alone, plus a restate button only when there's a residual" {
+        val plain = Notice(chatId = 2L, text = "Confirmed.", reopenToken = "r".repeat(22), restate = null)
+        noticeButtons(plain).size shouldBe 1
+        noticeButtons(plain)[0].data shouldBe Cb.reopen("r".repeat(22))
+
+        val withResidual = Notice(
+            chatId = 2L, text = "Confirmed.", reopenToken = "r".repeat(22),
+            restate = RestateOffer("m".repeat(22), "p".repeat(22), BigDecimal("50"), "EUR"),
+        )
+        val buttons = noticeButtons(withResidual)
+        buttons.size shouldBe 2
+        buttons[1].data shouldBe Cb.restate("m".repeat(22), "p".repeat(22))
     }
 
     "status caps the list and says how many were left out" {
