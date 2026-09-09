@@ -29,13 +29,50 @@ data class Button(val label: String, val data: String)
 fun escapeHtml(s: String): String =
     s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
+/** What Telegram knows about somebody right now, asked at render time and never stored. */
+data class Handle(val username: String?, val displayName: String)
+
+/** Looks somebody up live. The Telegram layer answers with `getChat`; a test answers with a map. */
+fun interface NameLookup {
+    suspend fun handleFor(userId: Long): Handle?
+}
+
 /** `@name` when there is one, otherwise the only mention Telegram allows. */
 fun mention(username: String?, userId: Long, displayName: String): String =
     if (username != null) "@${escapeHtml(username)}"
     else """<a href="tg://user?id=$userId">${escapeHtml(displayName)}</a>"""
 
-/** How a request's author is named everywhere: the handle, or a link with the stand-in label. */
-internal fun mentionOf(r: Request): String = mention(r.username, r.userId, r.username ?: "this person")
+/**
+ * The display names for the people a message is about to name who carry no stored handle.
+ * Empty is always a valid answer: a person nothing could be looked up for keeps the label
+ * they have always had, and their `tg://user?id=` link still works.
+ */
+@JvmInline
+value class NameBook(private val byUserId: Map<Long, String>) {
+    fun label(r: Request): String = byUserId[r.userId] ?: "this person"
+
+    companion object {
+        val EMPTY = NameBook(emptyMap())
+    }
+}
+
+/**
+ * One lookup per person who needs one, and none at all for anybody whose handle is already
+ * sealed into their request — the stored username is the source, and this is the fallback
+ * for the one thing it cannot supply.
+ */
+suspend fun nameBookFor(requests: List<Request>, names: NameLookup): NameBook {
+    val need = requests.filter { it.username == null }.map { it.userId }.distinct()
+    if (need.isEmpty()) return NameBook.EMPTY
+    return NameBook(need.mapNotNull { id -> names.handleFor(id)?.let { id to it.displayName } }.toMap())
+}
+
+/** How a request's author is named everywhere: the handle, or a link over their display name. */
+internal fun mentionOf(r: Request, book: NameBook = NameBook.EMPTY): String =
+    mention(r.username, r.userId, r.username ?: book.label(r))
+
+/** The same person on a button, where Telegram allows no markup at all. */
+internal fun plainName(r: Request, book: NameBook = NameBook.EMPTY): String = r.username ?: book.label(r)
 
 /** Said once, so every message that carries it cannot drift apart. */
 internal const val AGREE_LINE = "Agree the rate between yourselves, then press Done."
@@ -56,14 +93,14 @@ fun describe(r: Request): String {
     return "$verb ${formatAmount(r.statedAmount)} ${r.statedCurrency}"
 }
 
-fun renderSuggestions(found: List<Counterparty>, status: RateStatus): String {
+fun renderSuggestions(found: List<Counterparty>, status: RateStatus, book: NameBook = NameBook.EMPTY): String {
     val lines = StringBuilder()
     if (found.isEmpty()) {
         lines.append("No one matches yet — yours is resting here.")
     } else {
         lines.append(if (found.size == 1) "1 person matches:" else "${found.size} people match:")
         for (c in found) {
-            lines.append("\n• ").append(mentionOf(c.request)).append(" — ").append(describe(c.request))
+            lines.append("\n• ").append(mentionOf(c.request, book)).append(" — ").append(describe(c.request))
             val n = c.notional
             if (n != null && c.request.statedCurrency != c.request.pair.base) {
                 lines.append(" (≈").append(formatNotional(n)).append(' ').append(c.request.pair.base).append(')')
@@ -75,17 +112,17 @@ fun renderSuggestions(found: List<Counterparty>, status: RateStatus): String {
     return lines.toString()
 }
 
-fun suggestionButtons(subject: Request, found: List<Counterparty>): List<Button> =
+fun suggestionButtons(subject: Request, found: List<Counterparty>, book: NameBook = NameBook.EMPTY): List<Button> =
     found.map { c ->
-        Button("✅ Done with ${c.request.username ?: "them"}", Cb.done(subject.refToken, c.request.refToken))
+        Button("✅ Done with ${plainName(c.request, book)}", Cb.done(subject.refToken, c.request.refToken))
     } + Button("✖️ Cancel my request", Cb.cancel(subject.refToken))
 
-fun renderStatus(requests: List<Request>, viewerId: Long, limit: Int = 20): String {
+fun renderStatus(requests: List<Request>, viewerId: Long, limit: Int = 20, book: NameBook = NameBook.EMPTY): String {
     if (requests.isEmpty()) return "Nothing waiting in this chat right now."
     val shown = requests.take(limit)
     val text = StringBuilder("Waiting in this chat:")
     for (r in shown) {
-        text.append("\n• ").append(r.shortId).append(' ').append(mentionOf(r)).append(" — ").append(describe(r))
+        text.append("\n• ").append(r.shortId).append(' ').append(mentionOf(r, book)).append(" — ").append(describe(r))
         if (r.userId == viewerId) text.append("  (yours)")
     }
     val hidden = requests.size - shown.size
@@ -100,12 +137,12 @@ data class ShownInterest(val request: Request, val found: List<Counterparty>)
  * A message nobody typed has to explain itself, so it says whose interest it is showing.
  * [person] is already a `mention(...)`, so send this with HTML parse mode.
  */
-fun renderAnnouncement(person: String, shown: List<ShownInterest>, status: RateStatus): String {
+fun renderAnnouncement(person: String, shown: List<ShownInterest>, status: RateStatus, book: NameBook = NameBook.EMPTY): String {
     val text = StringBuilder("I'm showing this on $person's behalf:")
     for (s in shown) {
         text.append("\n• ").append(s.request.shortId).append(' ').append(describe(s.request))
         for (c in s.found) {
-            text.append("\n   ↳ ").append(mentionOf(c.request)).append(" — ").append(describe(c.request))
+            text.append("\n   ↳ ").append(mentionOf(c.request, book)).append(" — ").append(describe(c.request))
         }
     }
     if (shown.any { it.found.isNotEmpty() }) text.append('\n').append(AGREE_LINE)
@@ -113,9 +150,9 @@ fun renderAnnouncement(person: String, shown: List<ShownInterest>, status: RateS
     return text.toString()
 }
 
-fun announcementButtons(shown: List<ShownInterest>): List<Button> =
+fun announcementButtons(shown: List<ShownInterest>, book: NameBook = NameBook.EMPTY): List<Button> =
     shown.flatMap { s ->
-        s.found.map { c -> Button("✅ Done with ${c.request.username ?: "them"}", Cb.done(s.request.refToken, c.request.refToken)) } +
+        s.found.map { c -> Button("✅ Done with ${plainName(c.request, book)}", Cb.done(s.request.refToken, c.request.refToken)) } +
             Button("✖️ Cancel ${s.request.shortId}", Cb.cancel(s.request.refToken))
     }
 

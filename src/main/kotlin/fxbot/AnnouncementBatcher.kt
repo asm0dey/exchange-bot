@@ -87,6 +87,7 @@ class AnnouncementBatcher(
     private val sink: AnnouncementSink,
     private val scope: CoroutineScope,
     private val clock: Clock = Clock.systemUTC(),
+    private val names: NameLookup = NameLookup { null },
     private val window: Duration = Duration.ofSeconds(60),
     private val maxAge: Duration = PENDING_MAX_AGE,
 ) {
@@ -182,10 +183,11 @@ class AnnouncementBatcher(
             for ((_, group) in shown.groupBy { it.second.request.userId }) {
                 val mine = group.map { it.second }
                 val owner = mine.first().request
+                val book = nameBookFor(listOf(owner) + mine.flatMap { s -> s.found.map { it.request } }, names)
                 announcements += Announcement(
                     chatId = chatId,
-                    text = renderAnnouncement(mentionOf(owner), mine, status),
-                    buttons = announcementButtons(mine),
+                    text = renderAnnouncement(mentionOf(owner, book), mine, status, book),
+                    buttons = announcementButtons(mine, book),
                     refTokens = mine.map { it.request.refToken } + mine.flatMap { s -> s.found.map { it.request.refToken } },
                     userIds = mine.map { it.request.userId } + mine.flatMap { s -> s.found.map { it.request.userId } },
                 )

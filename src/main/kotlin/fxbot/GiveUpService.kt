@@ -1,13 +1,5 @@
 package fxbot
 
-/** What Telegram knows about somebody right now. Never stored (ADR 0007). */
-data class Handle(val username: String?, val displayName: String)
-
-/** Looks somebody up live. The Telegram layer answers with `getChat`; a test answers with a map. */
-fun interface NameLookup {
-    suspend fun handleFor(userId: Long): Handle?
-}
-
 /** One person as they are handed to the other: their own request, and how to reach them. */
 data class Party(val userId: Long, val refToken: String, val handle: String)
 

@@ -77,10 +77,11 @@ suspend fun main(): Unit = coroutineScope {
         Registry.requests, Registry.settings, Registry.people, Registry.rates, rateClient,
         Registry.giveUps, Registry.pending, telegramMembership(bot),
     )
-    Registry.giveUpService = GiveUpService(Registry.requests, Registry.giveUps, telegramNames(bot))
+    Registry.names = telegramNames(bot)
+    Registry.giveUpService = GiveUpService(Registry.requests, Registry.giveUps, Registry.names)
     Registry.batcher = AnnouncementBatcher(
         Registry.requests, Registry.settings, Registry.pending, Registry.interests, Registry.rates,
-        telegramSink(bot), this,
+        telegramSink(bot), this, names = Registry.names,
     )
 
     // Housekeeping is bot-dependent too: a lapsed showing's messages have to be rewritten,

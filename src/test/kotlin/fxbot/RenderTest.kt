@@ -17,6 +17,14 @@ private fun r(verb: Verb, amount: String, ccy: String, user: Long, name: String?
         createdAt = Instant.EPOCH, expiresAt = Instant.EPOCH,
     )
 
+private fun req(userId: Long, username: String?) = Request(
+    refToken = "t$userId", chatId = -100L, userId = userId, username = username,
+    shortId = "a1", side = Side.OFFER, statedCurrency = "EUR",
+    statedAmount = java.math.BigDecimal("100"), pair = CurrencyPair("EUR", "RUB"),
+    state = RequestState.OPEN,
+    createdAt = java.time.Instant.EPOCH, expiresAt = java.time.Instant.EPOCH.plusSeconds(60),
+)
+
 class RenderTest : StringSpec({
     "the give currency follows the side" {
         Side.OFFER.giveCurrency(EURRUB) shouldBe "EUR"
@@ -112,5 +120,26 @@ class RenderTest : StringSpec({
         val text = renderStatus(many, viewerId = 3, limit = 20)
         text shouldContain "+5 more"
         text shouldContain "yours"
+    }
+
+    "a stored handle beats a looked-up display name, and no lookup is made for it" {
+        val r = req(userId = 7L, username = "bob")
+        var lookups = 0
+        val book = nameBookFor(listOf(r), NameLookup { lookups++; Handle(null, "Robert") })
+        mentionOf(r, book) shouldBe "@bob"
+        lookups shouldBe 0
+    }
+
+    "somebody with no handle is a link over the display name the lookup gave"  {
+        val r = req(userId = 7L, username = null)
+        val book = nameBookFor(listOf(r), NameLookup { Handle(null, "Boris <the> Great") })
+        mentionOf(r, book) shouldBe """<a href="tg://user?id=7">Boris &lt;the&gt; Great</a>"""
+    }
+
+    "an unreachable person is still a link, labelled the way they always were" {
+        val r = req(userId = 7L, username = null)
+        val book = nameBookFor(listOf(r), NameLookup { null })
+        mentionOf(r, book) shouldBe """<a href="tg://user?id=7">this person</a>"""
+        plainName(r, book) shouldBe "this person"
     }
 })

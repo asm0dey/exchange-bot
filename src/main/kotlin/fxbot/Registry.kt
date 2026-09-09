@@ -27,4 +27,5 @@ object Registry {
     lateinit var giveUpService: GiveUpService
     lateinit var giveUps: NameGiveUpRepository
     lateinit var pending: PendingAnnouncementRepository
+    lateinit var names: NameLookup
 }

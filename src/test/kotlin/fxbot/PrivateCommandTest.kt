@@ -105,12 +105,14 @@ private class PrivateFixture(name: String) {
             requests, chats, people, rates, client, giveUps, pending,
             MembershipProbe { _, _ -> true },
         )
-        Registry.giveUpService = GiveUpService(requests, giveUps, NameLookup { handles[it] })
+        Registry.names = NameLookup { handles[it] }
+        Registry.giveUpService = GiveUpService(requests, giveUps, Registry.names)
         Registry.batcher = AnnouncementBatcher(
             requests, chats, pending, Registry.interests, rates,
             { announcements, pings -> delivered += announcements to pings },
             CoroutineScope(SupervisorJob() + Dispatchers.Default),
             clock,
+            names = Registry.names,
         )
     }
 }

@@ -88,7 +88,7 @@ private class BatchFixture(
             InterestService(requests, chats, people, rates, client, giveUps, pending, MembershipProbe { _, _ -> true })
         return AnnouncementBatcher(
             requests, chats, pending, interests, rates, sink,
-            CoroutineScope(Dispatchers.Default), clock, window,
+            CoroutineScope(Dispatchers.Default), clock, window = window,
         )
     }
 

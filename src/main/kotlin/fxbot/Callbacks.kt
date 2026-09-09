@@ -298,8 +298,11 @@ private suspend fun restateInChat(
         }
         is PostResult.Posted -> {
             logCommand("restate_button", "posted")
-            val text = renderSuggestions(result.found, result.status)
-            val buttons = suggestionButtons(result.request, result.found)
+            val book = nameBookFor(
+                listOf(result.request) + result.found.map { it.request }, Registry.names,
+            )
+            val text = renderSuggestions(result.found, result.status, book)
+            val buttons = suggestionButtons(result.request, result.found, book)
             val sent = message { text }
                 .options { parseMode = ParseMode.HTML }
                 .inlineKeyboardMarkup { buttons.forEach { b -> b.label callback b.data; br() } }
