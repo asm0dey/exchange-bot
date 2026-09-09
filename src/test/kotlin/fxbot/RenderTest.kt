@@ -59,9 +59,9 @@ class RenderTest : StringSpec({
     "callback data stays inside Telegram's 64 bytes" {
         val a = "a".repeat(22)
         val b = "b".repeat(22)
-        // "done?a=" + 22 + "&b=" + a user id, at the widest Telegram issues (13 digits).
-        Cb.done(a, 9_999_999_999_999L).toByteArray().size shouldBe 45
-        (Cb.done(a, 9_999_999_999_999L).toByteArray().size <= 64) shouldBe true
+        // "done?a=" + 22 + "&b=" + a short id, at its widest (two characters).
+        Cb.done(a, "z9").toByteArray().size shouldBe 34
+        (Cb.done(a, "z9").toByteArray().size <= 64) shouldBe true
         (Cb.cancel(a).toByteArray().size <= 64) shouldBe true
         (Cb.reopen(a).toByteArray().size <= 64) shouldBe true
         // The longest payload of the lot: "restate?a=" + 22 + "&b=" + 22.
@@ -72,20 +72,22 @@ class RenderTest : StringSpec({
     }
     "callback data uses the framework's query syntax" {
         Cb.cancel("tok") shouldBe "cancel?t=tok"
-        Cb.done("x", 42L) shouldBe "done?a=x&b=42"
+        Cb.done("x", "a1") shouldBe "done?a=x&b=a1"
     }
     // A ref token is a bearer capability and callback data reaches the client, so a done
     // that carried the counterparty's token handed the reader the means to close that
-    // person's whole interest. Their user id carries no such power, and `mention` already
-    // puts it in front of the same reader as a tg://user?id= link.
-    "a done names its counterparty by user id, never by their ref token" {
+    // person's whole interest. Their row's short id carries no such power — `renderStatus`
+    // prints it beside their name to the same readers — and it names one row, not a person.
+    "a done names its counterparty's row by short id, never by their ref token" {
         val subject = r(Verb.SELL, "1000", "EUR", 1, "bob", token = "s".repeat(22))
         val peer = r(Verb.BUY, "900", "EUR", 2, "alice", token = "c".repeat(22))
         val data = suggestionButtons(subject, listOf(Counterparty(peer, BigDecimal("900"), BigDecimal.ZERO)))[0].data
-        data shouldBe "done?a=${subject.refToken}&b=2"
+        data shouldBe "done?a=${subject.refToken}&b=${peer.shortId}"
         data shouldNotContain peer.refToken
-        Cb.doneNames(data, 2L) shouldBe true
-        Cb.doneNames(data, 3L) shouldBe false
+        Cb.doneNamesRow(data, peer) { subject.chatId } shouldBe true
+        // The same short id in another chat is another row, and this button is not about it.
+        Cb.doneNamesRow(data, peer.copy(chatId = -200L)) { subject.chatId } shouldBe false
+        Cb.doneNamesRow(data, peer.copy(shortId = "zz")) { subject.chatId } shouldBe false
     }
     "confirm and refuse reverse done's ownership: a is the declarer, b the person asked" {
         Cb.confirm("declarer", "asked") shouldBe "yes?a=declarer&b=asked"
@@ -131,7 +133,7 @@ class RenderTest : StringSpec({
         val buttons = suggestionButtons(subject, found)
         buttons.size shouldBe 2
         buttons[0].label shouldContain "alice"
-        buttons[0].data shouldBe Cb.done("s".repeat(22), 2L)
+        buttons[0].data shouldBe Cb.done("s".repeat(22), found[0].request.shortId)
         buttons[1].data shouldBe Cb.cancel("s".repeat(22))
     }
 
@@ -143,9 +145,9 @@ class RenderTest : StringSpec({
         val buttons = chooseButtons(result)
         buttons.size shouldBe 2
         buttons[0].label shouldContain "alice"
-        buttons[0].data shouldBe Cb.done(mine.refToken, alice.userId)
+        buttons[0].data shouldBe Cb.done(mine.refToken, alice.shortId)
         buttons[1].label shouldContain "carol"
-        buttons[1].data shouldBe Cb.done(mine.refToken, carol.userId)
+        buttons[1].data shouldBe Cb.done(mine.refToken, carol.shortId)
     }
 
     "askButtons offers exactly Yes and No, built from myToken and peerToken" {
@@ -199,7 +201,7 @@ class RenderTest : StringSpec({
         )
         renderStated(stated) shouldContain "@ann"
         renderStated(stated) shouldNotContain "no names"
-        statedButtons(stated).map { it.data } shouldContain Cb.done(mine.refToken, theirs.userId)
+        statedButtons(stated).map { it.data } shouldContain Cb.done(mine.refToken, theirs.shortId)
     }
 
     "a stored handle beats a looked-up display name, and no lookup is made for it" {

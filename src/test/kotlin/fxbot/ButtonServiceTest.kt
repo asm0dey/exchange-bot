@@ -2,6 +2,7 @@ package fxbot
 
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.collections.shouldHaveSize
+import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import io.kotest.matchers.string.shouldNotContain
 import java.math.BigDecimal
@@ -77,8 +78,8 @@ class ButtonServiceTest : StringSpec({
         f.log.record(
             -100L, 10L, listOf(mine.refToken, gone.refToken, here.refToken), listOf(1L, 2L, 3L), "2 people match:",
             listOf(
-                Button("✅ Done with ann", Cb.done(mine.refToken, gone.userId)),
-                Button("✅ Done with cat", Cb.done(mine.refToken, here.userId)),
+                Button("✅ Done with ann", Cb.done(mine.refToken, gone.shortId)),
+                Button("✅ Done with cat", Cb.done(mine.refToken, here.shortId)),
                 Button("✖️ Cancel my request", Cb.cancel(mine.refToken)),
             ),
         )
@@ -87,10 +88,36 @@ class ButtonServiceTest : StringSpec({
         f.svc.refreshFor(listOf(gone.refToken), recordingBot(calls))
         val edit = calls.single { it.path == "editMessageText" }
         // The button that named the departed side is gone. It never carried her token — a done
-        // names its counterparty by user id now — so the payload itself is what must be absent.
-        edit.body shouldNotContain Cb.done(mine.refToken, gone.userId)
-        edit.body shouldContain Cb.done(mine.refToken, here.userId) // the other pairing is still pressable
+        // names her ROW by short id now — so the payload itself is what must be absent.
+        edit.body shouldNotContain Cb.done(mine.refToken, gone.shortId)
+        edit.body shouldContain Cb.done(mine.refToken, here.shortId) // the other pairing is still pressable
         edit.body shouldContain Cb.cancel(mine.refToken) // and so is the presser's own cancel
+    }
+    "a done for another chat's row survives a close that freed the same short id here" {
+        val f = ButtonFixture("shortidscope")
+        // One private reply can carry buttons for several chats at once (`statedButtons`
+        // does), and a short id is unique only inside its own chat — so "b" here and "b"
+        // there are two different rows, and only one of them closed.
+        val mineHere = f.requests.create(-100L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7)
+        val goneHere = f.requests.create(-100L, 2L, "ann", Side.BID, "EUR", BigDecimal("1"), EURRUB, 7)
+        val mineThere = f.requests.create(-200L, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1"), EURRUB, 7)
+        val stillThere = f.requests.create(-200L, 3L, "cat", Side.BID, "EUR", BigDecimal("1"), EURRUB, 7)
+        goneHere.shortId shouldBe stillThere.shortId
+        f.log.record(
+            1L, 10L,
+            listOf(mineHere.refToken, goneHere.refToken, mineThere.refToken, stillThere.refToken),
+            listOf(1L, 2L, 1L, 3L), "two groups",
+            listOf(
+                Button("✅ Done with ann", Cb.done(mineHere.refToken, goneHere.shortId)),
+                Button("✅ Done with cat", Cb.done(mineThere.refToken, stillThere.shortId)),
+            ),
+        )
+        f.requests.transition(goneHere.refToken, RequestState.OPEN, RequestState.CANCELLED)
+        val calls = mutableListOf<Call>()
+        f.svc.refreshFor(listOf(goneHere.refToken), recordingBot(calls))
+        val edit = calls.single { it.path == "editMessageText" }
+        edit.body shouldNotContain Cb.done(mineHere.refToken, goneHere.shortId)
+        edit.body shouldContain Cb.done(mineThere.refToken, stillThere.shortId)
     }
     "a reopened request gets its buttons back and its status line dropped" {
         val f = ButtonFixture("reopenrefresh")

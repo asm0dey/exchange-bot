@@ -25,19 +25,18 @@ private const val BROKEN_BUTTON = "That button looks broken — try the /command
  * confirmed by inspecting the generated `ActivitiesData.kt` — so a missing key
  * arrives here as `null` instead of throwing before the handler body even runs.
  *
- * On this handler `b` is the counterparty's USER ID, not their ref token — see [Cb.done].
- * It is bound as a `String?` and parsed here, like every other parameter, so a payload
- * carrying something that is not a number answers the presser with [BROKEN_BUTTON].
- * Resolving the id to a request, and refusing when it resolves to nothing, belongs to
- * [LifecycleService.doneWithPerson] — authorization is decided there, never here.
+ * On this handler `b` is the counterparty's SHORT ID, not their ref token — see [Cb.done].
+ * Nothing about it is validated here: a short id is scope-local, and whether anything
+ * rests under it in the presser's scope is a question only the database can answer.
+ * Resolving it to a request, and refusing when it resolves to nothing, belongs to
+ * [LifecycleService.doneWithRow] — authorization is decided there, never here.
  */
 @CommandHandler.CallbackQuery(["done"], autoAnswer = false)
 suspend fun doneCallback(a: String?, b: String?, update: ProcessedUpdate, bot: TelegramBot) {
-    val peerUserId = b?.toLongOrNull()
-    val result = if (a == null || peerUserId == null) {
+    val result = if (a == null || b == null) {
         ActionResult.Denied(BROKEN_BUTTON)
     } else {
-        Registry.lifecycle.doneWithPerson(update.getUser().id, a, peerUserId)
+        Registry.lifecycle.doneWithRow(update.getUser().id, a, b)
     }
     logCommand("done_button", result.outcomeLabel())
     respond(result, update, bot)

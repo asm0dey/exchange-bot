@@ -187,8 +187,8 @@ class AnnouncementBatcherTest : StringSpec({
         val mine = f.requests.resting(NO_CHAT_ID).single { it.userId == 1L }
         f.pings.single().buttons shouldHaveSize 2
         f.pings.single().buttons.map { it.data } shouldContainExactlyInAnyOrder listOf(
-            Cb.done(mine.refToken, a.interest.userId),
-            Cb.done(mine.refToken, c.interest.userId),
+            Cb.done(mine.refToken, a.interest.shortId),
+            Cb.done(mine.refToken, c.interest.shortId),
         )
         // Both counterparties are named, and both are recorded so /forget can reach them.
         text shouldContain "@ann"
@@ -326,8 +326,8 @@ class AnnouncementBatcherTest : StringSpec({
         val bobsEur = f.requests.resting(NO_CHAT_ID).single { it.userId == 1L && it.statedCurrency == "EUR" }
         val bobsGbp = f.requests.resting(NO_CHAT_ID).single { it.userId == 1L && it.statedCurrency == "GBP" }
         f.pings.single().buttons.map { it.data } shouldBe listOf(
-            Cb.done(bobsEur.refToken, a.interest.userId),
-            Cb.done(bobsGbp.refToken, c.interest.userId),
+            Cb.done(bobsEur.refToken, a.interest.shortId),
+            Cb.done(bobsGbp.refToken, c.interest.shortId),
         )
     }
 })

@@ -137,11 +137,15 @@ private const val NOT_ASKED = "That isn't a question I asked you."
  * message log, where `sendAsk` writes every question against both ref tokens with its
  * exact button list; a test answers with a lambda.
  *
- * CONSEQUENCE, by design: `/forget` and the 90-day message prune both delete logged
- * messages, so either one invalidates an ask that has not been answered yet, and the Yes
- * or No that follows is refused as one nobody was asked. That is the behaviour we want —
- * a forgotten question must not stay actionable — but it is a real way for an honest
- * counterparty's Yes to stop working, so it is stated here rather than discovered.
+ * CONSEQUENCE, by design: the 90-day message prune deletes logged messages, so it
+ * invalidates an ask nobody has answered yet, and the Yes or No that follows is refused as
+ * one nobody was asked. `/forget` does not delete the message — it drops only the ref rows
+ * carrying that person's own user ref — so it invalidates the ask from ONE side: the
+ * person ASKED forgetting takes away the row this lookup reads through, while the
+ * DECLARER forgetting leaves the record standing and their erased request is what refuses
+ * the press instead. Either way a forgotten question stops being actionable, which is the
+ * behaviour we want, but it is a real way for an honest counterparty's Yes to stop
+ * working, so it is stated here rather than discovered. ADR 0009 has the full account.
  */
 fun interface AskLookup {
     fun wasAsked(myToken: String, payload: String): Boolean
@@ -253,21 +257,27 @@ class LifecycleService(
 
     /**
      * The button form: `a` is the request the message was about and `b` names the
-     * counterparty by user id, so the second request is looked up rather than carried
-     * (see [Cb.done] for why a token there was a capability handed to the reader).
+     * counterparty's ROW by its short id, so the second request is looked up rather than
+     * carried (see [Cb.done] for why a token there was a capability handed to the reader).
      *
-     * Resolution is [doneByShortId]'s, exactly: whoever is resting something in the same
-     * scope. Its refusal is [doneByShortId]'s too — the shared [NOT_A_PAIR], never a
-     * distinct "nobody by that id rests anything", which would answer for any user id a
-     * stranger cares to try whether that person is resting anything with the bot.
+     * Resolved in [mine]'s own scope, which is the scope the button was built in — every
+     * builder pairs a request with a counterparty found against it, and [pairable] refuses
+     * two rows from different chats anyway. [RequestRepository.byShortId] filters on that
+     * chat AND on OPEN, so it names one resting row, never a person: a counterparty
+     * resting two things here is exactly what a user id could not tell apart, and telling
+     * them apart is the whole point of the slot.
+     *
+     * The refusal for an id that resolves to nothing is [doneByShortId]'s — the shared
+     * [NOT_A_PAIR], never a distinct "nothing rests under that id", which would answer for
+     * any short id a stranger cares to try whether something rests there.
      *
      * Ownership is [done]'s and is not re-decided here: a group announcement's Done button
      * is in front of both people, so either of them may press it, and [done] is what
      * requires the presser to own one of the two.
      */
-    suspend fun doneWithPerson(userId: Long, mineToken: String, peerUserId: Long): ActionResult {
+    suspend fun doneWithRow(userId: Long, mineToken: String, peerShortId: String): ActionResult {
         val mine = requests.byRefToken(mineToken) ?: return ActionResult.Gone("That request is gone.")
-        val theirs = requests.resting(mine.chatId).firstOrNull { it.userId == peerUserId }
+        val theirs = requests.byShortId(mine.chatId, peerShortId)
             ?: return ActionResult.Denied(NOT_A_PAIR)
         return done(userId, mine.refToken, theirs.refToken)
     }

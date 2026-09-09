@@ -49,14 +49,15 @@ class ButtonService(
             // (or has been erased). Every Cb builder spells its tokens out verbatim
             // (`cancel?t=X`, `restate?a=X&b=Y`), so a token match needs no structural
             // knowledge of the keyboard. A done's counterparty is the one slot that is not a
-            // token — it names the person by user id (see `Cb.done`) — so that one is found
-            // by [Cb.doneNames] instead, and a Done offered against somebody who has stopped
-            // resting anything still goes.
+            // token — it names their row by short id (see `Cb.done`) — so that one is found
+            // by [Cb.doneNamesRow] instead, and a Done offered against a row that has
+            // stopped resting still goes. A short id is only unique within its chat, so
+            // that check is given the chat of each button's own `a` request to judge in.
             val keep = logged.buttons.filter { button ->
                 logged.refTokens.none { token ->
                     val r = live[token]
-                    r?.state?.isTerminal != false &&
-                        (token in button.data || (r != null && Cb.doneNames(button.data, r.userId)))
+                    if (r != null && !r.state.isTerminal) return@none false
+                    token in button.data || (r != null && Cb.doneNamesRow(button.data, r) { live[it]?.chatId })
                 }
             }
             val text = (listOf(storedText) + statuses).joinToString("\n")

@@ -17,23 +17,49 @@ object Cb {
 
     /**
      * A done offered to whoever reads the message. `a` is the request the message is
-     * about; `b` names the counterparty by USER ID, never by their ref token.
+     * about; `b` names the counterparty's RESTING ROW by its short id, never by their ref
+     * token and never by their user id.
      *
      * A ref token is a bearer capability — owning one is what proves a press is authorized
      * — and callback data is delivered to the client, so a token in `b` handed the reader
-     * the other person's capability. A user id hands over nothing: [mention] already
-     * renders a handle-less person as a literal `tg://user?id=` link in the very same
-     * message, so the id is already in front of the same reader.
+     * the other person's capability. A short id hands over nothing of the sort: it is
+     * printed beside people's names in every `renderStatus` and every `renderAnnouncement`,
+     * it means nothing outside the chat it was allocated in, and holding one authorizes
+     * nothing — a done still requires the presser to own one of the two rows, and a
+     * Yes still requires an ask the bot really made.
+     *
+     * A user id would be no safer and is far less exact: it names a PERSON, and a person
+     * can rest several rows in one scope, so `b` has to name the row the button was
+     * actually offered for. `RequestRepository.byShortId` resolves exactly that one.
      */
-    fun done(mine: String, peerUserId: Long) = "$DONE?a=$mine&b=$peerUserId"
+    fun done(mine: String, peerShortId: String) = "$DONE?a=$mine&b=$peerShortId"
+
+    /** What a done payload carries: the presser's own ref token, and the row it names. */
+    data class DoneSlots(val mineToken: String, val peerShortId: String)
+
+    /** Reads [done]'s two slots back out, or null when [data] is not a done at all. */
+    fun doneSlots(data: String): DoneSlots? {
+        if (!data.startsWith("$DONE?a=")) return null
+        val rest = data.removePrefix("$DONE?a=")
+        val cut = rest.indexOf("&b=")
+        if (cut < 0) return null
+        return DoneSlots(rest.substring(0, cut), rest.substring(cut + "&b=".length))
+    }
 
     /**
-     * True when [data] is a done offered against [userId] — the one payload slot in any
-     * builder here that is not a ref token, and so the one [ButtonService] cannot find by
-     * token when the person behind it stops resting anything.
+     * True when [data] is a done offered against [peer]'s row — the one payload slot in
+     * any builder here that is not a ref token, and so the one [ButtonService] cannot find
+     * by token when the row behind it stops resting.
+     *
+     * A short id names one row only INSIDE one chat, so the chat is checked too: the same
+     * short id is live in every other chat at once, and one message can carry buttons for
+     * several scopes ([statedButtons] does). [chatOf] answers which chat the `a` slot's
+     * request rests in, which is the scope the press itself resolves `b` in.
      */
-    fun doneNames(data: String, userId: Long): Boolean =
-        data.startsWith("$DONE?a=") && data.endsWith("&b=$userId")
+    fun doneNamesRow(data: String, peer: Request, chatOf: (String) -> Long?): Boolean {
+        val slots = doneSlots(data) ?: return false
+        return slots.peerShortId == peer.shortId && chatOf(slots.mineToken) == peer.chatId
+    }
 
     fun cancel(token: String) = "$CANCEL?t=$token"
     fun reopen(token: String) = "$REOPEN?t=$token"
@@ -44,11 +70,11 @@ object Cb {
      * being asked — the reverse of [done]'s ownership, and checked as such: a press is
      * honoured only when the presser owns `b`.
      *
-     * BOTH slots stay ref tokens, deliberately, and must not follow [done] to a user id.
-     * `b` is the proof of ownership itself. And `a` by user id would be worse than the
+     * BOTH slots stay ref tokens, deliberately, and must not follow [done] to a short id.
+     * `b` is the proof of ownership itself. And `a` by short id would be worse than the
      * token it replaced: a forged Yes today needs the declarer's 22 random characters,
-     * which only reach a presser the bot actually paired them with, whereas a user id is
-     * public and could name anyone at all.
+     * which only reach a presser the bot actually paired them with, whereas a short id is
+     * printed in every status line and could name anything resting in that scope.
      */
     fun confirm(declarer: String, mine: String) = "$CONFIRM?a=$declarer&b=$mine"
     fun refuse(declarer: String, mine: String) = "$REFUSE?a=$declarer&b=$mine"
@@ -144,13 +170,13 @@ fun renderSuggestions(found: List<Counterparty>, status: RateStatus, book: NameB
 
 fun suggestionButtons(subject: Request, found: List<Counterparty>, book: NameBook = NameBook.EMPTY): List<Button> =
     found.map { c ->
-        Button("✅ Done with ${plainName(c.request, book)}", Cb.done(subject.refToken, c.request.userId))
+        Button("✅ Done with ${plainName(c.request, book)}", Cb.done(subject.refToken, c.request.shortId))
     } + Button("✖️ Cancel my request", Cb.cancel(subject.refToken))
 
 /** One button per person the declarer could have meant; pressing one is an ordinary done. */
 fun chooseButtons(r: ActionResult.Choose, book: NameBook = NameBook.EMPTY): List<Button> =
     r.candidates.map { c ->
-        Button("✅ Done with ${plainName(c, book)}", Cb.done(r.mineToken, c.userId))
+        Button("✅ Done with ${plainName(c, book)}", Cb.done(r.mineToken, c.shortId))
     }
 
 fun renderStatus(requests: List<Request>, viewerId: Long, limit: Int = 20, book: NameBook = NameBook.EMPTY): String {
@@ -188,7 +214,7 @@ fun renderAnnouncement(person: String, shown: List<ShownInterest>, status: RateS
 
 fun announcementButtons(shown: List<ShownInterest>, book: NameBook = NameBook.EMPTY): List<Button> =
     shown.flatMap { s ->
-        s.found.map { c -> Button("✅ Done with ${plainName(c.request, book)}", Cb.done(s.request.refToken, c.request.userId)) } +
+        s.found.map { c -> Button("✅ Done with ${plainName(c.request, book)}", Cb.done(s.request.refToken, c.request.shortId)) } +
             Button("✖️ Cancel ${s.request.shortId}", Cb.cancel(s.request.refToken))
     }
 
@@ -261,7 +287,7 @@ fun renderStated(r: InterestResult.Stated, book: NameBook = NameBook.EMPTY): Str
 fun statedButtons(r: InterestResult.Stated, book: NameBook = NameBook.EMPTY): List<Button> =
     r.shown.flatMap { s ->
         s.found.map { c ->
-            Button("✅ Done with ${plainName(c.request, book)}", Cb.done(s.request.refToken, c.request.userId))
+            Button("✅ Done with ${plainName(c.request, book)}", Cb.done(s.request.refToken, c.request.shortId))
         }
     } + Button("✖️ Cancel ${r.interest.shortId}", Cb.cancel(r.interest.refToken))
 
@@ -281,7 +307,7 @@ fun renderAppeared(mine: List<ShownInterest>, book: NameBook = NameBook.EMPTY): 
 fun appearedButtons(mine: List<ShownInterest>, book: NameBook = NameBook.EMPTY): List<Button> =
     mine.flatMap { s ->
         s.found.map { c ->
-            Button("✅ Done with ${plainName(c.request, book)}", Cb.done(s.request.refToken, c.request.userId))
+            Button("✅ Done with ${plainName(c.request, book)}", Cb.done(s.request.refToken, c.request.shortId))
         }
     }
 

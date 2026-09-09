@@ -125,6 +125,10 @@ private class AskFixture(name: String, names: NameLookup = NameLookup { null }) 
     suspend fun ask(userId: Long, mineToken: String, theirsToken: String): ActionResult =
         svc.done(userId, mineToken, theirsToken).also { if (it is ActionResult.Asked) asks.record(it) }
 
+    /** The same, through the button form: `b` is the counterparty's short id. */
+    suspend fun askRow(userId: Long, mineToken: String, peerShortId: String): ActionResult =
+        svc.doneWithRow(userId, mineToken, peerShortId).also { if (it is ActionResult.Asked) asks.record(it) }
+
     fun rest(chatId: Long, userId: Long, name: String?, side: Side, interest: String? = null) =
         requests.create(chatId, userId, name, side, "EUR", BigDecimal("1000"), EURRUB, 7, interest)
 }
@@ -611,39 +615,92 @@ class LifecycleServiceTest : StringSpec({
         f.refusals.count(declarer.refToken, asked.refToken) shouldBe 1
     }
 
-    // --- The Done button names its counterparty by user id now, not by their ref token,
-    // so the second request is resolved rather than carried. See `Cb.done`.
+    // --- The Done button names its counterparty's ROW by short id now, not by their ref
+    // token and not by their user id, so the second request is resolved rather than
+    // carried — and resolved to one row rather than to a person. See `Cb.done`.
 
-    "the done button resolves its counterparty by user id, in a chat" {
+    "the done button resolves its counterparty by short id, in a chat" {
         val f = AskFixture("done_by_person_chat")
         val mine = f.rest(-100L, 1L, "bob", Side.OFFER)
         val theirs = f.rest(-100L, 2L, "ann", Side.BID)
         f.rest(-100L, 3L, "cat", Side.BID)
-        val r = f.svc.doneWithPerson(1L, mine.refToken, 2L)
+        val r = f.svc.doneWithRow(1L, mine.refToken, theirs.shortId)
         r.shouldBeInstanceOf<ActionResult.Asked>()
         r.peerUserId shouldBe 2L
         r.peerToken shouldBe theirs.refToken
     }
 
-    "the done button resolves its counterparty by user id with no chat behind it too" {
+    "the done button resolves its counterparty by short id with no chat behind it too" {
         val f = AskFixture("done_by_person_nochat")
         val mine = f.rest(NO_CHAT_ID, 1L, "bob", Side.OFFER, "i1")
         val theirs = f.rest(NO_CHAT_ID, 2L, "ann", Side.BID, "i2")
-        val r = f.svc.doneWithPerson(1L, mine.refToken, 2L)
+        val r = f.svc.doneWithRow(1L, mine.refToken, theirs.shortId)
         r.shouldBeInstanceOf<ActionResult.Asked>()
         r.peerToken shouldBe theirs.refToken
     }
 
-    "a user id nothing here belongs to gets the same refusal a name nothing belongs to gets" {
+    "a short id nothing here rests under gets the same refusal a name nothing belongs to gets" {
         val f = AskFixture("done_by_person_unknown")
         val mine = f.rest(-100L, 1L, "bob", Side.OFFER)
         f.rest(-100L, 2L, "ann", Side.BID)
-        val byId = f.svc.doneWithPerson(1L, mine.refToken, 404L)
+        val byId = f.svc.doneWithRow(1L, mine.refToken, "zz")
         val byName = f.svc.doneByShortId(-100L, 1L, mine.shortId, NamedPeer.Unplaceable)
         byId.shouldBeInstanceOf<ActionResult.Denied>()
         byName.shouldBeInstanceOf<ActionResult.Denied>()
-        // Said once, so neither answers whether somebody with that id rests anything at all.
+        // Said once, so neither answers whether anything rests under that id at all.
         byId.text shouldBe byName.text
+    }
+
+    // --- The two failure modes a user id in `b` produced. Both need only that the
+    // counterparty rests more than one row in the scope — the ordinary state of the
+    // chatless surface, where every row of every person shares one sentinel chat id — and
+    // `resting` sorts by expiry then row id, so the row the button was offered for is not
+    // the row a user id resolves to.
+
+    "a done asks about the row its button named, not the counterparty's oldest one" {
+        val f = AskFixture("done_by_person_right_row")
+        val mine = f.requests.create(
+            NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1",
+        )
+        // Ann rests two, and the small one was created first, so it is the one anything
+        // resolving by person alone reaches.
+        val small = f.requests.create(
+            NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("5"), EURRUB, 7, "i2",
+        )
+        val swapped = f.requests.create(
+            NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i3",
+        )
+        f.requests.resting(NO_CHAT_ID).first { it.userId == 2L }.refToken shouldBe small.refToken
+
+        val r = f.askRow(1L, mine.refToken, swapped.shortId)
+        r.shouldBeInstanceOf<ActionResult.Asked>()
+        // The question says 1,000 EUR, so the row it can close must be the 1,000 EUR one:
+        // her honest Yes must not close the 5 EUR interest she still means to swap.
+        r.peerToken shouldBe swapped.refToken
+        r.question shouldContain "1,000 EUR"
+        f.svc.confirm(2L, mine.refToken, r.peerToken).shouldBeInstanceOf<ActionResult.Ok>()
+        f.requests.byRefToken(swapped.refToken)!!.state shouldBe RequestState.DONE
+        f.requests.byRefToken(small.refToken)!!.state shouldBe RequestState.OPEN
+    }
+
+    "a done offered against a pairable row is not refused for a same-side row of the same person" {
+        val f = AskFixture("done_by_person_live_button")
+        val mine = f.requests.create(
+            NO_CHAT_ID, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1",
+        )
+        // Her oldest row is on bob's own side, so it is no pairing at all — resolving by
+        // person alone reaches it and answers a legitimately offered button as if it were dead.
+        val sameSide = f.requests.create(
+            NO_CHAT_ID, 2L, "ann", Side.OFFER, "EUR", BigDecimal("5"), EURRUB, 7, "i2",
+        )
+        val pairable = f.requests.create(
+            NO_CHAT_ID, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i3",
+        )
+        f.requests.resting(NO_CHAT_ID).first { it.userId == 2L }.refToken shouldBe sameSide.refToken
+
+        val r = f.svc.doneWithRow(1L, mine.refToken, pairable.shortId)
+        r.shouldBeInstanceOf<ActionResult.Asked>()
+        r.peerToken shouldBe pairable.refToken
     }
 
     "the same-chat force close now only asks its victim" {

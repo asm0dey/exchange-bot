@@ -249,16 +249,16 @@ class LifecycleCommandTest : StringSpec({
         calls.single { it.path == "answerCallbackQuery" }.body shouldContain "Noted"
     }
 
-    // The Done button carries the counterparty's USER ID in `b`, not their ref token
-    // (`Cb.done`): a token there was a bearer capability delivered to the client, and
-    // whoever read the message could close the other person's whole interest with it.
+    // The Done button carries the counterparty's ROW — its short id — in `b`, not their
+    // ref token (`Cb.done`): a token there was a bearer capability delivered to the client,
+    // and whoever read the message could close the other person's whole interest with it.
 
-    "the done button press resolves its counterparty from the user id in the payload" {
+    "the done button press resolves its counterparty from the short id in the payload" {
         val f = LifecycleCommandFixture("cmd_done_by_id")
         val mine = f.rest(GROUP, 1L, "bob", Side.OFFER)
         val theirs = f.rest(GROUP, 2L, "ann", Side.BID)
         val calls = mutableListOf<Call>()
-        doneCallback(mine.refToken, "2", f.callback(1L), recordingBot(calls))
+        doneCallback(mine.refToken, theirs.shortId, f.callback(1L), recordingBot(calls))
         // Ann is asked, in the chat she typed in, and nothing has closed on bob's word.
         calls.single { it.path == "sendMessage" }.body shouldContain "Did you?"
         f.requests.byRefToken(mine.refToken)!!.state shouldBe RequestState.OPEN
@@ -269,14 +269,28 @@ class LifecycleCommandTest : StringSpec({
         f.requests.byRefToken(theirs.refToken)!!.state shouldBe RequestState.DONE
     }
 
-    "a done payload whose b is not a user id answers the presser instead of throwing" {
+    "a done payload missing its b answers the presser instead of throwing" {
+        val f = LifecycleCommandFixture("cmd_done_no_id")
+        val mine = f.rest(GROUP, 1L, "bob", Side.OFFER)
+        f.rest(GROUP, 2L, "ann", Side.BID)
+        val calls = mutableListOf<Call>()
+        doneCallback(mine.refToken, null, f.callback(1L), recordingBot(calls))
+        calls.none { it.path == "sendMessage" } shouldBe true
+        calls.single { it.path == "answerCallbackQuery" }.body shouldContain "looks broken"
+        f.requests.byRefToken(mine.refToken)!!.state shouldBe RequestState.OPEN
+    }
+
+    "a done payload whose b rests nothing here refuses without saying so" {
         val f = LifecycleCommandFixture("cmd_done_bad_id")
         val mine = f.rest(GROUP, 1L, "bob", Side.OFFER)
         f.rest(GROUP, 2L, "ann", Side.BID)
         val calls = mutableListOf<Call>()
-        doneCallback(mine.refToken, "not-a-number", f.callback(1L), recordingBot(calls))
+        doneCallback(mine.refToken, "zz", f.callback(1L), recordingBot(calls))
         calls.none { it.path == "sendMessage" } shouldBe true
-        calls.single { it.path == "answerCallbackQuery" }.body shouldContain "looks broken"
+        // The shared pairing refusal, so a stranger trying short ids learns nothing about
+        // what rests under them.
+        calls.single { it.path == "answerCallbackQuery" }.body shouldContain
+            "aren't a pair I can close together"
         f.requests.byRefToken(mine.refToken)!!.state shouldBe RequestState.OPEN
     }
 

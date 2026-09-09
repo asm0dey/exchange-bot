@@ -287,8 +287,8 @@ class InterestServiceTest : StringSpec({
         // still renders perfectly.
         val showing = r.showings.single()
         val data = statedButtons(r).map { it.data }
-        data shouldContain Cb.done(showing.refToken, inGroup.userId)
-        data.contains(Cb.done(r.interest.refToken, inGroup.userId)) shouldBe false
+        data shouldContain Cb.done(showing.refToken, inGroup.shortId)
+        data.contains(Cb.done(r.interest.refToken, inGroup.shortId)) shouldBe false
     }
 
     "nobody is named twice in one reply" {

@@ -266,9 +266,9 @@ class PrivateCommandTest : StringSpec({
         // The chatless row, its showing, and the counterparty found against the chatless row.
         logged.refTokens shouldContainExactlyInAnyOrder
             listOf(mine.refToken, showing.refToken, peer.refToken)
-        logged.buttons.map { it.data } shouldContain Cb.done(mine.refToken, peer.userId)
-        // A done never carries the counterparty's token now, only their user id — so it is
-        // the presser's OWN token that every button spells out, and that must be recorded.
+        logged.buttons.map { it.data } shouldContain Cb.done(mine.refToken, peer.shortId)
+        // A done never carries the counterparty's token now, only their row's short id — so
+        // it is the presser's OWN token that every button spells out, and that must be recorded.
         logged.buttons.forEach { b -> logged.refTokens.any { it in b.data } shouldBe true }
     }
 
@@ -413,10 +413,10 @@ class PrivateCommandTest : StringSpec({
         val a = f.requests.create(GROUP, 1L, "bob", Side.OFFER, "EUR", BigDecimal("1000"), EURRUB, 7, "i1")
         val b = f.requests.create(GROUP, 2L, "ann", Side.BID, "EUR", BigDecimal("1000"), EURRUB, 7, "i2")
         val buttons = listOf(
-            Button("✅ Done with ann", Cb.done(a.refToken, b.userId)),
+            Button("✅ Done with ann", Cb.done(a.refToken, b.shortId)),
             Button("✖️ Cancel ${a.shortId}", Cb.cancel(a.refToken)),
         )
-        val pingButtons = listOf(Button("✅ Done with bob", Cb.done(b.refToken, a.userId)))
+        val pingButtons = listOf(Button("✅ Done with bob", Cb.done(b.refToken, a.shortId)))
         val sent = mutableListOf<Call>()
         telegramSink(recordingBot(sent)).deliver(
             listOf(
