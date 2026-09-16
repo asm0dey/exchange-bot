@@ -156,7 +156,7 @@ class RenderTest : StringSpec({
             declarerUserId = 1L,
             peerUserId = 2L,
             peerChatId = 2L,
-            question = "@bob says you two swapped 1,000 EUR. Did you?",
+            question = "@bob says you two swapped 1,000 EUR. @ann, did you?",
             myToken = "m".repeat(22),
             peerToken = "p".repeat(22),
         )

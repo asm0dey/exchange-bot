@@ -249,7 +249,10 @@ class LifecycleService(
             peerUserId = theirs.userId,
             peerChatId = theirs.answerChatId(),
             question = "${nameOf(mine, book)} says you two swapped " +
-                "${formatAmount(mine.statedAmount)} ${mine.statedCurrency}. Did you?",
+                "${formatAmount(mine.statedAmount)} ${mine.statedCurrency}. " +
+                // Mentioned, not just implied: in a group the question is public, and only a
+                // mention says whose it is and notifies them.
+                "${nameOf(theirs, book)}, did you?",
             myToken = mine.refToken,
             peerToken = theirs.refToken,
         )

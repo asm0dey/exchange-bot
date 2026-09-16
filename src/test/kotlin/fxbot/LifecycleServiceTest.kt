@@ -434,6 +434,8 @@ class LifecycleServiceTest : StringSpec({
         r.peerToken shouldBe theirs.refToken
         r.question shouldContain "@bob"
         r.question shouldContain "1,000 EUR"
+        // In a group the question is public; only a mention tells ann it is hers, and notifies her.
+        r.question shouldContain "@ann, did you?"
         r.text shouldContain "Nothing's closed yet"
         f.requests.byRefToken(mine.refToken)!!.state shouldBe RequestState.OPEN
         f.requests.byRefToken(theirs.refToken)!!.state shouldBe RequestState.OPEN
