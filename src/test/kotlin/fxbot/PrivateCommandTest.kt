@@ -690,7 +690,7 @@ class PrivateCommandTest : StringSpec({
         // her user id (2), not DM and not bob's own user id (1).
         done(mentionUpdate(DM, ChatType.Private, "/done ${mine.shortId} @ann"), recordingBot(sent))
 
-        val ask = sent.first { it.body.contains("Did you?") }
+        val ask = sent.first { it.body.contains("did you?") }
         ask.body shouldContain """"chat_id":2"""
         ask.body shouldNotContain """"chat_id":555"""
         ask.body shouldNotContain """"chat_id":1"""

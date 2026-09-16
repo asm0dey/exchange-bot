@@ -215,8 +215,8 @@ class LifecycleCommandTest : StringSpec({
         done(f.groupUpdate(1L, "/done ${mine.shortId}"), bot)
         val sent = calls.filter { it.path == "sendMessage" }
         sent shouldHaveSize 2
-        sent.first { it.body.contains("Did you?") }.body shouldContain "\"yes?a="
-        sent.first { it.body.contains("Did you?") }.body shouldContain "\"no?a="
+        sent.first { it.body.contains("did you?") }.body shouldContain "\"yes?a="
+        sent.first { it.body.contains("did you?") }.body shouldContain "\"no?a="
         sent.first { it.body.contains("Nothing's closed yet") }.shouldNotBeNull()
     }
 
@@ -260,7 +260,7 @@ class LifecycleCommandTest : StringSpec({
         val calls = mutableListOf<Call>()
         doneCallback(mine.refToken, theirs.shortId, f.callback(1L), recordingBot(calls))
         // Ann is asked, in the chat she typed in, and nothing has closed on bob's word.
-        calls.single { it.path == "sendMessage" }.body shouldContain "Did you?"
+        calls.single { it.path == "sendMessage" }.body shouldContain "did you?"
         f.requests.byRefToken(mine.refToken)!!.state shouldBe RequestState.OPEN
         f.requests.byRefToken(theirs.refToken)!!.state shouldBe RequestState.OPEN
         // And the question really asked is the one that can now be answered.
