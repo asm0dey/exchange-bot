@@ -11,9 +11,19 @@ import eu.vendeli.tgbot.types.component.getOrNull
 import eu.vendeli.tgbot.types.component.isSuccess
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.HttpResponse
+import io.ktor.http.ContentType
+import io.ktor.http.contentType
+import io.ktor.http.isSuccess
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import kotlin.system.exitProcess
 import kotlin.time.Duration.Companion.seconds
@@ -134,18 +144,21 @@ suspend fun main(): Unit = coroutineScope {
     registerCommandMenus(bot)
 
     // Off unless configured: an existing deployment without MINIAPP_URL runs exactly as before.
-    //
-    // No chat-menu-button call here: `SetChatMenuButtonAction` extends the library's `Action`
-    // (not `SimpleAction`), and every `Action.send`/`sendReturning` overload requires a target
-    // chat/user and unconditionally writes it into the `chat_id` request field (confirmed by
-    // reading eu.vendeli.tgbot.interfaces.action.Action's source in the 9.6.0 sources jar).
-    // The Bot API's "set the default menu button for every private chat" behaviour is reached
-    // only by omitting `chat_id` entirely, which this typed wrapper offers no way to do at
-    // startup, where there is no single chat to target anyway. `/app` (MiniAppCommands.kt),
-    // already listed in both command menus, is the app's discovery surface instead.
-    cfg.miniAppUrl?.let {
+    cfg.miniAppUrl?.let { url ->
         val me = runCatching { getMe().sendReturning(bot).getOrNull() }.getOrNull()
         Registry.miniAppLink = me?.username?.let { u -> cfg.miniAppShortName?.let { short -> "https://t.me/$u/$short" } }
+        // The typed `setChatMenuButton` Action (eu.vendeli.tgbot.api.chat) can't express this:
+        // `SetChatMenuButtonAction` extends `Action`, not `SimpleAction`, so every
+        // `send`/`sendReturning` overload requires a target chat/user and writes it into
+        // `chat_id` unconditionally — confirmed by reading the 9.6.0 sources jar. Telegram's
+        // "default button for every private chat" behaviour is reached only by OMITTING
+        // `chat_id`, which that wrapper cannot do. This is the one place in the codebase that
+        // calls the Bot API directly instead of through the library's Action DSL, for exactly
+        // that reason. Never fatal, and never logs the token or the URL.
+        val menuButtonSet = HttpClient(CIO).use { client ->
+            runCatching { setDefaultMenuButton(client, cfg.botToken, url) }.getOrDefault(false)
+        }
+        if (menuButtonSet) logger.info("exchange-bot: menu button set") else logger.warn("exchange-bot: menu button failed")
         val backend = ServiceBackend(
             Registry.requests, Registry.settings, Registry.people, Registry.rates, Registry.service,
             Registry.interests, Registry.lifecycle, Registry.messages, Registry.names,
@@ -319,4 +332,36 @@ internal suspend fun validateBotToken(bot: TelegramBot): TokenValidation = try {
     throw e
 } catch (e: Exception) {
     TokenValidation.Unknown(e.javaClass.simpleName)
+}
+
+@Serializable
+private data class WebAppUrlBody(val url: String)
+
+@Serializable
+private data class DefaultMenuButtonBody(val type: String, val text: String, @SerialName("web_app") val webApp: WebAppUrlBody)
+
+@Serializable
+private data class SetChatMenuButtonBody(@SerialName("menu_button") val menuButton: DefaultMenuButtonBody)
+
+/**
+ * A direct Bot API call — the one exception to this codebase's rule of going through the
+ * library's typed `Action` DSL for every Telegram call. See the comment at the call site in
+ * `main` for why: setting the DEFAULT menu button (shown in every private chat that hasn't
+ * been given its own) requires omitting `chat_id` from the request, and the typed
+ * `setChatMenuButton` Action has no overload that omits it.
+ *
+ * [client] is caller-owned and not closed here. Never logs [token] or [url] — see the call
+ * site for what IS logged. Returns whether Telegram accepted the request; a Telegram-side
+ * rejection comes back as a non-2xx response (`false`), never a throw — an actual transport
+ * failure is left to propagate, exactly like every other Bot API call in this codebase
+ * (`throwExOnActionsFailure` is false everywhere, so a thrown exception here always means
+ * the request never reached Telegram).
+ */
+internal suspend fun setDefaultMenuButton(client: HttpClient, token: String, url: String): Boolean {
+    val body = SetChatMenuButtonBody(DefaultMenuButtonBody("web_app", "Exchange", WebAppUrlBody(url)))
+    val response: HttpResponse = client.post("https://api.telegram.org/bot$token/setChatMenuButton") {
+        contentType(ContentType.Application.Json)
+        setBody(Json.encodeToString(body))
+    }
+    return response.status.isSuccess()
 }
