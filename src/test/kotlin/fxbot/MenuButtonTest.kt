@@ -48,6 +48,28 @@ class MenuButtonTest : StringSpec({
         body shouldContain """"web_app":{"url":"https://x.example/app"}"""
     }
 
+    "a null url resets to Telegram's built-in default, with no web_app and no chat_id" {
+        var captured: HttpRequestData? = null
+        val client = HttpClient(
+            MockEngine { request ->
+                captured = request
+                respond(
+                    """{"ok":true,"result":true}""",
+                    HttpStatusCode.OK,
+                    headersOf(HttpHeaders.ContentType, "application/json"),
+                )
+            },
+        )
+
+        val ok = setDefaultMenuButton(client, "000:fake-token-for-tests", null)
+
+        ok shouldBe true
+        val req = captured.shouldNotBeNull()
+        req.url.encodedPath.endsWith("/setChatMenuButton") shouldBe true
+        val bytes = (req.body as? OutgoingContent.ByteArrayContent)?.bytes() ?: ByteArray(0)
+        bytes.decodeToString() shouldBe """{"menu_button":{"type":"default"}}"""
+    }
+
     "a Telegram-side rejection is reported as false, not thrown" {
         val client = HttpClient(
             MockEngine {

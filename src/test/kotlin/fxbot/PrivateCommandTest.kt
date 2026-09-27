@@ -462,18 +462,37 @@ class PrivateCommandTest : StringSpec({
 
     "the command menus keep every command each scope needs" {
         // A private-scope list is added here; the group list must not lose anything an
-        // earlier task registered (fanout, in particular).
+        // earlier task registered (fanout, in particular). Neither base list carries "app" —
+        // that's added conditionally by `withApp`, tested separately below.
         GROUP_COMMANDS.map { it.first } shouldContainExactlyInAnyOrder listOf(
             "sell", "buy", "status", "cancel", "done", "reopen", "settings",
-            "pair", "tolerance", "tif", "fanout", "forget", "app", "help",
+            "pair", "tolerance", "tif", "fanout", "forget", "help",
         )
         PRIVATE_COMMANDS.map { it.first } shouldContainExactlyInAnyOrder listOf(
-            "sell", "buy", "tolerance", "status", "cancel", "done", "reopen", "settings", "forget", "app", "help",
+            "sell", "buy", "tolerance", "status", "cancel", "done", "reopen", "settings", "forget", "help",
         )
         // Admin-only commands have no private meaning, so they are not suggested there.
         PRIVATE_COMMANDS.map { it.first } shouldNotContain "pair"
         PRIVATE_COMMANDS.map { it.first } shouldNotContain "tif"
         PRIVATE_COMMANDS.map { it.first } shouldNotContain "fanout"
+    }
+
+    "\"app\" is suggested only when the mini app is configured" {
+        // Disabled: the base lists come back untouched, in both scopes.
+        withApp(GROUP_COMMANDS, appEnabled = false) shouldBe GROUP_COMMANDS
+        withApp(PRIVATE_COMMANDS, appEnabled = false) shouldBe PRIVATE_COMMANDS
+        withApp(GROUP_COMMANDS, appEnabled = false).map { it.first } shouldNotContain "app"
+        withApp(PRIVATE_COMMANDS, appEnabled = false).map { it.first } shouldNotContain "app"
+
+        // Enabled: "app" appears exactly once, right before "help", in both scopes.
+        val group = withApp(GROUP_COMMANDS, appEnabled = true)
+        val private = withApp(PRIVATE_COMMANDS, appEnabled = true)
+        group.map { it.first } shouldContain "app"
+        private.map { it.first } shouldContain "app"
+        group.indexOfFirst { it.first == "app" } shouldBe (group.indexOfFirst { it.first == "help" } - 1)
+        private.indexOfFirst { it.first == "app" } shouldBe (private.indexOfFirst { it.first == "help" } - 1)
+        group.map { it.first }.count { it == "app" } shouldBe 1
+        private.map { it.first }.count { it == "app" } shouldBe 1
     }
     // ---- Fix 1: a refused send must reach the batcher as a throw ----
 
@@ -537,7 +556,7 @@ class PrivateCommandTest : StringSpec({
 
     "all three command menus are actually published, each with its own scope" {
         val sent = mutableListOf<Call>()
-        registerCommandMenus(recordingBot(sent))
+        registerCommandMenus(recordingBot(sent), appEnabled = true)
         val calls = sent.filter { it.path == "setMyCommands" }
         calls shouldHaveSize 3
         val scopes = calls.map { call ->
@@ -546,12 +565,20 @@ class PrivateCommandTest : StringSpec({
         scopes shouldContainExactlyInAnyOrder listOf("default", "all_group_chats", "all_private_chats")
         // Every entry in each list really reaches the wire — `menu()` maps all of them.
         val privateBody = calls.single { it.body.contains(""""type":"all_private_chats"""") }.body
-        PRIVATE_COMMANDS.forEach { (name, description) ->
+        withApp(PRIVATE_COMMANDS, appEnabled = true).forEach { (name, description) ->
             privateBody shouldContain """"command":"$name""""
             privateBody shouldContain description
         }
         val groupBody = calls.single { it.body.contains(""""type":"all_group_chats"""") }.body
-        GROUP_COMMANDS.forEach { (name, _) -> groupBody shouldContain """"command":"$name"""" }
+        withApp(GROUP_COMMANDS, appEnabled = true).forEach { (name, _) -> groupBody shouldContain """"command":"$name"""" }
+    }
+
+    "app is not published to any scope when the mini app is off" {
+        val sent = mutableListOf<Call>()
+        registerCommandMenus(recordingBot(sent), appEnabled = false)
+        val calls = sent.filter { it.path == "setMyCommands" }
+        calls shouldHaveSize 3
+        calls.forEach { it.body shouldNotContain """"command":"app"""" }
     }
 
     // ---- Fix 4: the two Telegram adapters ----
