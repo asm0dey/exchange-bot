@@ -2,8 +2,7 @@
 
 **Date:** 2026-09-27
 **Status:** Approved design. Not yet implemented.
-**Mockups:** `miniapp-mockups/` (the built app should look like `telegram-light.png`
-and `telegram-dark.png`)
+**Mockups:** `miniapp-mockups/`. See *How closely to follow the mockups*.
 
 The mini app is another way to do what the bot already does: see what is
 resting, state a request, cancel it, declare and confirm a done, set a size
@@ -181,6 +180,24 @@ When no reference rate is available, the ≈ figures are hidden. Ranges are
 shown only against requests typed in the same currency, which is what the
 matcher can compare without a rate.
 
+## How closely to follow the mockups
+
+The mockups show the idea, not pixels. The built app must keep:
+
+- the same screens, and the same information on each;
+- the same controls in roughly the same places (a floating *New request*, per-card
+  *Give CUR* buttons, the bottom sheet, the give/receive toggle, the range bar
+  beside the amount, the tab bar, `MainButton` for the primary action);
+- the same wording.
+
+Spacing, sizes, radii and exact colors may differ where daisyUI or Telegram's
+own components do it differently.
+
+**If a mockup element doesn't work in practice** (a Telegram client clips it,
+a control is awkward on a real phone, a daisyUI component can't do it cleanly),
+stop and report it to the user with a screenshot, instead of quietly
+redesigning it. The user wants to experiment with alternatives together.
+
 ## Visual design
 
 - **Colors come from Telegram.** A daisyUI custom theme maps its tokens onto the
@@ -236,8 +253,9 @@ matcher can compare without a rate.
      to `POST /api/chat/{id}/requests`; *Cancel*, *Done with* and *Yes, we
      swapped* call their routes; a `422` fixture shows its message under the
      form; a `401` fixture shows "Reopen from Telegram".
-   - **Baselines:** the first run's screenshots are compared with
-     `miniapp-mockups/*.png` by eye once, then committed. From then on a visual
+   - **Baselines:** the first run's screenshots are reviewed with the user
+     against `miniapp-mockups/*.png` for the criteria above (same idea, controls
+     close, not pixel-identical), then committed. From then on a visual
      change fails CI until its baseline is updated on purpose.
    - Runs in CI next to the Gradle tests.
 

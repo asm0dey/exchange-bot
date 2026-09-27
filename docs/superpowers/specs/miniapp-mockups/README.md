@@ -1,7 +1,9 @@
 # Mini app mockups
 
 Visual reference for the mini app, agreed on 2026-09-27. The built app should
-look like these.
+follow the same idea, with controls close to these. It doesn't have to be
+pixel-identical. If something here doesn't work in practice, raise it; don't
+silently redesign it.
 
 - `telegram-light.png`, `telegram-dark.png`: all six screens in Telegram's two
   default themes.
