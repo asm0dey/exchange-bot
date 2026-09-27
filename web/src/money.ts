@@ -19,6 +19,9 @@ export function approx(n: number): string {
 
 export const flip = (s: Says): Says => (s === 'GIVES' ? 'WANTS' : 'GIVES')
 
+/** True when this person hands over the pair's base currency (an offer). */
+export const givesBase = (says: Says, currency: string, base: string) => (currency === base) === (says === 'GIVES')
+
 export function toBase(amount: number, typed: string, base: string, rate: number | null): number | null {
   if (typed === base) return amount
   return rate ? amount / rate : null

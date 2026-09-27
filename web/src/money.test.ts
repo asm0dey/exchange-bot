@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { allowedCurrencies, approx, fits, flip, fmt, rangeIn, toBase } from './money'
+import { allowedCurrencies, approx, fits, flip, fmt, givesBase, rangeIn, toBase } from './money'
 
 describe('money', () => {
   it('groups thousands with a thin space', () => {
@@ -12,6 +12,12 @@ describe('money', () => {
   })
   it('flips the side', () => {
     expect(flip('GIVES')).toBe('WANTS')
+  })
+  it('colours by who hands over the base currency, not by side alone', () => {
+    expect(givesBase('GIVES', 'EUR', 'EUR')).toBe(true)
+    expect(givesBase('WANTS', 'EUR', 'EUR')).toBe(false)
+    expect(givesBase('GIVES', 'RUB', 'EUR')).toBe(false)
+    expect(givesBase('WANTS', 'RUB', 'EUR')).toBe(true)
   })
   it('converts a typed amount into the base only with a rate', () => {
     expect(toBase(89400, 'RUB', 'EUR', 94.12)).toBeCloseTo(949.85, 1)
