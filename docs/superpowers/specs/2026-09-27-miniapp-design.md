@@ -218,11 +218,16 @@ redesigning it. The user wants to experiment with alternatives together.
 
 ## Build and deploy
 
-- `web/`: a Bun workspace (Vue 3, Vite, Tailwind v4, daisyUI, vitest,
-  Playwright).
-- Dockerfile: a new `oven/bun` stage runs `bun install --frozen-lockfile && bun
-  run build`. The Gradle stage copies `web/dist` into `src/main/resources/static`
-  before `installDist`. The runtime image stays the distroless Liberica JRE.
+- `web/`: a Bun project (Vue 3, Vite, Tailwind v4, daisyUI, vitest, Playwright).
+  Its dependencies come from the npm registry, declared in `web/package.json` and
+  locked in `web/bun.lock`. No webjars: they can't compile `.vue` files, TypeScript
+  or Tailwind.
+- Gradle drives it with `com.github.node-gradle.node`: it downloads a pinned Node
+  into `.gradle/` and installs a pinned Bun from npm with it. `processResources`
+  depends on `webBuild` (output `build/web/static`, bundled as `static/`), and
+  `check` depends on `webTest`. `./gradlew build` needs only a JDK.
+- Dockerfile: no extra stage. The Gradle stage copies `web/` and `installDist`
+  builds everything. The runtime image stays the distroless Liberica JRE.
 - New dependencies: `ktor-server-core`, `ktor-server-cio`,
   `ktor-server-content-negotiation`, `ktor-serialization-kotlinx-json` (the existing
   Ktor version ref), and `ktor-server-test-host` for tests. Renovate picks them up.
