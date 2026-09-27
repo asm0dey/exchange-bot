@@ -3,8 +3,15 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
     alias(libs.plugins.shadow)
+    alias(libs.plugins.gradle.bun)
     application
 }
+
+// `application` pulls in the `java` plugin, which the Kotlin DSL exposes as a `java`
+// extension accessor on Project — shadowing the `java.*` package prefix inside this script.
+// These imports are how verifyBunArchive below reaches java.net.URI / java.security.MessageDigest.
+import java.net.URI
+import java.security.MessageDigest
 
 // Releases are integers: tag v1, v2, ... and the tag IS the version. CI exports
 // VERSION (the tag minus its "v"), so cutting a release never edits this file.
@@ -44,6 +51,91 @@ dependencies {
 // The mini app's built SPA lands in build/web/static and ships in the jar as the `static/`
 // resources Ktor serves. Task 8 makes processResources build it first.
 sourceSets.main { resources.srcDir(layout.buildDirectory.dir("web")) }
+
+// The mini app (web/) is a Vue + Vite project with npm dependencies locked in web/bun.lock.
+// This plugin downloads a pinned Bun into .gradle/bun/ and runs it from there — nobody
+// installs Bun by hand, and a bot-only contributor needs nothing beyond the JDK. The archive
+// it downloads is checked against a pinned SHA-256 below (bun.downloadBaseUrl) before
+// bunSetup ever unpacks it.
+val bunVersion = "1.3.14"
+val bunVerifiedDir = layout.buildDirectory.dir("bun-verified")
+
+bun {
+    version.set(bunVersion)
+    workingDir.set(layout.projectDirectory.dir("web"))
+    downloadBaseUrl.set(bunVerifiedDir.map { "file://${it.asFile.absolutePath}" })
+}
+
+// Pinned from https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/SHASUMS256.txt
+// (cross-checked against `gh api repos/oven-sh/bun/releases/tags/bun-v1.3.14`'s per-asset
+// digests). Renovate (github-release-attachments datasource, wired in Task 12) bumps
+// bunVersion above and every digest below together, one release at a time — one asset per
+// line, filename and full digest on that line, so its regex manager can match either.
+// Bumping bunVersion without adding that release's digests here fails verifyBunArchive with
+// a clear "no pinned SHA-256" error rather than silently trusting an unchecked download.
+val bunDigests = mapOf(
+    "bun-darwin-aarch64.zip" to "d8b96221828ad6f97ac7ac0ab7e95872341af763001e8803e8267652c2652620",
+    "bun-darwin-x64.zip" to "4183df3374623e5bab315c547cfa0974533cd457d86b73b639f7a87974cd6633",
+    "bun-linux-aarch64.zip" to "a27ffb63a8310375836e0d6f668ae17fa8d8d18b88c37c821c65331973a19a3b",
+    "bun-linux-x64.zip" to "951ee2aee855f08595aeec6225226a298d3fea83a3dcd6465c09cbccdf7e848f",
+    "bun-windows-x64.zip" to "0a0620930b6675d7ba440e81f4e0e00d3cfbe096c4b140d3fff02205e9e18922",
+)
+
+// BunSetupTask deletes the zip right after extracting it, so there is nothing left to check
+// after the fact. Instead, this task re-downloads the exact same archive to a local path
+// FIRST, verifies its digest, and bun.downloadBaseUrl (above) points bunSetup at that
+// verified copy instead of the network — bunSetup then reads bytes this task already checked.
+val verifyBunArchive = tasks.register("verifyBunArchive") {
+    group = "bun"
+    description = "Downloads the Bun archive for this platform and checks it against the pinned SHA-256 before bunSetup trusts it."
+    val platform = io.clroot.gradle.bun.platform.Platform.current()
+    val archiveFile = bunVerifiedDir.get().dir("bun-v$bunVersion").file(platform.archiveFileName).asFile
+    // Copied into plain locals so doLast's closure captures values, not a reference back to
+    // this script's own object (top-level script properties aren't config-cache-serializable).
+    val version = bunVersion
+    val digests = bunDigests
+    outputs.file(archiveFile)
+    doLast {
+        archiveFile.parentFile.mkdirs()
+        val url = "https://github.com/oven-sh/bun/releases/download/bun-v$version/${platform.archiveFileName}"
+        URI(url).toURL().openStream().use { it.copyTo(archiveFile.outputStream()) }
+        val expected = digests[platform.archiveFileName]
+            ?: error("No pinned SHA-256 for bun $version / ${platform.archiveFileName}; add one before bumping the version.")
+        val actual = MessageDigest.getInstance("SHA-256").digest(archiveFile.readBytes())
+            .joinToString("") { "%02x".format(it) }
+        check(actual == expected) { "Bun archive checksum mismatch for ${platform.archiveFileName}: expected $expected, got $actual" }
+    }
+}
+
+tasks.named("bunSetup") { dependsOn(verifyBunArchive) }
+
+val webBuild = tasks.register<io.clroot.gradle.bun.task.BunTask>("webBuild") {
+    description = "Builds the mini app into build/web/static"
+    dependsOn("bunInstall")
+    args("run", "build")
+    inputs.dir("web/src")
+    inputs.files("web/index.html", "web/vite.config.ts", "web/tsconfig.json", "web/package.json", "web/bun.lock")
+    outputs.dir(layout.buildDirectory.dir("web"))
+}
+
+val webTest = tasks.register<io.clroot.gradle.bun.task.BunTask>("webTest") {
+    description = "Runs the mini app's unit tests (vitest)"
+    dependsOn("bunInstall")
+    args("run", "test")
+    inputs.dir("web/src")
+    outputs.upToDateWhen { false }
+}
+
+// Playwright needs a browser, so it is not part of `check`; CI runs it explicitly.
+val webE2e = tasks.register<io.clroot.gradle.bun.task.BunTask>("webE2e") {
+    description = "Runs the mini app's Playwright tests against mock data"
+    dependsOn("bunInstall")
+    args("run", "e2e")
+    outputs.upToDateWhen { false }
+}
+
+tasks.processResources { dependsOn(webBuild) }
+tasks.check { dependsOn(webTest) }
 
 kotlin {
     // Build on the same JDK vendor the container runs: the production runtime is
