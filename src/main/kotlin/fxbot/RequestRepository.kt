@@ -251,6 +251,14 @@ class RequestRepository(
             .size
     }
 
+    /** Every row this person has resting anywhere — chats, showings and the bot-side row alike. */
+    fun openFor(userId: Long): List<Request> = transaction(db) {
+        Requests.selectAll()
+            .where { (Requests.userRef eq crypto.ref(userId.toString())) and (Requests.state eq RequestState.OPEN.name) }
+            .orderBy(Requests.createdAt to SortOrder.DESC, Requests.rowId to SortOrder.DESC)
+            .map { hydrate(it) }
+    }
+
     /**
      * The pairs resting in the bot. `Housekeeping.refreshRates` enumerates chat
      * pairs from `chat_settings`; without this, a pair no chat uses would never get a
