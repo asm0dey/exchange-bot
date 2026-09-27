@@ -41,6 +41,10 @@ dependencies {
     testImplementation(libs.ktor.server.test.host)
 }
 
+// The mini app's built SPA lands in build/web/static and ships in the jar as the `static/`
+// resources Ktor serves. Task 8 makes processResources build it first.
+sourceSets.main { resources.srcDir(layout.buildDirectory.dir("web")) }
+
 kotlin {
     // Build on the same JDK vendor the container runs: the production runtime is
     // BellSoft Liberica (hardened distroless). Without this pin, the foojay resolver

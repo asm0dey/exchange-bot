@@ -10,6 +10,11 @@ data class Config(
     val dbUserPw: String,
     val dataKeyset: String,
     val indexKeyset: String,
+    /** The public HTTPS origin the reverse proxy serves the mini app on. Null: no server. */
+    val miniAppUrl: String? = null,
+    val miniAppPort: Int = 8080,
+    /** BotFather's short name for the app, for `t.me/<bot>/<short name>` links. */
+    val miniAppShortName: String? = null,
 ) {
     /** Overrides the generated one, which would print every secret field verbatim. */
     override fun toString(): String = "Config(***)"
@@ -33,5 +38,8 @@ fun loadConfig(env: (String) -> String?): Config {
         dbUserPw = required("DB_USER_PW"),
         dataKeyset = required("DATA_KEYSET"),
         indexKeyset = required("INDEX_KEYSET"),
+        miniAppUrl = env("MINIAPP_URL")?.takeIf { it.isNotBlank() },
+        miniAppPort = env("MINIAPP_PORT")?.toIntOrNull() ?: 8080,
+        miniAppShortName = env("MINIAPP_SHORT_NAME")?.takeIf { it.isNotBlank() },
     )
 }

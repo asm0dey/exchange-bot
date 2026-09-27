@@ -3,9 +3,11 @@ package fxbot
 import eu.vendeli.tgbot.TelegramBot
 import eu.vendeli.tgbot.api.botactions.getMe
 import eu.vendeli.tgbot.api.botactions.setMyCommands
+import eu.vendeli.tgbot.api.chat.getChat
 import eu.vendeli.tgbot.types.bot.BotCommandScope
 import eu.vendeli.tgbot.utils.builders.BotCommandsBuilder
 import eu.vendeli.tgbot.types.component.UpdateType
+import eu.vendeli.tgbot.types.component.getOrNull
 import eu.vendeli.tgbot.types.component.isSuccess
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -131,6 +133,35 @@ suspend fun main(): Unit = coroutineScope {
     // scope argument lands in the right slot.
     registerCommandMenus(bot)
 
+    // Off unless configured: an existing deployment without MINIAPP_URL runs exactly as before.
+    //
+    // No chat-menu-button call here: `SetChatMenuButtonAction` extends the library's `Action`
+    // (not `SimpleAction`), and every `Action.send`/`sendReturning` overload requires a target
+    // chat/user and unconditionally writes it into the `chat_id` request field (confirmed by
+    // reading eu.vendeli.tgbot.interfaces.action.Action's source in the 9.6.0 sources jar).
+    // The Bot API's "set the default menu button for every private chat" behaviour is reached
+    // only by omitting `chat_id` entirely, which this typed wrapper offers no way to do at
+    // startup, where there is no single chat to target anyway. `/app` (MiniAppCommands.kt),
+    // already listed in both command menus, is the app's discovery surface instead.
+    cfg.miniAppUrl?.let {
+        val me = runCatching { getMe().sendReturning(bot).getOrNull() }.getOrNull()
+        Registry.miniAppLink = me?.username?.let { u -> cfg.miniAppShortName?.let { short -> "https://t.me/$u/$short" } }
+        val backend = ServiceBackend(
+            Registry.requests, Registry.settings, Registry.people, Registry.rates, Registry.service,
+            Registry.interests, Registry.lifecycle, Registry.messages, Registry.names,
+            titles = { chatId -> runCatching { getChat().sendReturning(chatId, bot).getOrNull()?.title }.getOrNull() },
+            delivery = TelegramDelivery(bot),
+        )
+        // A bind failure (port already taken) or any other startup exception must not take the
+        // whole bot down with it — the polling loop below is the thing that matters most.
+        runCatching {
+            startMiniApp(cfg.miniAppPort, InitDataVerifier(cfg.botToken)::verify, backend, MembershipCache(telegramMembership(bot)))
+            logger.info("exchange-bot: mini app listening")
+        }.onFailure {
+            logger.error("exchange-bot: mini app failed to start")
+        }
+    }
+
     // A restart inside the window must not leave showings resting in chats that were
     // never told. Re-rendered from live state, never replayed. `flushAllOnStartup`
     // propagates a sink failure to its caller (unlike the windowed path, which counts and
@@ -217,6 +248,7 @@ internal val GROUP_COMMANDS: List<Pair<String, String>> = listOf(
     "tif" to "Admins: how many days a request waits",
     "fanout" to "Admins: show privately stated interests here",
     "forget" to "Erase your data — add 'all' in a private chat for every group",
+    "app" to "Open the exchange app",
     "help" to "What I can do",
 )
 
@@ -230,6 +262,7 @@ internal val PRIVATE_COMMANDS: List<Pair<String, String>> = listOf(
     "reopen" to "Bring back the interest that closed last",
     "settings" to "Your size tolerance",
     "forget" to "Erase what I hold about you — add 'all' for every group",
+    "app" to "Open the exchange app",
     "help" to "What I can do",
 )
 

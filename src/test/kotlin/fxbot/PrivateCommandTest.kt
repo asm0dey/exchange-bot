@@ -465,10 +465,10 @@ class PrivateCommandTest : StringSpec({
         // earlier task registered (fanout, in particular).
         GROUP_COMMANDS.map { it.first } shouldContainExactlyInAnyOrder listOf(
             "sell", "buy", "status", "cancel", "done", "reopen", "settings",
-            "pair", "tolerance", "tif", "fanout", "forget", "help",
+            "pair", "tolerance", "tif", "fanout", "forget", "app", "help",
         )
         PRIVATE_COMMANDS.map { it.first } shouldContainExactlyInAnyOrder listOf(
-            "sell", "buy", "tolerance", "status", "cancel", "done", "reopen", "settings", "forget", "help",
+            "sell", "buy", "tolerance", "status", "cancel", "done", "reopen", "settings", "forget", "app", "help",
         )
         // Admin-only commands have no private meaning, so they are not suggested there.
         PRIVATE_COMMANDS.map { it.first } shouldNotContain "pair"

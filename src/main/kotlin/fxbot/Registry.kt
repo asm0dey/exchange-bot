@@ -21,4 +21,7 @@ object Registry {
     lateinit var refusals: DoneRefusalRepository
     lateinit var pending: PendingAnnouncementRepository
     lateinit var names: NameLookup
+
+    /** `https://t.me/<bot>/<short name>`, set once at startup when MINIAPP_URL is configured. Null: no app. */
+    var miniAppLink: String? = null
 }
