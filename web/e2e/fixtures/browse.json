@@ -1,0 +1,13 @@
+{
+  "rates": { "EUR/RUB": "94.12", "EUR/USD": "1.17" },
+  "cards": [
+    { "base": "EUR", "quote": "RUB", "says": "GIVES", "amount": "500", "currency": "EUR", "other": "RUB", "approxOther": "47060",
+      "createdAt": 1790424000, "expiresAt": 1791028800, "range": { "min": "400", "max": "625" } },
+    { "base": "EUR", "quote": "RUB", "says": "GIVES", "amount": "80000", "currency": "RUB", "other": "EUR", "approxOther": "849.97",
+      "createdAt": 1790496000, "expiresAt": 1791100800, "range": { "min": "679.98", "max": "1062.46" } },
+    { "base": "EUR", "quote": "RUB", "says": "WANTS", "amount": "450", "currency": "EUR", "other": "RUB", "approxOther": "42354",
+      "createdAt": 1790424000, "expiresAt": 1791028800, "range": { "min": "360", "max": "562.5" } },
+    { "base": "EUR", "quote": "USD", "says": "WANTS", "amount": "1200", "currency": "EUR", "other": "USD", "approxOther": "1404",
+      "createdAt": 1790337600, "expiresAt": 1790942400, "range": { "min": "960", "max": "1500" } }
+  ]
+}

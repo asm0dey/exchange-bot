@@ -130,7 +130,8 @@ val webBuild = tasks.register<io.clroot.gradle.bun.task.BunTask>("webBuild") {
     dependsOn("bunInstall")
     args("run", "build")
     inputs.dir("web/src")
-    inputs.files("web/index.html", "web/vite.config.ts", "web/tsconfig.json", "web/package.json", "web/bun.lock")
+    inputs.dir("web/e2e")
+    inputs.files("web/index.html", "web/vite.config.ts", "web/tsconfig.json", "web/package.json", "web/bun.lock", "web/playwright.config.ts")
     outputs.dir(layout.buildDirectory.dir("web"))
 }
 
@@ -147,6 +148,10 @@ val webE2e = tasks.register<io.clroot.gradle.bun.task.BunTask>("webE2e") {
     description = "Runs the mini app's Playwright tests against mock data"
     dependsOn("bunInstall")
     args("run", "e2e")
+    // -PwebE2eArgs=--update-snapshots reaches `playwright test` (not `playwright install`,
+    // the other half of the `e2e` script) because "--" only separates it from `bun run e2e`'s
+    // own args; both script commands still share the one trailing argument list.
+    args.addAll(providers.gradleProperty("webE2eArgs").map { listOf("--", it) }.orElse(emptyList()))
     outputs.upToDateWhen { false }
 }
 
