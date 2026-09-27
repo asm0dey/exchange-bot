@@ -2,14 +2,14 @@
 import { computed, ref, watch } from 'vue'
 import { ArrowLeftRight } from 'lucide-vue-next'
 import type { RangeDto, Says } from '../api'
-import { allowedCurrencies, approx, fits, flip, fmt, rangeIn, toBase, toTyped } from '../money'
+import { allowedCurrencies, approx, fits, flip, fmt, matchCandidates, rangeIn, toBase, toTyped, type SheetCandidate } from '../money'
 import { useBackButton, useMainButton } from '../tg'
 import RangeBar from './RangeBar.vue'
 
 const p = defineProps<{
   base: string; quote: string; rate: number | null; pairEditable?: boolean
   prefill?: { says: Says; amount: string; currency: string; name?: string | null; range?: RangeDto | null } | null
-  candidates?: { label: string; range: RangeDto }[]
+  candidates?: SheetCandidate[]
   destination: string; tolerancePct?: number | null; error?: string | null
   currencies?: string[]
 }>()
@@ -44,15 +44,19 @@ const est = computed(() => {
   const o = b === null ? null : toTyped(b, other.value, p.base, p.rate)
   return valid.value && o !== null ? approx(o) : null
 })
+// The prefill is always the exact card the user tapped, in its own base — never re-ordered by
+// the pair picker (which only applies to a fresh, non-prefilled sheet) — so it reads p.base/p.rate
+// directly. Free-typed candidates go through matchCandidates, keyed off each candidate's OWN base,
+// so the result never depends on which way this sheet's own pair happens to be ordered.
 const bands = computed(() => {
-  const list = p.prefill?.range
-    ? [{ label: `${p.prefill.name ?? 'They'} match${p.prefill.name ? 'es' : ''}`, range: p.prefill.range }]
-    : (p.candidates ?? [])
-  return list.map((c) => ({
-    label: c.label,
-    shown: rangeIn(c.range, currency.value, p.base, p.rate),
-    ok: valid.value ? fits(n.value, currency.value, p.base, p.rate, c.range) : null,
-  })).filter((b) => b.shown !== null)
+  if (p.prefill?.range) {
+    const label = `${p.prefill.name ?? 'They'} match${p.prefill.name ? 'es' : ''}`
+    const shown = rangeIn(p.prefill.range, currency.value, p.base, p.rate)
+    if (shown === null) return []
+    return [{ label, shown, ok: valid.value ? fits(n.value, currency.value, p.base, p.rate, p.prefill.range) : null }]
+  }
+  return matchCandidates(p.candidates ?? [], says.value, currency.value, valid.value ? n.value : null)
+    .filter((b) => b.shown !== null)
 })
 const fitCount = computed(() => bands.value.filter((b) => b.ok).length)
 

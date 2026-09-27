@@ -53,14 +53,22 @@ function openNew() {
   const [base, quote] = (browsePair.value ?? 'EUR/RUB').split('/')
   openSheet(base, quote, null)
 }
-/** Everyone resting on the other side of what's being typed, with the range each accepts. */
+/**
+ * Everyone whose card matches this pair, carried with its own base/quote/rate so RequestSheet
+ * can judge side and range against each candidate's OWN base — never this sheet's base, which
+ * the pair picker and swap button can put on either side.
+ */
 const candidates = computed(() => {
   const s = sheet.value
   if (!s || s.prefill || !browse.value) return []
   return browse.value.cards
     .filter((c) => (c.base === s.base && c.quote === s.quote) || (c.base === s.quote && c.quote === s.base))
     .filter((c) => c.range)
-    .map((c) => ({ label: `${c.says === 'GIVES' ? 'Gives' : 'Wants'} ${c.amount} ${c.currency}`, range: c.range! }))
+    .map((c) => ({
+      label: `${c.says === 'GIVES' ? 'Gives' : 'Wants'} ${c.amount} ${c.currency}`,
+      says: c.says, currency: c.currency, base: c.base, quote: c.quote,
+      range: c.range!, rate: rateFor(c.base, c.quote),
+    }))
 })
 async function submit(b: { says: Says; amount: string; currency: string; other: string }) {
   try { note.value = (await api.state(b)).message; haptic('success'); closeSheet(); tab.value = 'mine'; await load() }

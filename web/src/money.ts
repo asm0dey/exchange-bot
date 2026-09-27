@@ -46,6 +46,25 @@ export function fits(amount: number, typed: string, base: string, rate: number |
   return b >= Number(r.min) && (r.max == null || b <= Number(r.max))
 }
 
+export type SheetCandidate = { label: string; says: Says; currency: string; base: string; quote: string; range: RangeDto; rate: number | null }
+export type MatchedBand = { label: string; shown: { min: number; max: number | null } | null; ok: boolean | null }
+
+/**
+ * Everyone resting on the other side of what's being typed, with the range each accepts shown
+ * in the typed currency. Side and range are judged against each candidate's OWN base — the
+ * server canonicalises pairs, so a card's `range` is always in that card's own base — which
+ * makes the result independent of how the sheet's own pair happens to be ordered.
+ */
+export function matchCandidates(candidates: SheetCandidate[], mySays: Says, myCurrency: string, myAmount: number | null): MatchedBand[] {
+  return candidates
+    .filter((c) => givesBase(c.says, c.currency, c.base) !== givesBase(mySays, myCurrency, c.base))
+    .map((c) => ({
+      label: c.label,
+      shown: rangeIn(c.range, myCurrency, c.base, c.rate),
+      ok: myAmount === null ? null : fits(myAmount, myCurrency, c.base, c.rate, c.range),
+    }))
+}
+
 /**
  * Which currencies the amount may be typed in. Pre-filled from a card, the toggle only
  * changes which leg is typed: giving means typing the leg the counterparty wants/gives in

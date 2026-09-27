@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { allowedCurrencies, approx, fits, flip, fmt, givesBase, rangeIn, toBase } from './money'
+import { allowedCurrencies, approx, fits, flip, fmt, givesBase, matchCandidates, rangeIn, toBase, type SheetCandidate } from './money'
 
 describe('money', () => {
   it('groups thousands with a thin space', () => {
@@ -43,5 +43,50 @@ describe('money', () => {
     expect(allowedCurrencies(prefill, 'EUR', 'RUB', 'GIVES')).toEqual(['EUR'])
     expect(allowedCurrencies(prefill, 'EUR', 'RUB', 'WANTS')).toEqual(['RUB'])
     expect(allowedCurrencies(null, 'EUR', 'RUB', 'WANTS')).toEqual(['EUR', 'RUB'])
+  })
+
+  // Browse holds these three (mockups.html, the composing-500-EUR worked example): a same-side
+  // Gives 500 EUR, and two other-side cards, Gives 80 000 RUB and Wants 450 EUR. Every card's
+  // range is in its own base, EUR — the pair's canonical base — regardless of what the composing
+  // sheet's own base/quote happen to be.
+  const rate = 94.12
+  const givesEur: SheetCandidate = { label: 'Gives 500 EUR', says: 'GIVES', currency: 'EUR', base: 'EUR', quote: 'RUB', range: { min: '400', max: '625' }, rate }
+  const givesRub: SheetCandidate = { label: 'Gives 80 000 RUB', says: 'GIVES', currency: 'RUB', base: 'EUR', quote: 'RUB', range: { min: '680', max: '1062' }, rate }
+  const wantsEur: SheetCandidate = { label: 'Wants 450 EUR', says: 'WANTS', currency: 'EUR', base: 'EUR', quote: 'RUB', range: { min: '360', max: '562' }, rate }
+
+  it('filters out the same side and counts fits when giving 500 EUR', () => {
+    const result = matchCandidates([givesEur, givesRub, wantsEur], 'GIVES', 'EUR', 500)
+    expect(result).toHaveLength(2)
+    expect(result.some((b) => b.label === givesEur.label)).toBe(false)
+    expect(result.filter((b) => b.ok).length).toBe(1)
+    expect(result.find((b) => b.label === wantsEur.label)?.ok).toBe(true)
+    expect(result.find((b) => b.label === givesRub.label)?.ok).toBe(false)
+  })
+
+  it('excludes the same-side card when wanting EUR', () => {
+    const result = matchCandidates([givesEur, givesRub, wantsEur], 'WANTS', 'EUR', 500)
+    expect(result.some((b) => b.label === wantsEur.label)).toBe(false)
+  })
+
+  it("gives the same candidates and fit verdicts whichever way the sheet's own pair is ordered", () => {
+    const cards = [givesEur, givesRub, wantsEur]
+    // Mirrors PrivateView's own symmetric pair filter — the candidates it hands to
+    // matchCandidates are unaffected by which of the sheet's base/quote is which.
+    const byPair = (base: string, quote: string) => cards.filter((c) => (c.base === base && c.quote === quote) || (c.base === quote && c.quote === base))
+    const asEurRub = matchCandidates(byPair('EUR', 'RUB'), 'GIVES', 'EUR', 500)
+    const asRubEur = matchCandidates(byPair('RUB', 'EUR'), 'GIVES', 'EUR', 500)
+    expect(asEurRub).toEqual(asRubEur)
+    expect(asEurRub).toHaveLength(2)
+    expect(asEurRub.filter((b) => b.ok).length).toBe(1)
+  })
+
+  it('has no shown range for a cross-currency candidate without a rate, but keeps a same-currency one', () => {
+    const noRate: SheetCandidate = { ...wantsEur, rate: null }
+    // Typed in RUB: cross-currency against this candidate's EUR base, and no rate to convert with.
+    const cross = matchCandidates([noRate], 'WANTS', 'RUB', null)
+    expect(cross[0]?.shown ?? null).toBeNull()
+    // Typed in EUR: same currency as this candidate's base, so no rate is needed at all.
+    const same = matchCandidates([noRate], 'GIVES', 'EUR', null)
+    expect(same[0]?.shown).toEqual({ min: 360, max: 562 })
   })
 })
