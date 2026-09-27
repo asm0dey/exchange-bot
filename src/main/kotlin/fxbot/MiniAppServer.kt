@@ -100,7 +100,10 @@ private suspend inline fun <reified T : Any> RoutingContext.reply(r: ApiResult<T
 }
 
 fun Application.miniApp(verify: (String) -> Viewer?, backend: MiniAppBackend, membership: MembershipCache) {
-    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+    // encodeDefaults: MiniAppDto's default fields (e.g. CardDto.counterparties,
+    // ChatView.rateStale) must always be sent — api.ts declares them required, and
+    // Task 9's card.counterparties.length would throw on an omitted default.
+    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true }) }
 
     routing {
         staticResources("/", "static")

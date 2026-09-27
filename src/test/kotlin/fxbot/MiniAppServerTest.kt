@@ -22,7 +22,9 @@ private val verify: (String) -> Viewer? = { raw -> raw.removePrefix("ok:").toLon
 
 private class FakeBackend : MiniAppBackend {
     var lastPostChat: Long? = null
-    override suspend fun chat(viewer: Viewer, chatId: Long) = ApiResult.Ok(ChatView(chatId, "G", "EUR", "RUB", "94.12", false, emptyList()))
+    override suspend fun chat(viewer: Viewer, chatId: Long) = ApiResult.Ok(
+        ChatView(chatId, "G", "EUR", "RUB", "94.12", false, listOf(CardDto("s1", true, Says.GIVES, "10", "EUR", "RUB", name = "Alice", createdAt = 0L, expiresAt = 0L))),
+    )
     override suspend fun postInChat(viewer: Viewer, chatId: Long, body: NewRequestBody): ApiResult<MessageDto> {
         lastPostChat = chatId
         return if (body.amount == "bad") ApiResult.Refused("I couldn't read \"bad\" as an amount.") else ApiResult.Ok(MessageDto("Posted."))
@@ -59,6 +61,14 @@ class MiniAppServerTest : StringSpec({
             val r = client.get("/api/chat/-1001") { header("Authorization", "tma ok:1") }
             r.status shouldBe HttpStatusCode.OK
             r.bodyAsText() shouldContain "\"base\":\"EUR\""
+        }
+    }
+    "encodeDefaults sends a card's default fields, not just the ones it set" {
+        app {
+            val r = client.get("/api/chat/-1001") { header("Authorization", "tma ok:1") }
+            val body = r.bodyAsText()
+            body shouldContain "\"counterparties\":[]"
+            body shouldContain "\"rateStale\":false"
         }
     }
     "a non-member is 403 and the backend is never asked" {
