@@ -23,20 +23,22 @@ const says = ref<Says>(p.prefill ? flip(p.prefill.says) : 'GIVES')
 const currency = ref(p.prefill?.currency ?? p.base)
 const amount = ref(p.prefill?.amount ?? '')
 
+const other = computed(() => (currency.value === p.base ? p.quote : p.base))
+const n = computed(() => Number(amount.value.replace(/\s/g, '')))
+const valid = computed(() => Number.isFinite(n.value) && n.value > 0)
+
 const allowed = computed(() => allowedCurrencies(p.prefill ?? null, p.base, p.quote, says.value))
 // Pre-filled: flipping the toggle re-expresses the same deal in the other leg.
+// Use the sanitised n.value (amount.value may hold a thin-space-grouped display string);
+// an invalid amount leaves the field empty rather than writing NaN into it.
 watch(says, (now, before) => {
   if (!p.prefill || now === before) return
-  const b = toBase(Number(amount.value), currency.value, p.base, p.rate)
+  const b = valid.value ? toBase(n.value, currency.value, p.base, p.rate) : null
   currency.value = allowed.value[0]
   const typed = b === null ? null : toTyped(b, currency.value, p.base, p.rate)
   amount.value = typed === null ? '' : String(Math.round(typed))
 })
 watch(allowed, (a) => { if (!a.includes(currency.value)) currency.value = a[0] })
-
-const other = computed(() => (currency.value === p.base ? p.quote : p.base))
-const n = computed(() => Number(amount.value.replace(/\s/g, '')))
-const valid = computed(() => Number.isFinite(n.value) && n.value > 0)
 const est = computed(() => {
   const b = toBase(n.value, currency.value, p.base, p.rate)
   const o = b === null ? null : toTyped(b, other.value, p.base, p.rate)

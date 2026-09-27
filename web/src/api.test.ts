@@ -21,4 +21,12 @@ describe('api', () => {
     expect(e).toBeInstanceOf(ApiError)
     expect(e.status).toBe(401)
   })
+  it('turns a rejected fetch into a status-0 ApiError, never a 401', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+    await expect(api.me()).rejects.toMatchObject({ status: 0, message: 'Could not reach the server. Try again.' })
+  })
+  it('turns a 200 with a non-JSON body into the same status-0 ApiError', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('not json', { status: 200 })))
+    await expect(api.me()).rejects.toMatchObject({ status: 0, message: 'Could not reach the server. Try again.' })
+  })
 })

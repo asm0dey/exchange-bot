@@ -23,15 +23,28 @@ export class ApiError extends Error {
 let initData = tg?.initData ?? ''
 export const setInitData = (v: string) => { initData = v }
 
+const unreachable = () => new ApiError(0, 'Could not reach the server. Try again.')
+
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`/api${path}`, {
-    method,
-    headers: { Authorization: `tma ${initData}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
-    body: body ? JSON.stringify(body) : undefined,
-  })
+  let res: Response
+  try {
+    res = await fetch(`/api${path}`, {
+      method,
+      headers: { Authorization: `tma ${initData}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    })
+  } catch {
+    throw unreachable()
+  }
+  if (res.ok) {
+    try {
+      return (await res.json()) as T
+    } catch {
+      throw unreachable()
+    }
+  }
   const json = await res.json().catch(() => ({ message: 'Something went wrong.' }))
-  if (!res.ok) throw new ApiError(res.status, (json as Msg).message)
-  return json as T
+  throw new ApiError(res.status, (json as Msg).message)
 }
 
 export const api = {

@@ -51,8 +51,10 @@ async function done(mineToken: string, peerShortId: string) {
   try { problem.value = (await api.done({ mineToken, peerShortId })).message; haptic('success'); await load() }
   catch (e) { problem.value = (e as Error).message; haptic('error') }
 }
+function openSheet(prefill: CardDto | null) { sheet.value = { prefill }; sheetError.value = null }
+function closeSheet() { sheet.value = null; sheetError.value = null }
 async function post(b: { says: Says; amount: string; currency: string }) {
-  try { await api.post(props.chatId, b); haptic('success'); sheet.value = null; sheetError.value = null; await load() }
+  try { await api.post(props.chatId, b); haptic('success'); closeSheet(); await load() }
   catch (e) { sheetError.value = (e as Error).message; haptic('error') }
 }
 </script>
@@ -80,7 +82,7 @@ async function post(b: { says: Says; amount: string; currency: string }) {
                        :says="c.says" :amount="c.amount" :currency="c.currency" :other="c.other" :approx-other="c.approxOther"
                        :name="c.mine ? null : c.name" :mine="c.mine" :meta="c.mine ? `${ago(c.createdAt)} · ${left(c.expiresAt)}` : ago(c.createdAt)"
                        :action="c.mine ? 'Cancel' : giveLabel(c)"
-                       @action="c.mine ? cancel(c) : (sheet = { prefill: c })">
+                       @action="c.mine ? cancel(c) : openSheet(c)">
             <div v-for="cp in c.counterparties" :key="cp.shortId" class="flex justify-between items-center mt-2 text-sm">
               <span class="text-link">{{ cp.name }}</span>
               <button class="btn btn-xs btn-outline btn-primary" @click="done(cp.mineToken, cp.shortId)">Done with</button>
@@ -90,14 +92,14 @@ async function post(b: { says: Says; amount: string; currency: string }) {
         </div>
       </template>
       <p v-if="problem" class="text-sm text-hint" role="status">{{ problem }}</p>
-      <button class="btn btn-primary rounded-full fixed right-3 bottom-4 shadow-lg" @click="sheet = { prefill: null }"><Plus :size="16" /> New request</button>
+      <button class="btn btn-primary rounded-full fixed right-3 bottom-4 shadow-lg" @click="openSheet(null)"><Plus :size="16" /> New request</button>
     </template>
     <p v-else class="text-hint p-4">{{ problem ?? 'Loading…' }}</p>
 
-    <div v-if="sheet && view" class="fixed inset-0 bg-black/45 flex flex-col justify-end" @click.self="sheet = null">
+    <div v-if="sheet && view" class="fixed inset-0 bg-black/45 flex flex-col justify-end" @click.self="closeSheet">
       <RequestSheet :base="view.base" :quote="view.quote" :rate="rate" :destination="view.title ?? 'this chat'" :error="sheetError"
                     :prefill="sheet.prefill && { says: sheet.prefill.says, amount: sheet.prefill.amount, currency: sheet.prefill.currency, name: sheet.prefill.name, range: sheet.prefill.range }"
-                    @submit="post" @close="sheet = null" />
+                    @submit="post" @close="closeSheet" />
     </div>
   </main>
 </template>
