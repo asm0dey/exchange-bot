@@ -134,14 +134,16 @@ class ServiceBackend(
     }
 
     /**
-     * Runs [act] and tells the outcome where the acting row rests: its group, or the person's
-     * own chat with the bot for a privately stated interest — where they would have typed it.
-     * Refusals are not delivered; the app shows them.
+     * Runs [act] and tells the outcome where the acting row rests: [Request.answerChatId] —
+     * the person's own chat with the bot for anyone who spoke privately (a showing carries an
+     * `interestToken` even though it rests in a group, so it answers privately too, same as the
+     * chatless row), otherwise the chat they typed in. Refusals are not delivered; the app shows
+     * them.
      */
     private fun decide(row: Request?, act: suspend () -> ActionResult): suspend (Viewer) -> ApiResult<MessageDto> = { viewer ->
         val result = act()
         if (result is ActionResult.Ok || result is ActionResult.Asked) {
-            val chatId = row?.chatId?.takeIf { it != NO_CHAT_ID } ?: viewer.userId
+            val chatId = row?.answerChatId() ?: viewer.userId
             delivery.decision(chatId, result)
         }
         answer(result)

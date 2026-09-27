@@ -103,6 +103,21 @@ class ServiceBackendTest : StringSpec({
         delivery.decisions.last().first shouldBe group
     }
 
+    "a cancel on a showing — a group row born of a privately stated interest — is answered privately" {
+        val showing = requests.create(
+            group, ann.userId, ann.username, Side.OFFER, "EUR", BigDecimal(50), CurrencyPair("EUR", "RUB"), 7,
+            "showing-interest-token",
+        )
+        backend.cancel(ann, showing.refToken).shouldBeInstanceOf<ApiResult.Ok<MessageDto>>()
+        delivery.decisions.last().first shouldBe ann.userId
+    }
+
+    "a cancel of the viewer's own chatless interest row is also answered privately" {
+        val chatless = requests.create(NO_CHAT_ID, ann.userId, ann.username, Side.OFFER, "EUR", BigDecimal(60), CurrencyPair("EUR", "RUB"), 7)
+        backend.cancel(ann, chatless.refToken).shouldBeInstanceOf<ApiResult.Ok<MessageDto>>()
+        delivery.decisions.last().first shouldBe ann.userId
+    }
+
     "an unanswered ask is pending, and a refusal removes it and tells delivery" {
         val decl = requests.create(group, 5, "dan", Side.OFFER, "EUR", BigDecimal(10), CurrencyPair("EUR", "RUB"), 7)
         val mine = requests.create(group, 1, "ann", Side.BID, "EUR", BigDecimal(10), CurrencyPair("EUR", "RUB"), 7)
