@@ -63,7 +63,10 @@ val bunVerifiedDir = layout.buildDirectory.dir("bun-verified")
 bun {
     version.set(bunVersion)
     workingDir.set(layout.projectDirectory.dir("web"))
-    downloadBaseUrl.set(bunVerifiedDir.map { "file://${it.asFile.absolutePath}" })
+    // toURI(), not "file://${absolutePath}" — the latter yields "file://C:\..." on Windows,
+    // which URI(String) (used by bunSetup below) rejects. toURI() is correct on every OS.
+    // BunSetupTask appends "/bun-v<version>/<archiveFileName>" itself, so no trailing slash.
+    downloadBaseUrl.set(bunVerifiedDir.map { it.asFile.toURI().toString().removeSuffix("/") })
 }
 
 // Pinned from https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/SHASUMS256.txt
@@ -93,21 +96,34 @@ val verifyBunArchive = tasks.register("verifyBunArchive") {
     // Copied into plain locals so doLast's closure captures values, not a reference back to
     // this script's own object (top-level script properties aren't config-cache-serializable).
     val version = bunVersion
-    val digests = bunDigests
+    val expectedDigest = bunDigests[platform.archiveFileName]
+        ?: error("No pinned SHA-256 for bun $version / ${platform.archiveFileName}; add one before bumping the version.")
+    // Real inputs, not just the output file: editing a digest for the same version must
+    // invalidate this task, or it stays UP-TO-DATE once the (now-wrongly-verified) archive
+    // already exists on disk.
+    inputs.property("version", version)
+    inputs.property("sha256", expectedDigest)
     outputs.file(archiveFile)
     doLast {
         archiveFile.parentFile.mkdirs()
         val url = "https://github.com/oven-sh/bun/releases/download/bun-v$version/${platform.archiveFileName}"
         URI(url).toURL().openStream().use { it.copyTo(archiveFile.outputStream()) }
-        val expected = digests[platform.archiveFileName]
-            ?: error("No pinned SHA-256 for bun $version / ${platform.archiveFileName}; add one before bumping the version.")
         val actual = MessageDigest.getInstance("SHA-256").digest(archiveFile.readBytes())
             .joinToString("") { "%02x".format(it) }
-        check(actual == expected) { "Bun archive checksum mismatch for ${platform.archiveFileName}: expected $expected, got $actual" }
+        check(actual == expectedDigest) { "Bun archive checksum mismatch for ${platform.archiveFileName}: expected $expectedDigest, got $actual" }
     }
 }
 
-tasks.named("bunSetup") { dependsOn(verifyBunArchive) }
+tasks.named<io.clroot.gradle.bun.task.BunSetupTask>("bunSetup") {
+    dependsOn(verifyBunArchive)
+    // BunSetupTask returns early when the executable at installDir already exists — a
+    // leftover from an earlier run, a CI cache restore, or a hand-placed binary would then
+    // run without ever being extracted from the archive verifyBunArchive just checked.
+    // Deleting first forces every execution to (re-)extract from the verified archive; the
+    // task's @OutputDirectory installDir means Gradle still reruns it once the directory no
+    // longer matches its last snapshot.
+    doFirst { installDir.get().asFile.deleteRecursively() }
+}
 
 val webBuild = tasks.register<io.clroot.gradle.bun.task.BunTask>("webBuild") {
     description = "Builds the mini app into build/web/static"
