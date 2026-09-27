@@ -219,10 +219,27 @@ matcher can compare without a rate.
 3. **Range formula** ⇔ `findCounterparties`, as a property test (Kotest).
 4. **Delivery extraction:** the existing command and callback tests pass
    unchanged.
-5. **Frontend:** vitest for the API client, the Gives/Wants rule, the toggle's
-   same-side exclusion and range scaling. One Playwright smoke test (Chromium
-   only) with a mocked `window.Telegram`, run against the mockup sample data, so
-   its screenshot can be compared with `miniapp-mockups/`.
+5. **Frontend unit:** vitest for the API client, the Gives/Wants rule, the
+   toggle's same-side exclusion and range scaling.
+6. **Frontend E2E** (Playwright, Chromium only, no backend):
+   - `page.addInitScript` installs a fake `window.Telegram.WebApp`: `initData`,
+     `themeParams` (light and dark sets), `start_param` (`c<chatId>` or empty),
+     and stub `MainButton`, `BackButton` and `HapticFeedback` that record calls.
+   - `page.route('/api/**')` serves JSON fixtures in `web/e2e/fixtures/`, holding
+     the mockups' own sample data (Belgrade Expats, EUR/RUB at 94.12, Marko,
+     Jelena, @tomas_k, @ana.p, Ivan's pending done, the Browse rows).
+   - **Screens:** all six from `miniapp-mockups/` (1, 2, 2b, 3, 4, 5), each in
+     both themes, checked with `toHaveScreenshot`.
+   - **Flows:** *Give EUR* on Marko opens the sheet at 950 EUR with "760 – 1 187
+     EUR ✓ fits"; the toggle switches to 89 400 RUB and never offers receiving
+     EUR; typing 700 flips the mark to not fitting; *Post* sends the expected body
+     to `POST /api/chat/{id}/requests`; *Cancel*, *Done with* and *Yes, we
+     swapped* call their routes; a `422` fixture shows its message under the
+     form; a `401` fixture shows "Reopen from Telegram".
+   - **Baselines:** the first run's screenshots are compared with
+     `miniapp-mockups/*.png` by eye once, then committed. From then on a visual
+     change fails CI until its baseline is updated on purpose.
+   - Runs in CI next to the Gradle tests.
 
 ## Vocabulary
 
