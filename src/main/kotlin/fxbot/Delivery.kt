@@ -233,3 +233,13 @@ internal suspend fun deliverPosted(chatId: Long, result: PostResult.Posted, bot:
     }
     Registry.batcher.enqueueAppeared(result.appeared)
 }
+
+/** The mini app's sender: the same functions the commands and buttons use. */
+class TelegramDelivery(private val bot: TelegramBot) : DeliveryPort {
+    override suspend fun posted(chatId: Long, result: PostResult.Posted) = deliverPosted(chatId, result, bot)
+    override suspend fun stated(userId: Long, result: InterestResult.Stated) = sendStated(userId, userId, result, bot)
+    override suspend fun decision(chatId: Long, result: ActionResult) = replyToDecision(chatId, bot, result)
+    /** Same as `refuseDoneCallback`: the answered No comes off the ask, the Yes stays. */
+    override suspend fun refused(declarerToken: String, mineToken: String) =
+        Registry.buttons.withdrawButton(mineToken, Cb.refuse(declarerToken, mineToken), bot)
+}
