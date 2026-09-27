@@ -24,19 +24,34 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * `getChatMember` answers, remembered briefly. Memory only: which chats a person is in is
- * never written anywhere (same rule as `telegramMembership`). A failed probe answers false.
+ * never written anywhere (same rule as `telegramMembership`). A failed probe answers false,
+ * and that false answer is cached for the TTL exactly like any other answer.
+ *
+ * Bounded: a looked-up entry found expired is dropped on that same read, and once the map
+ * holds more than [maxEntries] entries a sweep drops every expired entry before the new
+ * answer is inserted — so a caller who probes an unbounded stream of distinct (chat, user)
+ * pairs (e.g. looping `GET /api/chat/{n}` over arbitrary ids) can't grow this map forever.
+ * If the sweep still leaves the map over the bound (every entry still live), the whole map
+ * is cleared; it costs nothing but fresh probes to refill.
  */
 class MembershipCache(
     private val probe: MembershipProbe,
     private val clock: Clock = Clock.systemUTC(),
     private val ttl: Duration = Duration.ofSeconds(60),
+    private val maxEntries: Int = DEFAULT_MAX_ENTRIES,
 ) {
     private val seen = ConcurrentHashMap<Pair<Long, Long>, Pair<Boolean, Instant>>()
+
+    /** Exposed for tests only — the bound is otherwise an internal memory concern. */
+    val size: Int get() = seen.size
 
     suspend fun isMember(chatId: Long, userId: Long): Boolean {
         val key = chatId to userId
         val now = clock.instant()
-        seen[key]?.let { (answer, at) -> if (at.plus(ttl).isAfter(now)) return answer }
+        seen[key]?.let { (answer, at) ->
+            if (at.plus(ttl).isAfter(now)) return answer
+            seen.remove(key)
+        }
         val answer = try {
             probe.isMember(chatId, userId)
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -44,8 +59,16 @@ class MembershipCache(
         } catch (e: Exception) {
             false
         }
+        if (seen.size > maxEntries) {
+            seen.entries.removeIf { (_, v) -> !v.second.plus(ttl).isAfter(now) }
+            if (seen.size > maxEntries) seen.clear()
+        }
         seen[key] = answer to now
         return answer
+    }
+
+    private companion object {
+        const val DEFAULT_MAX_ENTRIES = 10_000
     }
 }
 

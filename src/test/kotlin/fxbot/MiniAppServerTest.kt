@@ -108,4 +108,19 @@ class MiniAppServerTest : StringSpec({
         cache.isMember(-1, 1)
         calls.get() shouldBe 2
     }
+    "the cache sweeps expired entries once past its bound, so probing unboundedly many chats doesn't grow it forever" {
+        val clock = object : Clock() {
+            var now: Instant = Instant.EPOCH
+            override fun instant() = now
+            override fun getZone() = ZoneOffset.UTC
+            override fun withZone(zone: java.time.ZoneId?) = this
+        }
+        val cache = MembershipCache(MembershipProbe { _, _ -> true }, clock, maxEntries = 3)
+        (1..3).forEach { cache.isMember(-it.toLong(), 1) }
+        cache.size shouldBe 3
+        clock.now = clock.now.plusSeconds(61)
+        cache.isMember(-4, 1)
+        cache.isMember(-5, 1)
+        cache.size shouldBe 2
+    }
 })
