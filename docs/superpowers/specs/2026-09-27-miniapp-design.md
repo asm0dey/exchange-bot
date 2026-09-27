@@ -42,6 +42,10 @@ Telegram client ──HTTPS──▶ reverse proxy ──HTTP──▶ bot proce
   origin behind the proxy), and `MINIAPP_SHORT_NAME` (the app's BotFather short
   name, used to build `t.me/<bot>/<short name>` links). With `MINIAPP_URL` unset
   the server does not start, so existing deployments keep working unchanged.
+- The app must be served at the **root of its own hostname** (for example
+  `exchange.example.com`): the SPA calls `/api` and loads its assets by absolute path.
+  Telegram requires HTTPS with a trusted certificate. The README carries a step-by-step
+  reverse-proxy guide (DNS, Caddy / nginx / Traefik, BotFather, checks, troubleshooting).
 - On startup the bot calls `setChatMenuButton` with a `MenuButton.WebApp` pointing at
   the public URL (`MINIAPP_URL`). That is how the app opens privately.
 
