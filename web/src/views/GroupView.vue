@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { Plus } from 'lucide-vue-next'
 import { api, ApiError, type CardDto, type ChatView, type Says } from '../api'
-import { givesBase } from '../money'
+import { ago, givesBase } from '../money'
 import { haptic } from '../tg'
 import RequestCard from '../components/RequestCard.vue'
 import RequestSheet from '../components/RequestSheet.vue'
@@ -39,7 +39,6 @@ const sections = computed(() => {
   ]
   return filter.value === 'all' ? all : all.filter((s) => s.key === filter.value)
 })
-const ago = (s: number) => { const h = Math.floor((Date.now() / 1000 - s) / 3600); return h < 24 ? `${Math.max(h, 1)} h` : `${Math.floor(h / 24)} days` }
 const left = (s: number) => `${Math.max(0, Math.ceil((s - Date.now() / 1000) / 86400))} days left`
 /** What the viewer would hand over to take this card: its currency if they want it, else the other leg. */
 const giveLabel = (c: CardDto) => `Give ${c.says === 'WANTS' ? c.currency : c.other}`

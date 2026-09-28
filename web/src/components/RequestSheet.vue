@@ -12,6 +12,8 @@ const p = defineProps<{
   candidates?: SheetCandidate[]
   destination: string; tolerancePct?: number | null; error?: string | null
   currencies?: string[]
+  /** Private (bot-wide) vs. a specific group chat: only changes the summary's second line. */
+  isPrivate?: boolean
 }>()
 const emit = defineEmits<{
   submit: [{ says: Says; amount: string; currency: string; other: string }]
@@ -75,13 +77,13 @@ useBackButton(() => emit('close'))
     <div v-if="pairEditable" class="flex flex-col gap-1.5">
       <label class="text-xs uppercase tracking-wider text-hint" for="pair-base">Pair</label>
       <div class="grid grid-cols-[1fr_auto_1fr] gap-2 items-center">
-        <select id="pair-base" class="select select-sm font-semibold" :value="base"
+        <select id="pair-base" class="bg-base-200 rounded-field px-3 py-2.5 font-semibold" :value="base"
                 @change="emit('pair', { base: ($event.target as HTMLSelectElement).value, quote })">
           <option v-for="c in currencies" :key="c">{{ c }}</option>
         </select>
-        <button class="btn btn-circle btn-sm btn-ghost text-link" aria-label="Swap currencies"
+        <button class="rounded-full bg-base-200 text-link w-[34px] h-[34px] shrink-0 grid place-items-center" aria-label="Swap currencies"
                 @click="emit('pair', { base: quote, quote: base })"><ArrowLeftRight :size="18" /></button>
-        <select id="pair-quote" class="select select-sm font-semibold" :value="quote"
+        <select id="pair-quote" class="bg-base-200 rounded-field px-3 py-2.5 font-semibold" :value="quote"
                 @change="emit('pair', { base, quote: ($event.target as HTMLSelectElement).value })">
           <option v-for="c in currencies" :key="c">{{ c }}</option>
         </select>
@@ -95,8 +97,8 @@ useBackButton(() => emit('close'))
 
     <div class="flex flex-col gap-1.5">
       <label for="amount" class="text-xs uppercase tracking-wider text-hint">Amount</label>
-      <label class="input w-full text-xl font-semibold amount">
-        <input id="amount" v-model="amount" inputmode="decimal" class="grow" />
+      <label class="flex items-center justify-between gap-2 w-full bg-base-200 rounded-field px-3.5 py-3 text-xl font-semibold amount">
+        <input id="amount" v-model="amount" inputmode="decimal" class="grow bg-transparent outline-none" />
         <span class="text-hint text-base font-medium">{{ currency }}</span>
       </label>
       <div v-if="bands.length && !candidates?.length" class="flex flex-col gap-1.5 text-[13px]">
@@ -138,7 +140,8 @@ useBackButton(() => emit('close'))
     <div class="bg-base-200 rounded-field px-3 py-2.5 text-[13px]">
       <template v-if="valid">You {{ says === 'GIVES' ? 'give' : 'receive' }} {{ fmt(n) }} {{ currency }}<template v-if="est"> for ≈ {{ est }} {{ other }}</template><template v-if="tolerancePct">, with your {{ tolerancePct }}% tolerance</template>.</template>
       <template v-else>Enter an amount.</template>
-      <span class="block text-hint mt-0.5">≈ uses the reference rate; you two agree the real one.</span>
+      <span v-if="isPrivate" class="block text-hint mt-0.5">Shown in your chats that allow it, and matched with anyone privately. Names pass only on a match.</span>
+      <span v-else class="block text-hint mt-0.5">Posted in {{ destination }}. ≈ uses the reference rate; you two agree the real one.</span>
     </div>
     <p v-if="error" class="text-sm text-error" role="alert">{{ error }}</p>
   </section>

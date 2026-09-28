@@ -17,6 +17,14 @@ export function approx(n: number): string {
   return fmt(Math.round(n))
 }
 
+/** "5 h" under a day, "1 day" / "3 days" after — singular only at exactly one day. */
+export function ago(createdAt: number, now: number = Date.now()): string {
+  const h = Math.floor((now / 1000 - createdAt) / 3600)
+  if (h < 24) return `${Math.max(h, 1)} h`
+  const d = Math.floor(h / 24)
+  return `${d} day${d === 1 ? '' : 's'}`
+}
+
 export const flip = (s: Says): Says => (s === 'GIVES' ? 'WANTS' : 'GIVES')
 
 /** True when this person hands over the pair's base currency (an offer). */
@@ -63,6 +71,10 @@ export function matchCandidates(candidates: SheetCandidate[], mySays: Says, myCu
       shown: rangeIn(c.range, myCurrency, c.base, c.rate),
       ok: myAmount === null ? null : fits(myAmount, myCurrency, c.base, c.rate, c.range),
     }))
+    // Fits first: a match you could take right now is more useful to see than one that doesn't
+    // yet, and Array#sort is stable so ties (both fit, both don't, or amount not typed yet)
+    // keep their original relative order.
+    .sort((a, b) => Number(b.ok === true) - Number(a.ok === true))
 }
 
 /**

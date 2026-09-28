@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { allowedCurrencies, approx, fits, flip, fmt, givesBase, matchCandidates, rangeIn, toBase, type SheetCandidate } from './money'
+import { ago, allowedCurrencies, approx, fits, flip, fmt, givesBase, matchCandidates, rangeIn, toBase, type SheetCandidate } from './money'
 
 describe('money', () => {
   it('groups thousands with a thin space', () => {
@@ -9,6 +9,14 @@ describe('money', () => {
   it('rounds estimates to 3 significant digits from 1000 up', () => {
     expect(approx(89414)).toBe('89 400')
     expect(approx(478.1)).toBe('478')
+  })
+  it('says "1 day" not "1 days", and only drops to days at 24h (chat.json\'s five cards)', () => {
+    const now = Date.parse('2026-09-27T12:00:00Z') // e2e/telegram.ts's NOW
+    expect(ago(1790503200, now)).toBe('2 h') // a1
+    expect(ago(1790492400, now)).toBe('5 h') // a4, Marko
+    expect(ago(1790424000, now)).toBe('1 day') // a2, Jelena — exactly 24h
+    expect(ago(1790337600, now)).toBe('2 days') // a5, @ana.p
+    expect(ago(1790251200, now)).toBe('3 days') // a3, @tomas_k
   })
   it('flips the side', () => {
     expect(flip('GIVES')).toBe('WANTS')

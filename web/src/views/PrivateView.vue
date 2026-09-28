@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { Plus } from 'lucide-vue-next'
 import { api, ApiError, type BrowseCard, type BrowseView, type MeView, type Says } from '../api'
+import { approx, fmt, toBase } from '../money'
 import { haptic } from '../tg'
 import RequestSheet from '../components/RequestSheet.vue'
 import TabBar from '../components/TabBar.vue'
@@ -64,11 +65,18 @@ const candidates = computed(() => {
   return browse.value.cards
     .filter((c) => (c.base === s.base && c.quote === s.quote) || (c.base === s.quote && c.quote === s.base))
     .filter((c) => c.range)
-    .map((c) => ({
-      label: `${c.says === 'GIVES' ? 'Gives' : 'Wants'} ${c.amount} ${c.currency}`,
-      says: c.says, currency: c.currency, base: c.base, quote: c.quote,
-      range: c.range!, rate: rateFor(c.base, c.quote),
-    }))
+    .map((c) => {
+      const rate = rateFor(c.base, c.quote)
+      // Only a candidate typed in the quote leg needs a base-currency equivalent alongside it —
+      // one typed in the base already reads directly, and toBase is null without a rate anyway.
+      const approxBase = c.currency !== c.base ? toBase(Number(c.amount), c.currency, c.base, rate) : null
+      const approxText = approxBase === null ? '' : ` ≈ ${approx(approxBase)} ${c.base}`
+      return {
+        label: `${c.says === 'GIVES' ? 'Gives' : 'Wants'} ${fmt(Number(c.amount))} ${c.currency}${approxText}`,
+        says: c.says, currency: c.currency, base: c.base, quote: c.quote,
+        range: c.range!, rate,
+      }
+    })
 })
 async function submit(b: { says: Says; amount: string; currency: string; other: string }) {
   try { note.value = (await api.state(b)).message; haptic('success'); closeSheet(); tab.value = 'mine'; await load() }
@@ -98,7 +106,7 @@ async function submit(b: { says: Says; amount: string; currency: string; other: 
       <RequestSheet :key="`${sheet.base}/${sheet.quote}/${!!sheet.prefill}`" :base="sheet.base" :quote="sheet.quote" :rate="rateFor(sheet.base, sheet.quote)"
                     :pair-editable="!sheet.prefill" :currencies="currencies" :candidates="candidates"
                     :prefill="sheet.prefill && { says: sheet.prefill.says, amount: sheet.prefill.amount, currency: sheet.prefill.currency, name: null, range: sheet.prefill.range }"
-                    destination="all my chats" :tolerance-pct="me?.tolerancePct" :error="sheetError"
+                    destination="all my chats" is-private :tolerance-pct="me?.tolerancePct" :error="sheetError"
                     @pair="(p) => sheet && (sheet = { ...sheet, ...p })" @submit="submit" @close="closeSheet" />
     </div>
   </main>

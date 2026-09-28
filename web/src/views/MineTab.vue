@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { MeView } from '../api'
-import { fmt } from '../money'
+import { approx, fmt } from '../money'
 defineProps<{ me: MeView }>()
 defineEmits<{ confirm: [string, string]; refuse: [string, string]; cancel: [string]; done: [string, string] }>()
 </script>
@@ -18,7 +18,7 @@ defineEmits<{ confirm: [string, string]; refuse: [string, string]; cancel: [stri
     <article v-for="m in me.mine" :key="m.token" class="bg-base-100 rounded-box p-3.5 flex flex-col gap-2.5">
       <div class="flex justify-between items-baseline gap-2">
         <div><span class="amount font-semibold">{{ m.says === 'GIVES' ? 'Gives' : 'Wants' }} {{ fmt(Number(m.amount)) }} {{ m.currency }}</span>
-          <span v-if="m.approxOther" class="text-[13px] text-hint"> for ≈ {{ m.approxOther }} {{ m.other }}</span></div>
+          <span v-if="m.approxOther" class="text-[13px] text-hint"> for ≈ {{ approx(Number(m.approxOther)) }} {{ m.other }}</span></div>
         <button class="text-[13px] text-hint" @click="$emit('cancel', m.token)">Cancel</button>
       </div>
       <div class="flex flex-wrap gap-1.5">

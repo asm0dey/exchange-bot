@@ -34,10 +34,16 @@ test("the toggle re-expresses in RUB and never offers receiving EUR", async ({ p
   await expect(page.getByRole('button', { name: 'RUB', exact: true })).toBeEnabled()
 })
 
-test('the main button names the group, and privately says all my chats', async ({ page }) => {
+test('the main button names the group', async ({ page }) => {
   await fakeTelegram(page, { scheme: 'light', startParam: 'c-1001' }); await mockApi(page); await page.goto('/')
   await marko(page).click()
   await expect.poll(() => page.evaluate(() => (window as any).__tg.calls)).toContain('main.text:Post in Belgrade Expats')
+})
+
+test('privately, the main button says all my chats', async ({ page }) => {
+  await fakeTelegram(page, { scheme: 'light' }); await mockApi(page); await page.goto('/')
+  await page.getByRole('button', { name: 'New request' }).click()
+  await expect.poll(() => page.evaluate(() => (window as any).__tg.calls)).toContain('main.text:Post in all my chats')
 })
 
 test('cancel, done and confirm call their routes', async ({ page }) => {

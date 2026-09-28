@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Says } from '../api'
-import { fmt } from '../money'
+import { approx, fmt } from '../money'
 defineProps<{
   says: Says; amount: string; currency: string; other: string; approxOther?: string | null
   meta: string; mine?: boolean; name?: string | null; action?: string | null
@@ -17,7 +17,7 @@ defineEmits<{ action: [] }>()
         <span v-if="mine" class="ml-1 text-[11px] font-normal bg-base-200 text-hint px-1.5 py-0.5 rounded">you</span>
       </div>
       <div class="text-[13px] text-hint">
-        <template v-if="approxOther">for ≈ {{ approxOther }} {{ other }} · </template>
+        <template v-if="approxOther">for ≈ {{ approx(Number(approxOther)) }} {{ other }} · </template>
         <span v-if="name" class="text-link">{{ name }}</span><template v-if="name"> · </template>{{ meta }}
       </div>
       <slot />
