@@ -32,7 +32,7 @@ jobs:
       # installs from a warm package cache are already fast, and a stale node_modules restored
       # from cache is a common source of hard-to-debug drift.
       - name: Cache web toolchain (Bun download and packages)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             .gradle/bun
