@@ -92,11 +92,11 @@ val bunToolInstall = tasks.register<NpmTask>("bunToolInstall") {
     outputs.dir(layout.projectDirectory.dir("web/tools/node_modules"))
 }
 
-// Where bunToolInstall above puts the Bun binary npm installed, and where node-gradle put
-// the Node it downloaded. Every Bun invocation below runs with the Bun dir first (so
+// Where node-gradle put the Node it downloaded, and where bunToolInstall above puts the Bun
+// binary npm installed. Every Bun invocation below runs with the Node dir first (so the
+// shebang'd scripts Bun then execs find a real `node`) and the Bun dir right after (so
 // `commandLine` finds Bun without a hardcoded platform-specific executable name beyond this
-// one place) and the Node dir right after (so the shebang'd scripts Bun then execs find a
-// real `node`) — ahead of the inherited PATH, so neither depends on (or can be shadowed by)
+// one place) — ahead of the inherited PATH, so neither depends on (or can be shadowed by)
 // whatever Node the host machine happens to have, matching the "no system Node" proof this
 // task requires.
 val bunBinDir = layout.projectDirectory.dir("web/tools/node_modules/.bin")
