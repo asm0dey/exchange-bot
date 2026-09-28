@@ -121,7 +121,7 @@ useBackButton(() => emit('close'))
       <span class="text-xs uppercase tracking-wider text-hint">Currency</span>
       <div class="flex gap-2">
         <button v-for="c in [base, quote]" :key="c" class="btn flex-1" :disabled="!allowed.includes(c)"
-                :class="c === currency ? 'bg-give-soft text-give ring-[1.5px] ring-give' : 'btn-ghost'">{{ c }}</button>
+                :class="c === currency ? 'bg-give-soft text-give ring-[1.5px] ring-give' : '!bg-base-200 !text-hint !border-transparent'">{{ c }}</button>
       </div>
     </div>
 
