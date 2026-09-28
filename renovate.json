@@ -21,5 +21,17 @@
       ],
       "groupName": "all non-major dependencies"
     }
+  ],
+  "customManagers": [
+    {
+      "description": "The Bun version in the version catalog, marked with a `# renovate:` comment.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^gradle/libs\\.versions\\.toml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)( extractVersion=(?<extractVersion>\\S+))?\\n\\S+ = \"(?<currentValue>[^\"]+)\""
+      ]
+    }
   ]
 }

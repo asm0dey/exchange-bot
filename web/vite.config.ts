@@ -1,9 +1,9 @@
 import { defineConfig } from 'vite'
-import vue from '@vitejs/plugin-vue'
+import { svelte } from '@sveltejs/vite-plugin-svelte'
 import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
-  plugins: [vue(), tailwindcss()],
+  plugins: [svelte(), tailwindcss()],
   // Relative, not '/': the server can mount the app at the hostname root OR under a path
   // prefix (MINIAPP_URL with a path, e.g. https://example.com/exchange/). An absolute '/'
   // base would always resolve against the origin root and break under a path prefix.

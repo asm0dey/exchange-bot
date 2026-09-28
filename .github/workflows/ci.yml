@@ -25,23 +25,19 @@ jobs:
         run: chmod +x gradlew
 
       # `cache: gradle` above already covers `~/.gradle` (the dependency/wrapper cache).
-      # This covers the *web toolchain* node-gradle/npm/Bun download and package caches,
-      # which live elsewhere: `.gradle/nodejs` / `.gradle/npm` are node-gradle's own
-      # project-local download dirs (see the `node {}` block in build.gradle.kts), and
-      # `~/.npm` / `~/.bun/install/cache` are npm's and Bun's package caches (same default
-      # locations verified for the Docker build layer — see Dockerfile). node_modules
-      # itself is deliberately NOT cached: installs from a warm package cache are already
-      # fast, and a stale node_modules restored from cache is a common source of
-      # hard-to-debug drift.
-      - name: Cache web toolchain (Node/npm/Bun downloads)
+      # This covers the *web toolchain*, which lives elsewhere: `.gradle/bun` is the bun
+      # plugin's project-local download dir (see the `bun {}` block in build.gradle.kts), and
+      # `~/.bun/install/cache` is Bun's package cache (same default location verified for the
+      # Docker build layer — see Dockerfile). node_modules itself is deliberately NOT cached:
+      # installs from a warm package cache are already fast, and a stale node_modules restored
+      # from cache is a common source of hard-to-debug drift.
+      - name: Cache web toolchain (Bun download and packages)
         uses: actions/cache@v4
         with:
           path: |
-            .gradle/nodejs
-            .gradle/npm
-            ~/.npm
+            .gradle/bun
             ~/.bun/install/cache
-          key: web-toolchain-${{ runner.os }}-${{ hashFiles('web/bun.lock', 'web/tools/package-lock.json', 'build.gradle.kts', 'gradle/libs.versions.toml') }}
+          key: web-toolchain-${{ runner.os }}-${{ hashFiles('web/bun.lock', 'build.gradle.kts', 'gradle/libs.versions.toml') }}
           restore-keys: |
             web-toolchain-${{ runner.os }}-
 

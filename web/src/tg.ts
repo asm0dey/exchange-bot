@@ -1,5 +1,3 @@
-import { onMounted, onUnmounted, watch, type Ref } from 'vue'
-
 type Btn = {
   setText(t: string): void; show(): void; hide(): void; enable(): void; disable(): void
   onClick(cb: () => void): void; offClick(cb: () => void): void
@@ -42,18 +40,22 @@ export function haptic(kind: 'success' | 'error') {
   tg?.HapticFeedback.notificationOccurred(kind)
 }
 
-/** Telegram's own primary button, shown while the calling component is mounted. */
-export function useMainButton(text: Ref<string>, enabled: Ref<boolean>, onClick: () => void) {
+/** Telegram's own primary button. Returns the cleanup, so a component's `$effect` can own it. */
+export function mainButton(onClick: () => void): (() => void) | undefined {
   if (!tg) return
   const b = tg.MainButton
-  const sync = () => { b.setText(text.value); enabled.value ? b.enable() : b.disable() }
-  onMounted(() => { sync(); b.onClick(onClick); b.show() })
-  onUnmounted(() => { b.offClick(onClick); b.hide() })
-  watch([text, enabled], sync)
+  b.onClick(onClick); b.show()
+  return () => { b.offClick(onClick); b.hide() }
 }
 
-export function useBackButton(onBack: () => void) {
+export function syncMainButton(text: string, enabled: boolean) {
   if (!tg) return
-  onMounted(() => { tg!.BackButton.onClick(onBack); tg!.BackButton.show() })
-  onUnmounted(() => { tg!.BackButton.offClick(onBack); tg!.BackButton.hide() })
+  tg.MainButton.setText(text)
+  enabled ? tg.MainButton.enable() : tg.MainButton.disable()
+}
+
+export function backButton(onBack: () => void): (() => void) | undefined {
+  if (!tg) return
+  tg.BackButton.onClick(onBack); tg.BackButton.show()
+  return () => { tg!.BackButton.offClick(onBack); tg!.BackButton.hide() }
 }
