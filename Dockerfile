@@ -1,4 +1,4 @@
-FROM gradle:9.7.1-jdk25 AS build
+FROM gradle:9.7.1-jdk25@sha256:e06837018d077ee7f1218e53499425ca7615702ad58856d980c154caa17eb093 AS build
 WORKDIR /src
 
 # Build scripts and wrapper only, so a source-only change (below) doesn't bust the
@@ -80,7 +80,7 @@ RUN mkdir -p /data-seed && chown 10001:10001 /data-seed
 # classes rather than the JVM building one from scratch on first launch), for
 # faster cold-start — the bot restarts on every deploy and after upgrades, so
 # JVM startup time is not a one-off cost.
-FROM bellsoft/hardened-liberica-runtime-container:jre-25.0.4_9-cds-distroless-glibc
+FROM bellsoft/hardened-liberica-runtime-container:jre-25.0.4_9-cds-distroless-glibc@sha256:7570c559c456ed2d4761298a294b502e99e1183119179844edee1045a9869b39
 WORKDIR /app
 
 # lib/ is the app's code: root-owned, read-only to the running user (least
