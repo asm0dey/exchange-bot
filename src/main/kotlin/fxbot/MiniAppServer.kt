@@ -1,5 +1,7 @@
 package fxbot
 
+import io.ktor.http.CacheControl
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
@@ -8,7 +10,9 @@ import io.ktor.server.cio.CIO
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.http.content.staticResources
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.request.receive
+import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.routing.RoutingContext
 import io.ktor.server.routing.get
@@ -16,11 +20,15 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.put
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
+import org.slf4j.LoggerFactory
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
+
+private val logger = LoggerFactory.getLogger("fxbot.MiniAppServer")
 
 /**
  * `getChatMember` answers, remembered briefly. Memory only: which chats a person is in is
@@ -105,8 +113,38 @@ fun Application.miniApp(verify: (String) -> Viewer?, backend: MiniAppBackend, me
     // Task 9's card.counterparties.length would throw on an omitted default.
     install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true }) }
 
+    // Without this, an unhandled exception falls through to Ktor's own default handler
+    // (DefaultEnginePipeline.handleFailure), which logs "$status: $method - $path" plus the
+    // full stack trace (with its message) at ERROR — and a mini app path can hold a ref
+    // token (/api/requests/{token}/cancel) or a chat id (/api/chat/{id}), so that log line
+    // would leak them. Installing StatusPages intercepts the exception inside the routing
+    // pipeline, so it never propagates out to that default handler at all — nothing further
+    // needs to be silenced. Only the exception's class name is logged, never its message,
+    // the path, or a stack trace (same rule as everywhere else in this codebase).
+    install(StatusPages) {
+        exception<Throwable> { call, cause ->
+            if (cause is CancellationException) throw cause
+            logger.error("exchange-bot: mini app error class=${cause.javaClass.simpleName}")
+            call.respond(HttpStatusCode.InternalServerError, MessageDto("Something went wrong."))
+        }
+    }
+
     routing {
-        staticResources("/", "static")
+        // The jar is built reproducibly, so every `static/` entry carries the same fixed
+        // 1980 mtime — Ktor sends that as Last-Modified, with no Cache-Control, and a
+        // webview then caches index.html indefinitely. After a redeploy, that stale
+        // index.html points at asset filenames the new build no longer ships, so the app
+        // fails to load until the cache is somehow cleared. index.html (and "/", which
+        // resolves to it) gets `no-cache` so the browser always revalidates; hashed
+        // `/assets/**` files get a long-lived immutable cache since a content change always
+        // produces a new hashed filename. `CacheControl.MaxAge` can't render the
+        // `immutable` extension itself, so that one line is set directly via `modify`.
+        staticResources("/", "static") {
+            cacheControl { url -> if (url.path.endsWith("/index.html")) listOf(CacheControl.NoCache(null)) else emptyList() }
+            modify { url, call ->
+                if (url.path.contains("/assets/")) call.response.header(HttpHeaders.CacheControl, "max-age=31536000, immutable")
+            }
+        }
         route("/api") {
             get("/chat/{id}") {
                 val v = viewer(verify) ?: return@get

@@ -3,15 +3,19 @@ package fxbot
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
+import io.kotest.matchers.string.shouldNotContain
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.server.testing.testApplication
+import java.io.ByteArrayOutputStream
+import java.io.PrintStream
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
@@ -39,12 +43,28 @@ private class FakeBackend : MiniAppBackend {
     override suspend fun setTolerance(viewer: Viewer, pct: Int) = ApiResult.Ok(MeView(pct, 5, emptyList(), emptyList()))
 }
 
+/** A backend whose every method throws, carrying a fake secret in the message so a test can
+ * confirm neither the message nor the request path ever reach the log or the response. */
+private class ThrowingBackend : MiniAppBackend {
+    class Boom : RuntimeException("boom token=SECRET-TOKEN-i1xxxxxxxxxx")
+    override suspend fun chat(viewer: Viewer, chatId: Long): Nothing = throw Boom()
+    override suspend fun postInChat(viewer: Viewer, chatId: Long, body: NewRequestBody): Nothing = throw Boom()
+    override suspend fun me(viewer: Viewer): Nothing = throw Boom()
+    override suspend fun browse(viewer: Viewer): Nothing = throw Boom()
+    override suspend fun state(viewer: Viewer, body: NewInterestBody): Nothing = throw Boom()
+    override suspend fun cancel(viewer: Viewer, token: String): Nothing = throw Boom()
+    override suspend fun done(viewer: Viewer, body: DoneBody): Nothing = throw Boom()
+    override suspend fun confirm(viewer: Viewer, body: AnswerBody): Nothing = throw Boom()
+    override suspend fun refuse(viewer: Viewer, body: AnswerBody): Nothing = throw Boom()
+    override suspend fun setTolerance(viewer: Viewer, pct: Int): Nothing = throw Boom()
+}
+
 class MiniAppServerTest : StringSpec({
     val members = setOf(-1001L to 1L)
     val probeCalls = AtomicInteger()
     val probe = MembershipProbe { c, u -> probeCalls.incrementAndGet(); (c to u) in members }
 
-    fun app(backend: FakeBackend = FakeBackend(), block: suspend io.ktor.server.testing.ApplicationTestBuilder.() -> Unit) =
+    fun app(backend: MiniAppBackend = FakeBackend(), block: suspend io.ktor.server.testing.ApplicationTestBuilder.() -> Unit) =
         testApplication {
             application { miniApp(verify, backend, MembershipCache(probe)) }
             block()
@@ -102,6 +122,51 @@ class MiniAppServerTest : StringSpec({
                 header("Authorization", "tma ok:1"); contentType(ContentType.Application.Json); setBody("{")
             }.status shouldBe HttpStatusCode.BadRequest
         }
+    }
+    "index.html (and the root, which resolves to it) is no-cache; a hashed asset is long-lived and immutable" {
+        app {
+            val index = client.get("/")
+            index.status shouldBe HttpStatusCode.OK
+            index.headers[HttpHeaders.CacheControl] shouldBe "no-cache"
+
+            val asset = client.get("/assets/x.js")
+            asset.status shouldBe HttpStatusCode.OK
+            asset.headers[HttpHeaders.CacheControl] shouldBe "max-age=31536000, immutable"
+        }
+    }
+    "an unhandled backend exception is 500 with a safe message, and the response never carries a stack trace or the exception's message" {
+        app(ThrowingBackend()) {
+            val r = client.get("/api/me") { header("Authorization", "tma ok:1") }
+            r.status shouldBe HttpStatusCode.InternalServerError
+            val body = r.bodyAsText()
+            body shouldContain "Something went wrong."
+            body shouldNotContain "boom"
+            body shouldNotContain "SECRET-TOKEN"
+        }
+    }
+    "the logged line for an unhandled exception carries a fixed label and the exception's class only — never the path or its message" {
+        val captured = ByteArrayOutputStream()
+        val originalOut = System.out
+        val originalErr = System.err
+        // tinylog's ConsoleWriter reads System.out/System.err fresh on every write (not
+        // cached at class-init), so swapping both here for the duration of the request
+        // captures whatever this call logs regardless of which stream tinylog picked.
+        val tee = PrintStream(captured, true)
+        System.setOut(tee)
+        System.setErr(tee)
+        try {
+            app(ThrowingBackend()) {
+                client.get("/api/me") { header("Authorization", "tma ok:1") }
+            }
+        } finally {
+            System.setOut(originalOut)
+            System.setErr(originalErr)
+        }
+        val logged = captured.toString()
+        logged shouldContain "exchange-bot: mini app error class=Boom"
+        logged shouldNotContain "boom"
+        logged shouldNotContain "SECRET-TOKEN"
+        logged shouldNotContain "/api/me"
     }
     "membership is cached for the ttl" {
         val clock = object : Clock() {
