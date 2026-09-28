@@ -109,8 +109,9 @@ regression guard for this extraction.
   `422 {message}` with the bot's own wording, shown inline under the form. A bad or
   stale `initData` is `401`, and the SPA shows "Reopen from Telegram". A non-member
   is `403`.
-- **Freshness:** no WebSocket. The SPA refetches when it regains focus, on
-  pull-to-refresh, and every 30 seconds while visible.
+- **Freshness:** no WebSocket. The SPA refetches when it regains focus, from
+  a refresh button, and every 30 seconds while visible. Telegram uses
+  swipe-down to close a mini app, so pull-to-refresh would fight it.
 
 ## Screens
 

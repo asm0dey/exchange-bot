@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { Plus } from 'lucide-vue-next'
+import { Plus, RefreshCw } from 'lucide-vue-next'
 import { api, ApiError, type BrowseCard, type BrowseView, type MeView, type Says } from '../api'
 import { approx, fmt, toBase } from '../money'
 import { haptic } from '../tg'
@@ -18,13 +18,15 @@ const browsePair = ref<string | null>(null)
 const note = ref<string | null>(null)
 const sheet = ref<null | { base: string; quote: string; prefill: BrowseCard | null }>(null)
 const sheetError = ref<string | null>(null)
+const loading = ref(false)
 
 const fail = (e: unknown) => {
   if (e instanceof ApiError && e.status === 401) return emit('authLost')
   note.value = (e as Error).message; haptic('error')
 }
 async function load() {
-  try { [me.value, browse.value] = await Promise.all([api.me(), api.browse()]) } catch (e) { fail(e) }
+  loading.value = true
+  try { [me.value, browse.value] = await Promise.all([api.me(), api.browse()]) } catch (e) { fail(e) } finally { loading.value = false }
 }
 const act = async (p: Promise<{ message: string }>) => {
   try { note.value = (await p).message; haptic('success'); await load() } catch (e) { fail(e) }
@@ -87,6 +89,11 @@ async function submit(b: { says: Says; amount: string; currency: string; other: 
 <template>
   <main class="min-h-dvh flex flex-col gap-3.5 px-3 py-3.5 pb-28">
     <template v-if="me && browse">
+      <div v-if="tab !== 'tolerance'" class="flex justify-end">
+        <button class="btn btn-ghost btn-circle btn-sm text-hint" aria-label="Refresh" :disabled="loading" @click="load">
+          <RefreshCw :size="18" :class="loading && 'animate-spin'" />
+        </button>
+      </div>
       <MineTab v-if="tab === 'mine'" :me="me"
                @confirm="(d, m) => act(api.confirm({ declarerToken: d, mineToken: m }))"
                @refuse="(d, m) => act(api.refuse({ declarerToken: d, mineToken: m }))"

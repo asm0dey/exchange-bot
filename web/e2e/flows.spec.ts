@@ -81,3 +81,29 @@ test('private New request shows no fit verdict before an amount is typed', async
   await expect(page.getByText('too big')).not.toBeVisible()
   await expect(page.getByText('too small')).not.toBeVisible()
 })
+
+test('the group refresh button reloads the chat', async ({ page }) => {
+  await fakeTelegram(page, { scheme: 'light', startParam: 'c-1001' })
+  const sent = await mockApi(page)
+  await page.goto('/')
+  await expect(page.getByText('Wants 950 EUR')).toBeVisible()
+  const before = sent.filter((s) => s.method === 'GET' && s.path.startsWith('/chat/')).length
+  await page.getByRole('button', { name: 'Refresh' }).click()
+  await expect.poll(() => sent.filter((s) => s.method === 'GET' && s.path.startsWith('/chat/')).length).toBeGreaterThan(before)
+})
+
+test('the private refresh button reloads me and browse, on Mine and on Browse', async ({ page }) => {
+  await fakeTelegram(page, { scheme: 'light' })
+  const sent = await mockApi(page)
+  await page.goto('/')
+  await expect(page.getByText('Did it happen?')).toBeVisible()
+  const meAndBrowse = () => sent.filter((s) => s.path === '/me' || s.path === '/browse').length
+  const before = meAndBrowse()
+  await page.getByRole('button', { name: 'Refresh' }).click()
+  await expect.poll(meAndBrowse).toBeGreaterThan(before)
+
+  await page.getByRole('tab', { name: 'Browse' }).click()
+  const beforeOnBrowse = meAndBrowse()
+  await page.getByRole('button', { name: 'Refresh' }).click()
+  await expect.poll(meAndBrowse).toBeGreaterThan(beforeOnBrowse)
+})

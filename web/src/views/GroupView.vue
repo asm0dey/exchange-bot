@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { Plus } from 'lucide-vue-next'
+import { Plus, RefreshCw } from 'lucide-vue-next'
 import { api, ApiError, type CardDto, type ChatView, type Says } from '../api'
 import { ago, givesBase, left } from '../money'
 import { haptic } from '../tg'
@@ -15,13 +15,15 @@ const problem = ref<string | null>(null)
 const filter = ref<'all' | 'give' | 'want'>('all')
 const sheet = ref<null | { prefill: CardDto | null }>(null)
 const sheetError = ref<string | null>(null)
+const loading = ref(false)
 
 async function load() {
+  loading.value = true
   try { view.value = await api.chat(props.chatId); problem.value = null }
   catch (e) {
     if (e instanceof ApiError && e.status === 401) emit('authLost')
     else problem.value = e instanceof ApiError && e.status === 403 ? "You're not in this chat." : 'Could not load. Retrying…'
-  }
+  } finally { loading.value = false }
 }
 let timer: number | undefined
 const onFocus = () => document.visibilityState === 'visible' && load()
@@ -60,12 +62,15 @@ async function post(b: { says: Says; amount: string; currency: string }) {
 <template>
   <main class="min-h-dvh flex flex-col gap-3.5 px-3 py-3.5 pb-24" :class="sheet && 'overflow-hidden'">
     <template v-if="view">
-      <header class="bg-base-100 rounded-box p-3.5 flex justify-between items-center gap-2.5">
+      <header class="bg-base-100 rounded-box p-3.5 flex items-center gap-2.5">
         <div class="text-[22px] font-bold tracking-tight">{{ view.base }}<span class="text-hint font-normal mx-1">⇄</span>{{ view.quote }}</div>
-        <div class="text-right text-xs text-hint">Reference, not a price
+        <div class="ml-auto text-right text-xs text-hint">Reference, not a price
           <b v-if="view.rate" class="block text-[15px] text-base-content amount">1 {{ view.base }} = {{ view.rate }} {{ view.quote }}</b>
           <b v-else class="block text-[13px] text-base-content">No rate right now</b>
         </div>
+        <button class="btn btn-ghost btn-circle btn-sm text-hint shrink-0" aria-label="Refresh" :disabled="loading" @click="load">
+          <RefreshCw :size="18" :class="loading && 'animate-spin'" />
+        </button>
       </header>
       <div class="grid grid-cols-3 bg-base-100 rounded-field p-[3px] text-[13px] text-center" role="tablist">
         <button v-for="f in (['all', 'give', 'want'] as const)" :key="f" role="tab" :aria-selected="filter === f"
