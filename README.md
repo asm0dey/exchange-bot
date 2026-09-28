@@ -159,18 +159,26 @@ Use your own resolver and entrypoint names; the ones above are Traefik's usual e
 *without stripping it* — the bot itself serves the app under that same path, not at
 its own root, so the request it receives must still carry the `/exchange/` prefix.
 
-**Caddy:**
+**Caddy:** `handle /exchange/*` alone won't match the bare `/exchange` (no trailing
+slash) that Telegram or a hand-typed link may request — widen the matcher with a
+trailing `*` (not `/*`) so it also reaches the bot, which redirects it to
+`/exchange/` itself:
 
     example.com {
-        handle /exchange/* {
+        handle /exchange* {
             reverse_proxy bot:8080
         }
     }
 
-**nginx:** no trailing slash on `proxy_pass` — a trailing slash there tells nginx to
-strip the `location` prefix before forwarding, which is exactly what must *not*
-happen here.
+**nginx:** `location /exchange/` (with the trailing slash) does not match the bare
+`/exchange`, so add an exact-match block that redirects it to the one with the
+slash, ahead of the prefix block; and no trailing slash on `proxy_pass` in the
+prefix block itself — a trailing slash there tells nginx to strip the `location`
+prefix before forwarding, which is exactly what must *not* happen here.
 
+    location = /exchange {
+        return 301 /exchange/;
+    }
     location /exchange/ {
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host $host;
@@ -209,6 +217,9 @@ its menu button to open the app, and `/app` starts answering.
 
 (for a path setup: `curl -s -o /dev/null -w '%{http_code}\n' https://example.com/exchange/api/me`
 — also 401.)
+
+    curl -sI https://example.com/exchange | head -2
+    # HTTP/2 302, location: /exchange/ — the bare path (no trailing slash) redirects
 
 Then open the bot privately in Telegram and tap the menu button, and send `/app` in
 a group.

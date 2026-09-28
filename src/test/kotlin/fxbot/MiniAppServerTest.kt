@@ -206,11 +206,11 @@ class MiniAppServerTest : StringSpec({
             client.get("/exchange/api/me").status shouldBe HttpStatusCode.Unauthorized
         }
     }
-    "a prefixed app: the bare prefix without a trailing slash redirects (permanently) to the one with it" {
+    "a prefixed app: the bare prefix without a trailing slash redirects (not permanently) to the one with it" {
         app(prefix = "/exchange") {
             val noRedirect = createClient { followRedirects = false }
             val r = noRedirect.get("/exchange")
-            r.status shouldBe HttpStatusCode.MovedPermanently
+            r.status shouldBe HttpStatusCode.Found
             r.headers[HttpHeaders.Location] shouldBe "/exchange/"
         }
     }

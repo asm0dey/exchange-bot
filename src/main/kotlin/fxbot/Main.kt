@@ -133,16 +133,29 @@ suspend fun main(): Unit = coroutineScope {
         TokenValidation.Valid -> {}
     }
 
+    // A malformed MINIAPP_URL (not an absolute http(s) URL with a host — e.g. a bare
+    // hostname with no scheme, or a typo'd scheme) must not crash startup, and must not
+    // start the mini app somewhere nobody can actually reach it either: miniAppPathPrefix's
+    // own parse failure falls back to "" (root), which would silently mount the app at the
+    // wrong place rather than refusing to start. Treated as equivalent to MINIAPP_URL being
+    // unset for every mini-app codepath below, after this one warning.
+    val miniAppUrl = cfg.miniAppUrl?.takeIf {
+        isValidMiniAppUrl(it) || run {
+            logger.warn("exchange-bot: MINIAPP_URL is not an absolute URL, mini app not started")
+            false
+        }
+    }
+
     // Resolved here, before the menu below is written, so the menu can be keyed on the link
     // that will actually work — not merely on MINIAPP_URL being set. getMe can fail, or
     // MINIAPP_SHORT_NAME can be missing, and either one leaves `/app` answering "isn't set
     // up" (see MiniAppCommands.kt) even though MINIAPP_URL is configured. A mismatch here is
     // unusual enough (not "off by design", unlike a bare null MINIAPP_URL) to warn about.
-    Registry.miniAppLink = cfg.miniAppUrl?.let {
+    Registry.miniAppLink = miniAppUrl?.let {
         val me = runCatching { getMe().sendReturning(bot).getOrNull() }.getOrNull()
         me?.username?.let { u -> cfg.miniAppShortName?.let { short -> "https://t.me/$u/$short" } }
     }
-    if (cfg.miniAppUrl != null && Registry.miniAppLink == null) {
+    if (miniAppUrl != null && Registry.miniAppLink == null) {
         logger.warn("exchange-bot: mini app link unavailable")
     }
 
@@ -179,7 +192,7 @@ suspend fun main(): Unit = coroutineScope {
     // through the library's Action DSL, for exactly that reason. Never fatal, and never logs
     // the token or the URL.
     val menuButtonOk = HttpClient(CIO).use { client ->
-        runCatching { setDefaultMenuButton(client, cfg.botToken, cfg.miniAppUrl?.let(::miniAppMenuUrl)) }.getOrDefault(false)
+        runCatching { setDefaultMenuButton(client, cfg.botToken, miniAppUrl?.let(::miniAppMenuUrl)) }.getOrDefault(false)
     }
     if (menuButtonOk) logger.info("exchange-bot: menu button set") else logger.warn("exchange-bot: menu button failed")
 
@@ -187,7 +200,7 @@ suspend fun main(): Unit = coroutineScope {
     // Registry.miniAppLink is already resolved above, before the menu was written — this
     // block only starts the server itself, which serves the API and web assets regardless of
     // whether the deep-link username lookup above happened to succeed.
-    cfg.miniAppUrl?.let {
+    miniAppUrl?.let {
         val backend = ServiceBackend(
             Registry.requests, Registry.settings, Registry.people, Registry.rates, Registry.service,
             Registry.interests, Registry.lifecycle, Registry.messages, Registry.names,
@@ -401,9 +414,10 @@ private const val DEFAULT_MENU_BUTTON_BODY = """{"menu_button":{"type":"default"
  * been given its own) requires omitting `chat_id` from the request, and the typed
  * `setChatMenuButton` Action has no overload that omits it.
  *
- * [url] is null exactly when the app is off (`cfg.miniAppUrl == null`): that resets Telegram's
- * menu button to its own built-in default type, rather than leaving a WebApp button pointing
- * at a URL that was just un-configured. A non-null [url] sets a WebApp button opening it.
+ * [url] is null exactly when the app is off (`cfg.miniAppUrl == null`, or set but not a valid
+ * absolute URL — see `isValidMiniAppUrl`): that resets Telegram's menu button to its own
+ * built-in default type, rather than leaving a WebApp button pointing at a URL that was just
+ * un-configured or was never usable. A non-null [url] sets a WebApp button opening it.
  *
  * [client] is caller-owned and not closed here. Never logs [token] or [url] — see the call
  * site for what IS logged. Returns whether Telegram accepted the request; a Telegram-side

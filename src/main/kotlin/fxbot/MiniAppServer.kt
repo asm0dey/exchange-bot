@@ -55,13 +55,35 @@ internal fun miniAppPathPrefix(url: String): String {
  * The URL to hand Telegram (`setChatMenuButton`'s `web_app.url`, and the BotFather-
  * registered Web App URL). A root deployment (empty prefix) is returned unchanged — no
  * behaviour change for existing hostname-root setups. A path-prefixed deployment is
- * returned with a trailing slash: the SPA's relative asset and API URLs (`base: './'` in
- * vite.config.ts, `fetch('api...')` in api.ts) only resolve under the right prefix when
- * the opened URL ends in '/' — a webview treats the last path segment before a bare '/' as
- * a "file", not a directory, for relative resolution, same as any browser.
+ * rebuilt from the parsed URI's scheme/authority/path — never by string-appending a slash
+ * onto the raw input, which would land the slash after a query string or fragment instead
+ * of the path (`https://x/exchange?x=1` -> `https://x/exchange?x=1/`, wrong) — with the
+ * path forced to end in '/' and any query/fragment dropped: the SPA's relative asset and
+ * API URLs (`base: './'` in vite.config.ts, `fetch('api...')` in api.ts) only resolve under
+ * the right prefix when the opened URL ends in '/' — a webview treats the last path segment
+ * before a bare '/' as a "file", not a directory, for relative resolution, same as any
+ * browser — and a query/fragment on the mini app's own opening URL serves no purpose here.
+ * Falls back to the raw [url] unchanged if it can't be parsed (should not happen once
+ * [isValidMiniAppUrl] has gated it, but this function must never throw either way).
  */
-internal fun miniAppMenuUrl(url: String): String =
-    if (miniAppPathPrefix(url).isEmpty() || url.endsWith("/")) url else "$url/"
+internal fun miniAppMenuUrl(url: String): String {
+    val prefix = miniAppPathPrefix(url)
+    if (prefix.isEmpty()) return url
+    val uri = runCatching { java.net.URI(url) }.getOrNull() ?: return url
+    return runCatching { java.net.URI(uri.scheme, uri.authority, "$prefix/", null, null).toString() }.getOrDefault(url)
+}
+
+/**
+ * Whether `MINIAPP_URL` is usable at all: an absolute `http(s)://` URL with a non-blank
+ * host. Guards both [startMiniApp] and the menu-button call in `Main` — a malformed value
+ * (a bare hostname with no scheme, a typo'd scheme, a scheme with no host) must not crash
+ * startup, and must not silently start the app at the wrong place either (see the call
+ * site in `Main.kt` for what's logged and skipped when this is false).
+ */
+internal fun isValidMiniAppUrl(url: String): Boolean {
+    val uri = runCatching { java.net.URI(url) }.getOrNull() ?: return false
+    return (uri.scheme == "http" || uri.scheme == "https") && !uri.host.isNullOrBlank()
+}
 
 /**
  * `getChatMember` answers, remembered briefly. Memory only: which chats a person is in is
@@ -178,8 +200,10 @@ fun Application.miniApp(
             // resolve under the right prefix once the browser's location ends in '/' — see
             // miniAppMenuUrl's doc comment. A request for the bare prefix without the
             // trailing slash (e.g. someone typing ".../exchange" by hand) is redirected to
-            // the one with it, rather than served directly.
-            get(pathPrefix) { call.respondRedirect("$pathPrefix/", permanent = true) }
+            // the one with it, rather than served directly. Not permanent (302, not 301):
+            // the mount path is deployment configuration (MINIAPP_URL), not a fixed fact
+            // about the app, and a 301 baked into browser caches would survive it changing.
+            get(pathPrefix) { call.respondRedirect("$pathPrefix/", permanent = false) }
         }
         // The jar is built reproducibly, so every `static/` entry carries the same fixed
         // 1980 mtime — Ktor sends that as Last-Modified, with no Cache-Control, and a
