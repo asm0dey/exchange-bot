@@ -142,17 +142,86 @@ val webTest = tasks.register<Exec>("webTest") {
     outputs.upToDateWhen { false }
 }
 
-// Playwright needs a browser, so it is not part of `check`; CI runs it explicitly.
+// Playwright needs a browser, so it is not part of `check`/`build` — only a JDK is needed for
+// those. webE2e additionally needs Docker: it always runs the tests inside the pinned
+// Microsoft Playwright container, identically here and in CI, instead of on whatever browser/
+// font stack the host happens to have. Mismatched host fonts are exactly what made CI's
+// screenshots differ from baselines made on a dev machine by ~4% (over the 2%
+// maxDiffPixelRatio in playwright.config.ts) even though the same Chromium/Playwright
+// versions were in use on both sides.
 val webE2e = tasks.register<Exec>("webE2e") {
-    description = "Runs the mini app's Playwright tests against mock data"
+    description = "Runs the mini app's Playwright tests against mock data, inside the pinned Playwright container (needs Docker; not part of check/build)"
     dependsOn(bunInstall)
-    // -PwebE2eArgs=--update-snapshots reaches `playwright test` (not `playwright install`,
-    // the other half of the `e2e` script) because "--" only separates it from `bun run e2e`'s
-    // own args; both script commands still share the one trailing argument list.
-    val extra = providers.gradleProperty("webE2eArgs").orNull
-    val extraArgs = if (extra != null) arrayOf("--", extra) else emptyArray()
-    runBun("run", "e2e", *extraArgs)
     outputs.upToDateWhen { false }
+
+    // Pin the container to the exact @playwright/test version in web/package.json: the
+    // browser bundled in the image must match the test-runner version resolved into
+    // web/node_modules, or Playwright refuses to drive it (and even if it didn't, a version
+    // drift would reopen exactly the rendering-mismatch problem this container exists to close).
+    val packageJsonText = providers.fileContents(layout.projectDirectory.file("web/package.json")).asText.get()
+    val playwrightVersion = Regex("\"@playwright/test\"\\s*:\\s*\"([^\"]+)\"")
+        .find(packageJsonText)
+        ?.groupValues?.get(1)
+        ?.trimStart('^', '~')
+        ?: throw GradleException("Could not find \"@playwright/test\" in web/package.json to pin the webE2e container image.")
+    // "-noble" is Microsoft's Ubuntu-24.04 tag suffix for this Playwright release (see
+    // https://mcr.microsoft.com/artifact/mar/playwright/about) — picked and pinned by hand
+    // when bumping @playwright/test, since not every release is guaranteed to publish every
+    // codename variant.
+    val dockerImage = "mcr.microsoft.com/playwright:v$playwrightVersion-noble"
+
+    doFirst {
+        val dockerPresent = try {
+            ProcessBuilder("docker", "--version").start().waitFor() == 0
+        } catch (e: java.io.IOException) {
+            false
+        }
+        if (!dockerPresent) {
+            throw GradleException(
+                "webE2e runs Playwright inside the pinned $dockerImage container, for " +
+                    "pixel-identical screenshots locally and in CI, and needs Docker on PATH. " +
+                    "Install Docker and retry."
+            )
+        }
+    }
+
+    val repoRoot = layout.projectDirectory.asFile.absolutePath
+    val containerWebDir = "/repo/web"
+    // The webServer command in playwright.config.ts (`vite build && vite preview`) is run by
+    // the shell through a bare `vite`, so node_modules/.bin must be on PATH inside the
+    // container — the image doesn't put a project's local bin dir there itself.
+    val containerPath = listOf(
+        "$containerWebDir/node_modules/.bin",
+        "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin",
+    ).joinToString(":")
+
+    // Docker Desktop on Windows has no host UID/GID to map into a bind mount and doesn't need
+    // one; on Linux/macOS, without --user the container's default root user writes
+    // screenshots and test-results back onto the host as root-owned files.
+    val userArgs = if (OperatingSystem.current().isWindows) {
+        emptyList()
+    } else {
+        val uid = providers.exec { commandLine("id", "-u") }.standardOutput.asText.get().trim()
+        val gid = providers.exec { commandLine("id", "-g") }.standardOutput.asText.get().trim()
+        listOf("--user", "$uid:$gid")
+    }
+
+    // -PwebE2eArgs=--update-snapshots=all reaches `playwright test` directly — there's no
+    // package-manager script layer to disambiguate it from anymore, unlike the old
+    // `bun run e2e --` path this replaces.
+    val extraArgs = providers.gradleProperty("webE2eArgs").orNull?.let { listOf(it) } ?: emptyList()
+
+    executable("docker")
+    args(
+        listOf("run", "--rm") + userArgs + listOf(
+            "-e", "HOME=/tmp",
+            "-e", "PATH=$containerPath",
+            "-v", "$repoRoot:/repo",
+            "-w", containerWebDir,
+            dockerImage,
+            "node", "node_modules/.bin/playwright", "test",
+        ) + extraArgs
+    )
 }
 
 tasks.processResources { dependsOn(webBuild) }

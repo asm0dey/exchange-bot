@@ -193,6 +193,10 @@ a group.
 | The group view says "You're not in this chat" | You're not a member of that group, or the bot was removed from it. |
 | `502 Bad Gateway` from the proxy | The proxy can't reach `:8080`: see step 2, and check the bot started with a "mini app listening" line in its log. |
 
+## Development
+
+`./gradlew build` needs only a JDK. `./gradlew webE2e` (the mini app's Playwright screenshot tests) additionally needs Docker — it runs Playwright inside a pinned `mcr.microsoft.com/playwright` container so screenshots render identically on your machine and in CI.
+
 ## Runtime
 
 Targets Java 25. The production image (built by `Dockerfile`) runs on

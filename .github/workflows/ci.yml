@@ -28,20 +28,21 @@ jobs:
         run: ./gradlew build
 
       # `./gradlew build` above already built the web app, ran its unit tests
-      # (webTest), and installed web/node_modules (bunInstall) — so the Playwright
-      # CLI is right there at web/node_modules/.bin/playwright. install-deps installs
-      # the OS libraries Chromium needs (apt-get, via sudo; ubuntu-latest runners have
-      # passwordless sudo); the e2e script (web/package.json) does `playwright install
-      # chromium` itself, so the browser binary doesn't need a separate step here.
+      # (webTest), and installed web/node_modules (bunInstall). webE2e itself now
+      # runs Playwright inside the pinned mcr.microsoft.com/playwright container
+      # (see build.gradle.kts) instead of on the runner's bare Chromium/fonts, so no
+      # separate `playwright install-deps` step is needed — the image ships its own
+      # browsers and OS libraries, and this is the same command a developer runs
+      # locally, so CI and local screenshots render identical pixels.
       - name: Web end-to-end
-        run: web/node_modules/.bin/playwright install-deps chromium && ./gradlew webE2e
+        run: ./gradlew webE2e
 
-      - name: Upload Playwright report
+      - name: Upload Playwright test results
         uses: actions/upload-artifact@v7
         if: failure()
         with:
-          name: playwright-report
-          path: web/playwright-report
+          name: playwright-test-results
+          path: web/test-results
           retention-days: 5
 
       - name: Upload test results
