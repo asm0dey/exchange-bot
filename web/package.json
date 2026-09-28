@@ -4,19 +4,19 @@
     "@playwright/test": "1.63.0",
     "@sveltejs/vite-plugin-svelte": "6.2.4",
     "@tailwindcss/vite": "4.3.3",
+    "@types/bun": "1.4.2",
     "daisyui": "5.7.46",
     "svelte-check": "4.7.6",
     "tailwindcss": "4.3.3",
     "typescript": "5.9.3",
-    "vite": "8.3.1",
-    "vitest": "5.0.2"
+    "vite": "8.3.1"
   },
   "private": true,
   "scripts": {
     "dev": "vite",
     "build": "svelte-check && vite build",
     "preview": "vite preview --port 4173 --strictPort",
-    "test": "vitest run",
+    "test": "bun test src",
     "e2e": "playwright install chromium && playwright test"
   },
   "type": "module",
