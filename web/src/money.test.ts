@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'bun:test'
 import { ago, allowedCurrencies, approx, fits, flip, fmt, givesBase, left, matchCandidates, parseAmount, rangeIn, toBase, type SheetCandidate } from './money'
 
 describe('money', () => {

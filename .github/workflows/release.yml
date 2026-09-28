@@ -50,7 +50,7 @@ jobs:
       # `--mount=type=cache,target=...` in Dockerfile, so a future cache mount added there
       # doesn't also need a matching edit here.
       - name: Cache Docker build mounts
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         id: docker-build-cache
         with:
           path: cache-mount

@@ -60,7 +60,7 @@ sourceSets.main { resources.srcDir(layout.buildDirectory.dir("web")) }
 //
 // No Node either. Every tool's bin script starts `#!/usr/bin/env node`, and `bun --bun`
 // runs them under Bun's own runtime instead. That used to be impossible: vue-tsc's `.vue`
-// import resolver never registered under Bun. svelte-check, vite and vitest all work.
+// import resolver never registered under Bun. svelte-check and vite both work, and the unit tests use bun test.
 bun {
     version.set(libs.versions.bun.asProvider())
     workingDir.set(layout.projectDirectory.dir("web"))
@@ -83,7 +83,7 @@ val webBuild = tasks.register<BunTask>("webBuild") {
 }
 
 val webTest = tasks.register<BunTask>("webTest") {
-    description = "Runs the mini app's unit tests (vitest)"
+    description = "Runs the mini app's unit tests (bun test)"
     dependsOn(bunInstall)
     args("--bun", "run", "test")
     inputs.dir("web/src")
