@@ -198,6 +198,31 @@ class MessageLogRepository(
             }
     }
 
+    /**
+     * The asks put to [refToken]'s owner that are still unanswered, as (declarer, mine) token
+     * pairs read off the Yes button. "Unanswered" means the message still offers BOTH Yes and
+     * No: a No withdraws its own button (`refuseDoneCallback`) and leaves the Yes for a change
+     * of mind, so an ask whose No is gone has been answered and is not listed again. Same
+     * unbounded scan as [offered], for the same reason.
+     */
+    fun openAsksFor(refToken: String): List<Pair<String, String>> = transaction(db) {
+        messagesWithRefs
+            .select(SentMessages.chatRef, SentMessages.messageId, SentMessages.payload)
+            .where { SentMessageRefs.refToken eq refToken }
+            .withDistinct()
+            .flatMap { row ->
+                val aad = "${row[SentMessages.chatRef]}:${row[SentMessages.messageId]}"
+                val p = json.decodeFromString<MessagePayload>(crypto.open(row[SentMessages.payload], aad))
+                val data = p.buttons.map { it.data }.toSet()
+                data.filter { it.startsWith("${Cb.CONFIRM}?a=") }.mapNotNull { yes ->
+                    val declarer = yes.removePrefix("${Cb.CONFIRM}?a=").substringBefore("&b=")
+                    val mine = yes.substringAfter("&b=", "")
+                    (declarer to mine).takeIf { mine == refToken && Cb.refuse(declarer, mine) in data }
+                }
+            }
+            .distinct()
+    }
+
     /** Every message naming [userId], scoped to [chatId] when given, across every chat otherwise. */
     fun messagesForUser(userId: Long, chatId: Long?): List<TrackedMessage> = transaction(db) {
         val userRef = crypto.ref(userId.toString())

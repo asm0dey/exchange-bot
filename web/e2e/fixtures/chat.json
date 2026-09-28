@@ -1,0 +1,15 @@
+{
+  "chatId": -1001, "title": "Belgrade Expats", "base": "EUR", "quote": "RUB", "rate": "94.12", "rateStale": false,
+  "cards": [
+    { "shortId": "a1", "mine": true, "says": "GIVES", "amount": "1000", "currency": "EUR", "other": "RUB", "approxOther": "94120",
+      "name": "@me", "createdAt": 1790503200, "expiresAt": 1791028800, "token": "MINE-TOKEN-a1xxxxxxxxxx", "counterparties": [], "range": null },
+    { "shortId": "a2", "mine": false, "says": "WANTS", "amount": "45000", "currency": "RUB", "other": "EUR", "approxOther": "478.11",
+      "name": "Jelena", "createdAt": 1790424000, "expiresAt": 1790942400, "token": null, "counterparties": [], "range": { "min": "382.49", "max": "597.64" } },
+    { "shortId": "a3", "mine": false, "says": "GIVES", "amount": "250", "currency": "EUR", "other": "RUB", "approxOther": "23530",
+      "name": "@tomas_k", "createdAt": 1790251200, "expiresAt": 1790769600, "token": null, "counterparties": [], "range": { "min": "200", "max": "312.5" } },
+    { "shortId": "a4", "mine": false, "says": "WANTS", "amount": "950", "currency": "EUR", "other": "RUB", "approxOther": "89414",
+      "name": "Marko", "createdAt": 1790492400, "expiresAt": 1791010800, "token": null, "counterparties": [], "range": { "min": "760", "max": "1187.5" } },
+    { "shortId": "a5", "mine": false, "says": "GIVES", "amount": "20000", "currency": "RUB", "other": "EUR", "approxOther": "212.49",
+      "name": "@ana.p", "createdAt": 1790337600, "expiresAt": 1790856000, "token": null, "counterparties": [], "range": { "min": "170", "max": "265.61" } }
+  ]
+}

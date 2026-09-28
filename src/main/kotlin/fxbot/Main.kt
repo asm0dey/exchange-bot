@@ -3,15 +3,27 @@ package fxbot
 import eu.vendeli.tgbot.TelegramBot
 import eu.vendeli.tgbot.api.botactions.getMe
 import eu.vendeli.tgbot.api.botactions.setMyCommands
+import eu.vendeli.tgbot.api.chat.getChat
 import eu.vendeli.tgbot.types.bot.BotCommandScope
 import eu.vendeli.tgbot.utils.builders.BotCommandsBuilder
 import eu.vendeli.tgbot.types.component.UpdateType
+import eu.vendeli.tgbot.types.component.getOrNull
 import eu.vendeli.tgbot.types.component.isSuccess
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.HttpResponse
+import io.ktor.http.ContentType
+import io.ktor.http.contentType
+import io.ktor.http.isSuccess
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import kotlin.system.exitProcess
 import kotlin.time.Duration.Companion.seconds
@@ -121,6 +133,32 @@ suspend fun main(): Unit = coroutineScope {
         TokenValidation.Valid -> {}
     }
 
+    // A malformed MINIAPP_URL (not an absolute http(s) URL with a host — e.g. a bare
+    // hostname with no scheme, or a typo'd scheme) must not crash startup, and must not
+    // start the mini app somewhere nobody can actually reach it either: miniAppPathPrefix's
+    // own parse failure falls back to "" (root), which would silently mount the app at the
+    // wrong place rather than refusing to start. Treated as equivalent to MINIAPP_URL being
+    // unset for every mini-app codepath below, after this one warning.
+    val miniAppUrl = cfg.miniAppUrl?.takeIf {
+        isValidMiniAppUrl(it) || run {
+            logger.warn("exchange-bot: MINIAPP_URL is not an absolute URL, mini app not started")
+            false
+        }
+    }
+
+    // Resolved here, before the menu below is written, so the menu can be keyed on the link
+    // that will actually work — not merely on MINIAPP_URL being set. getMe can fail, or
+    // MINIAPP_SHORT_NAME can be missing, and either one leaves `/app` answering "isn't set
+    // up" (see MiniAppCommands.kt) even though MINIAPP_URL is configured. A mismatch here is
+    // unusual enough (not "off by design", unlike a bare null MINIAPP_URL) to warn about.
+    Registry.miniAppLink = miniAppUrl?.let {
+        val me = runCatching { getMe().sendReturning(bot).getOrNull() }.getOrNull()
+        me?.username?.let { u -> cfg.miniAppShortName?.let { short -> "https://t.me/$u/$short" } }
+    }
+    if (miniAppUrl != null && Registry.miniAppLink == null) {
+        logger.warn("exchange-bot: mini app link unavailable")
+    }
+
     // Groups do NOT inherit the default scope's command menu, whatever the documented
     // narrowest-scope-first fallback implies. Verified against the live bot: getMyCommands
     // showed the full list on the default scope and an empty result for every narrower
@@ -129,7 +167,58 @@ suspend fun main(): Unit = coroutineScope {
     // all_group_chats made them appear immediately. So register both scopes explicitly.
     // languageCode is passed positionally as null ("applies to every language") so the
     // scope argument lands in the right slot.
-    registerCommandMenus(bot)
+    //
+    // `/app` is listed only when the mini app link actually resolved (see above) —
+    // unconditionally advertising it whenever MINIAPP_URL is merely set would have a bot
+    // whose getMe failed or whose MINIAPP_SHORT_NAME is missing suggest a command that only
+    // ever answers "isn't set up" (see MiniAppCommands.kt). Typing it by hand still works
+    // and still gives that same honest answer either way — this only controls what's
+    // suggested.
+    registerCommandMenus(bot, Registry.miniAppLink != null)
+
+    // Runs unconditionally, unlike the block below: a bot that had the app enabled and later
+    // had MINIAPP_URL removed must not keep Telegram's menu button pointing at a now-dead
+    // URL, so a null URL here actively resets it to Telegram's own default type rather than
+    // just skipping the call. Idempotent either way — a bot that never enabled the app just
+    // gets a harmless no-op "set the default to itself" on every start.
+    //
+    // The typed `setChatMenuButton` Action (eu.vendeli.tgbot.api.chat) can't express either
+    // direction of this: `SetChatMenuButtonAction` extends `Action`, not `SimpleAction`, so
+    // every `send`/`sendReturning` overload requires a target chat/user and writes it into
+    // `chat_id` unconditionally — confirmed by reading the 9.6.0 sources jar. Telegram's
+    // "default button for every private chat" behaviour (whether a WebApp button or the
+    // built-in default) is reached only by OMITTING `chat_id`, which that wrapper cannot do.
+    // This is the one place in the codebase that calls the Bot API directly instead of
+    // through the library's Action DSL, for exactly that reason. Never fatal, and never logs
+    // the token or the URL.
+    val menuButtonOk = HttpClient(CIO).use { client ->
+        runCatching { setDefaultMenuButton(client, cfg.botToken, miniAppUrl?.let(::miniAppMenuUrl)) }.getOrDefault(false)
+    }
+    if (menuButtonOk) logger.info("exchange-bot: menu button set") else logger.warn("exchange-bot: menu button failed")
+
+    // Off unless configured: an existing deployment without MINIAPP_URL runs exactly as before.
+    // Registry.miniAppLink is already resolved above, before the menu was written — this
+    // block only starts the server itself, which serves the API and web assets regardless of
+    // whether the deep-link username lookup above happened to succeed.
+    miniAppUrl?.let {
+        val backend = ServiceBackend(
+            Registry.requests, Registry.settings, Registry.people, Registry.rates, Registry.service,
+            Registry.interests, Registry.lifecycle, Registry.messages, Registry.names,
+            titles = { chatId -> runCatching { getChat().sendReturning(chatId, bot).getOrNull()?.title }.getOrNull() },
+            delivery = TelegramDelivery(bot),
+        )
+        // A bind failure (port already taken) or any other startup exception must not take the
+        // whole bot down with it — the polling loop below is the thing that matters most.
+        runCatching {
+            startMiniApp(
+                cfg.miniAppPort, InitDataVerifier(cfg.botToken)::verify, backend,
+                MembershipCache(telegramMembership(bot)), miniAppPathPrefix(it),
+            )
+            logger.info("exchange-bot: mini app listening")
+        }.onFailure {
+            logger.error("exchange-bot: mini app failed to start")
+        }
+    }
 
     // A restart inside the window must not leave showings resting in chats that were
     // never told. Re-rendered from live state, never replayed. `flushAllOnStartup`
@@ -233,6 +322,21 @@ internal val PRIVATE_COMMANDS: List<Pair<String, String>> = listOf(
     "help" to "What I can do",
 )
 
+private val APP_COMMAND: Pair<String, String> = "app" to "Open the exchange app"
+
+/**
+ * [GROUP_COMMANDS]/[PRIVATE_COMMANDS] plus `/app`, inserted just before `help`, but only
+ * when the mini app link actually resolved — see the comment at the `registerCommandMenus`
+ * call site in `main` for why. Public (well, `internal`) rather than folded into
+ * `registerCommandMenus` so a test can assert the insertion itself, separately from the
+ * network calls that publish it.
+ */
+internal fun withApp(commands: List<Pair<String, String>>, appEnabled: Boolean): List<Pair<String, String>> {
+    if (!appEnabled) return commands
+    val helpIndex = commands.indexOfFirst { it.first == "help" }
+    return commands.toMutableList().apply { add(helpIndex, APP_COMMAND) }
+}
+
 private fun menu(commands: List<Pair<String, String>>): BotCommandsBuilder.() -> Unit = {
     commands.forEach { (name, description) -> botCommand(name, description) }
 }
@@ -242,12 +346,14 @@ private fun menu(commands: List<Pair<String, String>>): BotCommandsBuilder.() ->
  * recording bot: the lists above being right is only half of it — the calls that publish
  * them have to exist and carry the right scope, and a deleted line is silent otherwise.
  */
-internal suspend fun registerCommandMenus(bot: TelegramBot) {
-    setMyCommands(null, BotCommandScope.Default, menu(GROUP_COMMANDS)).send(bot)
-    setMyCommands(null, BotCommandScope.AllGroupChats, menu(GROUP_COMMANDS)).send(bot)
+internal suspend fun registerCommandMenus(bot: TelegramBot, appEnabled: Boolean) {
+    val group = withApp(GROUP_COMMANDS, appEnabled)
+    val private = withApp(PRIVATE_COMMANDS, appEnabled)
+    setMyCommands(null, BotCommandScope.Default, menu(group)).send(bot)
+    setMyCommands(null, BotCommandScope.AllGroupChats, menu(group)).send(bot)
     // A private chat now does something quite different from a group, so it gets its own
     // list. Every command here has a private meaning; the admin ones deliberately do not.
-    setMyCommands(null, BotCommandScope.AllPrivateChats, menu(PRIVATE_COMMANDS)).send(bot)
+    setMyCommands(null, BotCommandScope.AllPrivateChats, menu(private)).send(bot)
 }
 
 private const val MAX_CONSECUTIVE_FAILURES = 5
@@ -286,4 +392,49 @@ internal suspend fun validateBotToken(bot: TelegramBot): TokenValidation = try {
     throw e
 } catch (e: Exception) {
     TokenValidation.Unknown(e.javaClass.simpleName)
+}
+
+@Serializable
+private data class WebAppUrlBody(val url: String)
+
+@Serializable
+private data class WebAppMenuButtonBody(val type: String, val text: String, @SerialName("web_app") val webApp: WebAppUrlBody)
+
+@Serializable
+private data class SetWebAppMenuButtonBody(@SerialName("menu_button") val menuButton: WebAppMenuButtonBody)
+
+/** Telegram's own built-in button, restored when the app is off. No `text`/`web_app` at all —
+ *  a literal constant, not a data class, so there's no field to accidentally serialize in. */
+private const val DEFAULT_MENU_BUTTON_BODY = """{"menu_button":{"type":"default"}}"""
+
+/**
+ * A direct Bot API call — the one exception to this codebase's rule of going through the
+ * library's typed `Action` DSL for every Telegram call. See the comment at the call site in
+ * `main` for why: setting the DEFAULT menu button (shown in every private chat that hasn't
+ * been given its own) requires omitting `chat_id` from the request, and the typed
+ * `setChatMenuButton` Action has no overload that omits it.
+ *
+ * [url] is null exactly when the app is off (`cfg.miniAppUrl == null`, or set but not a valid
+ * absolute URL — see `isValidMiniAppUrl`): that resets Telegram's menu button to its own
+ * built-in default type, rather than leaving a WebApp button pointing at a URL that was just
+ * un-configured or was never usable. A non-null [url] sets a WebApp button opening it.
+ *
+ * [client] is caller-owned and not closed here. Never logs [token] or [url] — see the call
+ * site for what IS logged. Returns whether Telegram accepted the request; a Telegram-side
+ * rejection comes back as a non-2xx response (`false`), never a throw — an actual transport
+ * failure is left to propagate, exactly like every other Bot API call in this codebase
+ * (`throwExOnActionsFailure` is false everywhere, so a thrown exception here always means
+ * the request never reached Telegram).
+ */
+internal suspend fun setDefaultMenuButton(client: HttpClient, token: String, url: String?): Boolean {
+    val payload = if (url != null) {
+        Json.encodeToString(SetWebAppMenuButtonBody(WebAppMenuButtonBody("web_app", "Exchange", WebAppUrlBody(url))))
+    } else {
+        DEFAULT_MENU_BUTTON_BODY
+    }
+    val response: HttpResponse = client.post("https://api.telegram.org/bot$token/setChatMenuButton") {
+        contentType(ContentType.Application.Json)
+        setBody(payload)
+    }
+    return response.status.isSuccess()
 }

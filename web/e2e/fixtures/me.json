@@ -1,0 +1,16 @@
+{
+  "tolerancePct": 20, "limit": 5,
+  "pending": [
+    { "declarerToken": "DECL-TOKEN-ivanxxxxxxxx", "mineToken": "MINE-TOKEN-p1xxxxxxxxxx", "name": "Ivan",
+      "says": "GIVES", "amount": "300", "currency": "EUR", "other": "RUB" }
+  ],
+  "mine": [
+    { "token": "MINE-TOKEN-i1xxxxxxxxxx", "says": "GIVES", "amount": "10", "currency": "EUR", "other": "RUB", "approxOther": "941.2",
+      "base": "EUR", "quote": "RUB", "chats": [ { "id": -1001, "title": "Belgrade Expats" }, { "id": -1002, "title": "Novi Sad Russians" } ],
+      "counterparties": [ { "shortId": "b7", "name": "@lena_nsd", "says": "GIVES", "amount": "1000", "currency": "RUB",
+        "mineToken": "MINE-TOKEN-s2xxxxxxxxxx", "chatId": -1002, "chatTitle": "Novi Sad Russians" } ],
+      "expiresAt": 1791028800 },
+    { "token": "MINE-TOKEN-i2xxxxxxxxxx", "says": "WANTS", "amount": "200", "currency": "USD", "other": "EUR", "approxOther": "171",
+      "base": "EUR", "quote": "USD", "chats": [], "counterparties": [], "expiresAt": 1791028800 }
+  ]
+}

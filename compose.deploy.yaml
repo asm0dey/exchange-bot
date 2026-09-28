@@ -18,6 +18,14 @@ services:
     # database can't wander if that line is ever edited or the workdir changes.
     environment:
       DB_PATH: /app/data/exchange
+      MINIAPP_URL: ${MINIAPP_URL:-}
+      MINIAPP_PORT: ${MINIAPP_PORT:-8080}
+      MINIAPP_SHORT_NAME: ${MINIAPP_SHORT_NAME:-}
+    # Publishes nothing to the host: only reachable from containers on this compose
+    # network. A reverse proxy joins this network (see README), or add your own
+    # `ports:` mapping.
+    expose:
+      - "8080"
     volumes:
       - exchange-bot-data:/app/data
     # ponytail: default json-file logging is unbounded and this process runs

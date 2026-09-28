@@ -1,0 +1,41 @@
+@import "tailwindcss";
+@plugin "daisyui" { themes: false; }
+
+/* Every colour is Telegram's own (telegram-web-app.js sets these variables on <html>);
+   the fallbacks are Telegram's light defaults, for a browser outside Telegram. */
+@plugin "daisyui/theme" {
+  name: "tg";
+  default: true;
+  --color-base-100: var(--tg-theme-bg-color, #ffffff);
+  --color-base-200: var(--tg-theme-secondary-bg-color, #f0f1f5);
+  --color-base-300: var(--tg-theme-section-separator-color, #e3e5ea);
+  --color-base-content: var(--tg-theme-text-color, #0f1419);
+  --color-primary: var(--tg-theme-button-color, #3390ec);
+  --color-primary-content: var(--tg-theme-button-text-color, #ffffff);
+  --color-neutral: var(--tg-theme-hint-color, #6f7780);
+  --color-neutral-content: var(--tg-theme-bg-color, #ffffff);
+  --radius-box: 0.875rem;
+  --radius-field: 0.625rem;
+}
+
+/* The only two colours of our own. Amber = has the base to give, teal = wants the base.
+   Never red/green: those read as sell/buy and price moves, and this is not a venue. */
+@theme {
+  --color-give: #a8620a;
+  --color-give-soft: #fbf1e2;
+  --color-want: #16707a;
+  --color-want-soft: #e2f3f4;
+  --color-link: var(--tg-theme-link-color, #2481cc);
+  --color-hint: var(--tg-theme-hint-color, #6f7780);
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+}
+[data-scheme="dark"] {
+  --color-give: #e6a54a;
+  --color-give-soft: #35291a;
+  --color-want: #56c2cc;
+  --color-want-soft: #17302f;
+}
+
+html, body { background: var(--color-base-200); color: var(--color-base-content); }
+.amount { font-variant-numeric: tabular-nums; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }

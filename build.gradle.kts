@@ -1,8 +1,16 @@
+import com.github.gradle.node.npm.task.NpmTask
+import org.gradle.api.file.Directory
+import org.gradle.api.provider.Provider
+import org.gradle.api.tasks.Exec
+import org.gradle.internal.os.OperatingSystem
+import java.io.File
+
 plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
     alias(libs.plugins.shadow)
+    alias(libs.plugins.node.gradle)
     application
 }
 
@@ -18,6 +26,11 @@ dependencies {
     ksp(libs.ktnip)
     implementation(libs.ktor.client.core)
     implementation(libs.ktor.client.cio)
+    implementation(libs.ktor.server.core)
+    implementation(libs.ktor.server.cio)
+    implementation(libs.ktor.server.content.negotiation)
+    implementation(libs.ktor.server.status.pages)
+    implementation(libs.ktor.serialization.kotlinx.json)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.db.scheduler)
@@ -32,8 +45,217 @@ dependencies {
 
     testImplementation(libs.kotest.runner)
     testImplementation(libs.kotest.assertions)
+    testImplementation(libs.kotest.property)
     testImplementation(libs.ktor.client.mock)
+    testImplementation(libs.ktor.server.test.host)
 }
+
+// The mini app's built SPA lands in build/web/static and ships in the jar as the `static/`
+// resources Ktor serves. Task 8 makes processResources build it first.
+sourceSets.main { resources.srcDir(layout.buildDirectory.dir("web")) }
+
+// Node itself is NOT what runs the mini app's scripts (Bun is, below) — it exists purely so
+// vue-tsc, vite, vitest and playwright's bin scripts (every one starts `#!/usr/bin/env node`)
+// have a real `node` to be exec'd by. Confirmed the hard way: under Bun's own JS runtime,
+// `vue-tsc`'s TypeScript plugin never registers its `.vue`-import resolver, and every `.vue`
+// import fails with "Cannot find module './App.vue'" — this reproduces with `bunx vue-tsc`,
+// `bunx --bun vue-tsc` and `bun --bun x vue-tsc` alike, even with a system Node installed and
+// on PATH, so no Bun-side flag fixes it; only a real Node process running the script does. See
+// the Task 12 fix-round-1 report for the reproduction. `com.github.node-gradle.node` downloads
+// a pinned Node release so this doesn't depend on the host machine having one.
+node {
+    download.set(true)
+    version.set("24.21.0")
+    workDir.set(layout.projectDirectory.dir(".gradle/nodejs"))
+    npmWorkDir.set(layout.projectDirectory.dir(".gradle/npm"))
+}
+
+// The mini app (web/) is a Vue + Vite project with its own dependencies locked in
+// web/bun.lock and run with Bun — nobody installs Bun by hand, and a bot-only contributor
+// needs nothing beyond the JDK (node-gradle above fetches Node; this fetches Bun). Bun
+// itself comes from npm, not a hand-verified download: `web/tools/package.json` pins the
+// exact `bun` version as its only dependency, and its committed `package-lock.json` records
+// npm's own sha512 integrity for it AND for whichever `@oven/bun-<platform>` binary package
+// matches the machine running `npm ci` — the same verification npm gives any dependency, no
+// bespoke digest table to keep in sync by hand. Renovate's npm manager bumps
+// web/tools/package.json + its lockfile natively; no custom manager needed for Bun.
+//
+// `bun`'s own postinstall script (which copies the right platform binary into
+// node_modules/bun/bin/) needs explicit approval under npm's install-scripts allowlist —
+// already recorded in web/tools/package.json's "allowScripts" field (committed), so `npm ci`
+// runs it unattended everywhere, regardless of a machine's global npm config.
+val bunToolInstall = tasks.register<NpmTask>("bunToolInstall") {
+    description = "Installs the pinned Bun binary from npm (web/tools), sha512-verified by npm ci."
+    workingDir.set(layout.projectDirectory.dir("web/tools").asFile)
+    npmCommand.set(listOf("ci"))
+    inputs.files("web/tools/package.json", "web/tools/package-lock.json")
+    outputs.dir(layout.projectDirectory.dir("web/tools/node_modules"))
+}
+
+// Where node-gradle put the Node it downloaded, and where bunToolInstall above puts the Bun
+// binary npm installed. Every Bun invocation below runs with the Node dir first (so the
+// shebang'd scripts Bun then execs find a real `node`) and the Bun dir right after (so
+// `commandLine` finds Bun without a hardcoded platform-specific executable name beyond this
+// one place) — ahead of the inherited PATH, so neither depends on (or can be shadowed by)
+// whatever Node the host machine happens to have, matching the "no system Node" proof this
+// task requires.
+val bunBinDir = layout.projectDirectory.dir("web/tools/node_modules/.bin")
+val bunExecutableName = if (OperatingSystem.current().isWindows) "bun.cmd" else "bun"
+val nodeBinDir: Provider<Directory> = node.resolvedNodeDir.map {
+    if (OperatingSystem.current().isWindows) it else it.dir("bin")
+}
+
+fun Exec.runBun(vararg bunArgs: String) {
+    dependsOn(bunToolInstall, "nodeSetup")
+    workingDir(layout.projectDirectory.dir("web"))
+    commandLine(bunBinDir.file(bunExecutableName).asFile.absolutePath, *bunArgs)
+    val pathWithNodeAndBun = listOf(
+        nodeBinDir.get().asFile.absolutePath,
+        bunBinDir.asFile.absolutePath,
+        System.getenv("PATH").orEmpty(),
+    ).joinToString(File.pathSeparator)
+    environment("PATH", pathWithNodeAndBun)
+}
+
+val bunInstall = tasks.register<Exec>("bunInstall") {
+    description = "Installs the mini app's own dependencies (web/bun.lock) with Bun."
+    runBun("install", "--frozen-lockfile")
+    inputs.files("web/package.json", "web/bun.lock")
+    outputs.dir(layout.projectDirectory.dir("web/node_modules"))
+}
+
+val webBuild = tasks.register<Exec>("webBuild") {
+    description = "Builds the mini app into build/web/static"
+    dependsOn(bunInstall)
+    runBun("run", "build")
+    inputs.dir("web/src")
+    inputs.dir("web/e2e")
+    inputs.files("web/index.html", "web/vite.config.ts", "web/tsconfig.json", "web/package.json", "web/bun.lock", "web/playwright.config.ts")
+    outputs.dir(layout.buildDirectory.dir("web"))
+}
+
+val webTest = tasks.register<Exec>("webTest") {
+    description = "Runs the mini app's unit tests (vitest)"
+    dependsOn(bunInstall)
+    runBun("run", "test")
+    inputs.dir("web/src")
+    outputs.upToDateWhen { false }
+}
+
+// Playwright needs a browser, so it is not part of `check`/`build` — only a JDK is needed for
+// those. webE2e additionally needs Docker: it always runs the tests inside the pinned
+// Microsoft Playwright container, identically here and in CI, instead of on whatever browser/
+// font stack the host happens to have. Mismatched host fonts are exactly what made CI's
+// screenshots differ from baselines made on a dev machine by ~4% (over the 2%
+// maxDiffPixelRatio in playwright.config.ts) even though the same Chromium/Playwright
+// versions were in use on both sides.
+//
+// The pinned image's own fonts aren't enough, though: its fallback for the generic
+// "system-ui" family is WenQuanYi Zen Hei (a CJK font, pulled in for the image's broad
+// Unicode coverage) — it has no real Bold face (every bold run rendered as regular weight)
+// and doesn't cover ⇄ U+21C4 or ≈ U+2248, which the app renders as literal text characters
+// (checked with `fc-match system-ui`/`fc-match system-ui:bold` and `fc-list
+// :charset=<codepoint>` inside the image). `fonts-dejavu-core` is the smallest package that
+// fixes both: fontconfig prefers it for "system-ui" once installed, it ships a real Bold
+// face, and DejaVu Sans covers ⇄, ≈, and ✓ (U+2713, also used in the app). Fonts are
+// installed fresh at the start of every run (needs network) rather than baked into a
+// derived image, so this stays the exact upstream `mcr.microsoft.com/playwright` tag with
+// no Dockerfile of our own to keep in sync with Playwright version bumps.
+val webE2e = tasks.register<Exec>("webE2e") {
+    description = "Runs the mini app's Playwright tests against mock data, inside the pinned Playwright container (needs Docker; not part of check/build)"
+    dependsOn(bunInstall)
+    outputs.upToDateWhen { false }
+
+    // Pin the container to the exact @playwright/test version in web/package.json: the
+    // browser bundled in the image must match the test-runner version resolved into
+    // web/node_modules, or Playwright refuses to drive it (and even if it didn't, a version
+    // drift would reopen exactly the rendering-mismatch problem this container exists to close).
+    val packageJsonText = providers.fileContents(layout.projectDirectory.file("web/package.json")).asText.get()
+    val playwrightVersion = Regex("\"@playwright/test\"\\s*:\\s*\"([^\"]+)\"")
+        .find(packageJsonText)
+        ?.groupValues?.get(1)
+        ?.trimStart('^', '~')
+        ?: throw GradleException("Could not find \"@playwright/test\" in web/package.json to pin the webE2e container image.")
+    // "-noble" is Microsoft's Ubuntu-24.04 tag suffix for this Playwright release (see
+    // https://mcr.microsoft.com/artifact/mar/playwright/about) — picked and pinned by hand
+    // when bumping @playwright/test, since not every release is guaranteed to publish every
+    // codename variant.
+    val dockerImage = "mcr.microsoft.com/playwright:v$playwrightVersion-noble"
+
+    doFirst {
+        val dockerPresent = try {
+            ProcessBuilder("docker", "--version").start().waitFor() == 0
+        } catch (e: java.io.IOException) {
+            false
+        }
+        if (!dockerPresent) {
+            throw GradleException(
+                "webE2e runs Playwright inside the pinned $dockerImage container, for " +
+                    "pixel-identical screenshots locally and in CI, and needs Docker on PATH. " +
+                    "Install Docker and retry."
+            )
+        }
+    }
+
+    val repoRoot = layout.projectDirectory.asFile.absolutePath
+    val containerWebDir = "/repo/web"
+    // The webServer command in playwright.config.ts (`vite build && vite preview`) is run by
+    // the shell through a bare `vite`, so node_modules/.bin must be on PATH inside the
+    // container — the image doesn't put a project's local bin dir there itself.
+    val containerPath = listOf(
+        "$containerWebDir/node_modules/.bin",
+        "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin",
+    ).joinToString(":")
+
+    // Installing fonts (apt-get) needs root, so the container starts as root — no --user
+    // flag on `docker run` — and drops to the host UID/GID with `setpriv` only for the
+    // `playwright test` invocation itself, so files written into the bind-mounted repo
+    // (updated snapshots, test-results) still land host-owned, not root-owned. Docker
+    // Desktop on Windows has no host UID/GID to map into a bind mount and doesn't need one,
+    // so setpriv there is a no-op (reuid/regid 0, i.e. stay root).
+    val (hostUid, hostGid) = if (OperatingSystem.current().isWindows) {
+        "0" to "0"
+    } else {
+        val uid = providers.exec { commandLine("id", "-u") }.standardOutput.asText.get().trim()
+        val gid = providers.exec { commandLine("id", "-g") }.standardOutput.asText.get().trim()
+        uid to gid
+    }
+
+    // Runs as the container's root: installs the fonts (needs network), rebuilds the
+    // fontconfig cache, then execs into `playwright test` as the host user via setpriv
+    // (util-linux, present on this "noble"-based image). $1/$2 are the uid/gid and
+    // "${@:3}" is whatever's left of the argv — see the `bash -c script bash "$@"` call
+    // below; this keeps webE2eArgs values out of the shell-parsed script string entirely.
+    val installAndRunScript = """
+        set -euo pipefail
+        apt-get update -qq
+        apt-get install -y --no-install-recommends fonts-dejavu-core
+        fc-cache -f
+        exec setpriv --reuid="${'$'}1" --regid="${'$'}2" --clear-groups node node_modules/.bin/playwright test "${'$'}{@:3}"
+    """.trimIndent()
+
+    // -PwebE2eArgs=--update-snapshots=all reaches `playwright test` directly — there's no
+    // package-manager script layer to disambiguate it from anymore, unlike the old
+    // `bun run e2e --` path this replaces.
+    val extraArgs = providers.gradleProperty("webE2eArgs").orNull?.let { listOf(it) } ?: emptyList()
+
+    executable("docker")
+    args(
+        listOf(
+            "run", "--rm",
+            "-e", "HOME=/tmp",
+            "-e", "PATH=$containerPath",
+            "-v", "$repoRoot:/repo",
+            "-w", containerWebDir,
+            dockerImage,
+            "bash", "-c", installAndRunScript,
+            "bash", hostUid, hostGid,
+        ) + extraArgs
+    )
+}
+
+tasks.processResources { dependsOn(webBuild) }
+tasks.check { dependsOn(webTest) }
 
 kotlin {
     // Build on the same JDK vendor the container runs: the production runtime is

@@ -24,8 +24,47 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      # `cache: gradle` above already covers `~/.gradle` (the dependency/wrapper cache).
+      # This covers the *web toolchain* node-gradle/npm/Bun download and package caches,
+      # which live elsewhere: `.gradle/nodejs` / `.gradle/npm` are node-gradle's own
+      # project-local download dirs (see the `node {}` block in build.gradle.kts), and
+      # `~/.npm` / `~/.bun/install/cache` are npm's and Bun's package caches (same default
+      # locations verified for the Docker build layer — see Dockerfile). node_modules
+      # itself is deliberately NOT cached: installs from a warm package cache are already
+      # fast, and a stale node_modules restored from cache is a common source of
+      # hard-to-debug drift.
+      - name: Cache web toolchain (Node/npm/Bun downloads)
+        uses: actions/cache@v4
+        with:
+          path: |
+            .gradle/nodejs
+            .gradle/npm
+            ~/.npm
+            ~/.bun/install/cache
+          key: web-toolchain-${{ runner.os }}-${{ hashFiles('web/bun.lock', 'web/tools/package-lock.json', 'build.gradle.kts', 'gradle/libs.versions.toml') }}
+          restore-keys: |
+            web-toolchain-${{ runner.os }}-
+
       - name: Build and test with Gradle
         run: ./gradlew build
+
+      # `./gradlew build` above already built the web app, ran its unit tests
+      # (webTest), and installed web/node_modules (bunInstall). webE2e itself now
+      # runs Playwright inside the pinned mcr.microsoft.com/playwright container
+      # (see build.gradle.kts) instead of on the runner's bare Chromium/fonts, so no
+      # separate `playwright install-deps` step is needed — the image ships its own
+      # browsers and OS libraries, and this is the same command a developer runs
+      # locally, so CI and local screenshots render identical pixels.
+      - name: Web end-to-end
+        run: ./gradlew webE2e
+
+      - name: Upload Playwright test results
+        uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: playwright-test-results
+          path: web/test-results
+          retention-days: 5
 
       - name: Upload test results
         uses: actions/upload-artifact@v7

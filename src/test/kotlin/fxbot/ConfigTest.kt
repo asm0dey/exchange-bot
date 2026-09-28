@@ -43,4 +43,16 @@ class ConfigTest : StringSpec({
             text.contains(secret) shouldBe false
         }
     }
+    "mini app settings are optional and default the port" {
+        val env = mapOf(
+            "BOT_TOKEN" to "t", "DB_FILE_KEY" to "k", "DB_USER_PW" to "p", "DATA_KEYSET" to "d", "INDEX_KEYSET" to "i",
+        )
+        val off = loadConfig(env::get)
+        off.miniAppUrl shouldBe null
+        off.miniAppPort shouldBe 8080
+        val on = loadConfig((env + mapOf("MINIAPP_URL" to "https://x.example", "MINIAPP_PORT" to "9000", "MINIAPP_SHORT_NAME" to "app"))::get)
+        on.miniAppUrl shouldBe "https://x.example"
+        on.miniAppPort shouldBe 9000
+        on.miniAppShortName shouldBe "app"
+    }
 })

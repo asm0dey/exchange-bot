@@ -7,7 +7,6 @@ import eu.vendeli.tgbot.types.chat.ChatType
 import eu.vendeli.tgbot.types.component.ParseMode
 import eu.vendeli.tgbot.types.component.ProcessedUpdate
 import eu.vendeli.tgbot.types.component.getChat
-import eu.vendeli.tgbot.types.component.getOrNull
 import eu.vendeli.tgbot.types.component.getUser
 import org.slf4j.LoggerFactory
 
@@ -70,30 +69,7 @@ private suspend fun handlePost(verb: Verb, update: ProcessedUpdate, bot: Telegra
         }
         is PostResult.Posted -> {
             logCommand(command, "posted")
-            val book = nameBookFor(
-                listOf(result.request) + result.found.map { it.request }, Registry.names,
-            )
-            val text = renderSuggestions(result.found, result.status, book)
-            val buttons = suggestionButtons(result.request, result.found, book)
-            val sent = message { text }
-                .options { parseMode = ParseMode.HTML }
-                .inlineKeyboardMarkup { buttons.forEach { b -> b.label callback b.data; br() } }
-                .sendReturning(chat.id, bot)
-                .getOrNull()
-            // The buttons on this message name the poster's own request plus every
-            // counterparty's — record all of them, so a later close on ANY of those
-            // requests knows to strip this message's keyboard too.
-            sent?.messageId?.let { id ->
-                Registry.messages.record(
-                    chat.id,
-                    id,
-                    listOf(result.request.refToken) + result.found.map { it.request.refToken },
-                    listOf(result.request.userId) + result.found.map { it.request.userId },
-                    text,
-                    buttons,
-                )
-            }
-            Registry.batcher.enqueueAppeared(result.appeared)
+            deliverPosted(chat.id, result, bot)
         }
     }
 }

@@ -52,6 +52,193 @@ tolerance, your name give-ups and any messages here — but not what is showing
 in a group, because that is a record in that group. `/forget all` reaches those
 too, in every group the bot shares with you.
 
+## The app
+
+The same things, in a Telegram Mini App: what's resting, posting, taking the other
+side of a request, cancelling, done and its confirmation, and your size tolerance.
+In a group, type `/app` for a button that opens that group's requests. Privately,
+tap the menu button next to the message field.
+
+The app is off until you set it up (below). Without it the bot opens no port.
+
+## Setting up the app
+
+Telegram only opens a mini app from a public **HTTPS** address with a certificate
+browsers trust. The bot itself speaks plain HTTP on port 8080 inside its container.
+Your reverse proxy sits in between: it holds the certificate and forwards to the bot.
+
+    Telegram app ──HTTPS──▶ your reverse proxy ──HTTP :8080──▶ exchange-bot container
+
+### What you need
+
+- **A domain name** you control, for example `example.com`.
+- **A subdomain, or a path under an existing domain, for the app** — either
+  `exchange.example.com` or `example.com/exchange/` works. The steps below use a
+  subdomain as the primary example, with a note wherever a path setup differs.
+- **A reverse proxy** on a host that is reachable from the internet on port 443
+  (Caddy, nginx, Traefik, …), with a trusted certificate for that subdomain. Let's
+  Encrypt is fine; a self-signed certificate is not.
+
+### 1. Point the subdomain at your server
+
+At your DNS provider, add a record for the subdomain pointing at the server that runs
+the reverse proxy:
+
+    exchange.example.com.   A   203.0.113.10
+
+Check it resolves before going on: `dig +short exchange.example.com` should print
+your server's IP.
+
+### 2. Let the proxy reach the bot
+
+The bot listens on port 8080 inside the container and `compose.yaml` does not publish
+it. Pick one:
+
+- **The proxy runs in Docker too:** put both on one network. Add to the bot service
+  in `compose.deploy.yaml`:
+
+      networks: [proxy]
+
+  and at the bottom of the file:
+
+      networks:
+        proxy:
+          external: true
+
+  (`docker network create proxy` once, and attach your proxy container to it.) Compose
+  gives every service a network alias equal to its own name on every network it joins,
+  and the bot service in `compose.deploy.yaml` is named `bot` — so the proxy reaches it
+  as `bot:8080`, not `exchange-bot:8080` (that's the image name, not the service name).
+- **The proxy runs directly on the host:** publish the port on localhost only, so
+  it is not open to the internet:
+
+      ports:
+        - "127.0.0.1:8080:8080"
+
+  The proxy then reaches the bot as `127.0.0.1:8080`.
+
+### 3. Configure the proxy
+
+Forward everything on the subdomain to the bot. Nothing else is needed: no path
+rewriting, no websockets.
+
+**Caddy** (gets the certificate for you):
+
+    exchange.example.com {
+        reverse_proxy bot:8080
+    }
+
+**nginx** (certificate from certbot or similar):
+
+    server {
+        listen 443 ssl;
+        http2 on;
+        server_name exchange.example.com;
+        ssl_certificate     /etc/letsencrypt/live/exchange.example.com/fullchain.pem;
+        ssl_certificate_key /etc/letsencrypt/live/exchange.example.com/privkey.pem;
+
+        location / {
+            proxy_pass http://127.0.0.1:8080;
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-Proto https;
+        }
+    }
+
+**Traefik** (labels on the bot service in `compose.deploy.yaml`):
+
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.exchange.rule=Host(`exchange.example.com`)
+      - traefik.http.routers.exchange.entrypoints=websecure
+      - traefik.http.routers.exchange.tls.certresolver=letsencrypt
+      - traefik.http.services.exchange.loadbalancer.server.port=8080
+
+Use your own resolver and entrypoint names; the ones above are Traefik's usual examples.
+
+**Using a path instead of a subdomain?** The proxy must forward the path through
+*without stripping it* — the bot itself serves the app under that same path, not at
+its own root, so the request it receives must still carry the `/exchange/` prefix.
+
+**Caddy:** `handle /exchange/*` alone won't match the bare `/exchange` (no trailing
+slash) that Telegram or a hand-typed link may request — widen the matcher with a
+trailing `*` (not `/*`) so it also reaches the bot, which redirects it to
+`/exchange/` itself:
+
+    example.com {
+        handle /exchange* {
+            reverse_proxy bot:8080
+        }
+    }
+
+**nginx:** `location /exchange/` (with the trailing slash) does not match the bare
+`/exchange`, so add an exact-match block that redirects it to the one with the
+slash, ahead of the prefix block; and no trailing slash on `proxy_pass` in the
+prefix block itself — a trailing slash there tells nginx to strip the `location`
+prefix before forwarding, which is exactly what must *not* happen here.
+
+    location = /exchange {
+        return 302 /exchange/;
+    }
+    location /exchange/ {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+### 4. Register the app with BotFather
+
+In @BotFather: `/newapp`, pick this bot, and answer its questions. When it asks for
+the **Web App URL**, give `https://exchange.example.com`. When it asks for a **short
+name**, give something like `exchange`. That makes the app's link
+`https://t.me/<your bot>/exchange`.
+
+**Using a path?** Give the URL **with a trailing slash**, e.g.
+`https://example.com/exchange/` — the app's relative asset and API URLs only resolve
+under the right prefix when the opened URL ends in `/`.
+
+### 5. Tell the bot, and restart
+
+In `.env`:
+
+    MINIAPP_URL=https://exchange.example.com
+    MINIAPP_SHORT_NAME=exchange
+
+(for a path setup: `MINIAPP_URL=https://example.com/exchange/`, trailing slash
+included). Then `docker compose -f compose.deploy.yaml up -d`. On start the bot sets
+its menu button to open the app, and `/app` starts answering.
+
+### 6. Check it
+
+    curl -sI https://exchange.example.com/ | head -1
+    # HTTP/2 200: the app is served
+
+    curl -s -o /dev/null -w '%{http_code}\n' https://exchange.example.com/api/me
+    # 401: the API is up and refuses calls that don't come from Telegram
+
+(for a path setup: `curl -s -o /dev/null -w '%{http_code}\n' https://example.com/exchange/api/me`
+— also 401.)
+
+    curl -sI https://example.com/exchange | head -2
+    # HTTP/2 302, location: /exchange/ — the bare path (no trailing slash) redirects
+
+Then open the bot privately in Telegram and tap the menu button, and send `/app` in
+a group.
+
+### If it doesn't work
+
+| What you see | Likely cause |
+|---|---|
+| Telegram shows a blank page or "can't open" | Certificate not trusted, or the proxy isn't forwarding. Check the `curl -sI` above from another machine. |
+| The page shows "Open this from Telegram." | You opened the URL in a normal browser, outside Telegram — the app only runs inside the Telegram client. |
+| The app worked, then switches to "Reopen from Telegram." | Telegram's session data for the app expired or was rejected; close and reopen it from the chat. |
+| `/app` says the app isn't set up | `MINIAPP_URL` or `MINIAPP_SHORT_NAME` is missing from `.env`, or the bot wasn't restarted. |
+| The group view says "You're not in this chat" | You're not a member of that group, or the bot was removed from it. |
+| `502 Bad Gateway` from the proxy | The proxy can't reach `:8080`: see step 2, and check the bot started with a "mini app listening" line in its log. |
+
+## Development
+
+`./gradlew build` needs only a JDK. `./gradlew webE2e` (the mini app's Playwright screenshot tests) additionally needs Docker — it runs Playwright inside a pinned `mcr.microsoft.com/playwright` container so screenshots render identically on your machine and in CI.
+
 ## Runtime
 
 Targets Java 25. The production image (built by `Dockerfile`) runs on

@@ -38,6 +38,33 @@ jobs:
           VERSION: ${{ steps.version.outputs.number }}
 
       - uses: docker/setup-buildx-action@v4
+        id: buildx
+
+      # `docker/build-push-action`'s `cache-from`/`cache-to: type=gha` below only persists
+      # BuildKit's *layer* cache across runs — the `RUN --mount=type=cache` mounts in
+      # Dockerfile (Gradle home, npm cache, Bun cache) live in BuildKit's separate cache-mount
+      # store, which `type=gha` does not touch. buildkit-cache-dance bridges that: it copies
+      # each mount's content into a plain directory before the build (so actions/cache below
+      # can persist it) and back out after (so the next run's mounts start warm). `cache-dir` +
+      # `dockerfile` (rather than a hand-written `cache-map`) auto-discovers every
+      # `--mount=type=cache,target=...` in Dockerfile, so a future cache mount added there
+      # doesn't also need a matching edit here.
+      - name: Cache Docker build mounts
+        uses: actions/cache@v4
+        id: docker-build-cache
+        with:
+          path: cache-mount
+          key: docker-build-cache-${{ hashFiles('build.gradle.kts', 'gradle/libs.versions.toml', 'web/bun.lock', 'web/tools/package-lock.json') }}
+          restore-keys: |
+            docker-build-cache-
+
+      - name: Restore Docker cache mounts
+        uses: reproducible-containers/buildkit-cache-dance@v3
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          cache-dir: cache-mount
+          dockerfile: Dockerfile
+          skip-extraction: ${{ steps.docker-build-cache.outputs.cache-hit }}
 
       - uses: docker/login-action@v4
         with:
@@ -49,6 +76,8 @@ jobs:
         with:
           context: .
           push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           tags: |
             ghcr.io/${{ github.repository }}:${{ steps.version.outputs.number }}
             ghcr.io/${{ github.repository }}:latest

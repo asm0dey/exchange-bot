@@ -5,3 +5,7 @@ data/
 .env
 *.mv.db
 *.trace.db
+web/node_modules/
+web/tools/node_modules/
+web/test-results/
+web/playwright-report/
