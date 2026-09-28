@@ -100,6 +100,9 @@ _Avoid_: raw amount, original amount, input
 A request's size expressed in the base currency, derived from the stated amount
 at the current reference rate. A working figure for comparison only, never
 shown as a price.
+The mini app may show it as an estimate of the other leg, always marked ≈ and
+never as a price. The request sheet, where a deal is being put together, says
+the ≈ uses the reference rate.
 _Avoid_: normalized amount, converted amount, value, volume
 
 **Residual**:
@@ -165,3 +168,13 @@ A person's demand that the bot erase what it stores about them, together with
 the bot cleaning up its own messages naming them. Distinct from cancellation:
 cancellation ends an interest, forgetting removes the record of it.
 _Avoid_: deletion, unsubscribe, opt-out, GDPR request
+
+### UI wording
+
+The terms above are for reading the code. The mini app says what people do:
+
+| Code | App |
+|---|---|
+| Offer / Bid | Gives / Wants, from the currency the amount was typed in |
+| Request, interest, showing | request |
+| Done, confirmation | "Done with …", "Yes, we swapped" / "No" |

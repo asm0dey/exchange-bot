@@ -71,16 +71,25 @@ bun {
 
 // Pinned from https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/SHASUMS256.txt
 // (cross-checked against `gh api repos/oven-sh/bun/releases/tags/bun-v1.3.14`'s per-asset
-// digests). Renovate (github-release-attachments datasource, wired in Task 12) bumps
-// bunVersion above and every digest below together, one release at a time — one asset per
-// line, filename and full digest on that line, so its regex manager can match either.
-// Bumping bunVersion without adding that release's digests here fails verifyBunArchive with
-// a clear "no pinned SHA-256" error rather than silently trusting an unchecked download.
+// digests). Renovate's github-release-attachments datasource (wired in renovate.json's
+// customManagers, Task 12) needs the version a digest was pinned under alongside the digest
+// itself in the same regex match, so each line below carries its own
+// `// renovate: currentValue=` marker comment repeating bunVersion — Renovate bumps bunVersion
+// above and every marker + digest pair below together, one release at a time (a dedicated
+// packageRule groups all six as a single PR, even across a major Bun bump).
+// Bumping bunVersion without adding that release's digests (and marker comments) here fails
+// verifyBunArchive with a clear "no pinned SHA-256" error rather than silently trusting an
+// unchecked download.
 val bunDigests = mapOf(
+    // renovate: currentValue=1.3.14
     "bun-darwin-aarch64.zip" to "d8b96221828ad6f97ac7ac0ab7e95872341af763001e8803e8267652c2652620",
+    // renovate: currentValue=1.3.14
     "bun-darwin-x64.zip" to "4183df3374623e5bab315c547cfa0974533cd457d86b73b639f7a87974cd6633",
+    // renovate: currentValue=1.3.14
     "bun-linux-aarch64.zip" to "a27ffb63a8310375836e0d6f668ae17fa8d8d18b88c37c821c65331973a19a3b",
+    // renovate: currentValue=1.3.14
     "bun-linux-x64.zip" to "951ee2aee855f08595aeec6225226a298d3fea83a3dcd6465c09cbccdf7e848f",
+    // renovate: currentValue=1.3.14
     "bun-windows-x64.zip" to "0a0620930b6675d7ba440e81f4e0e00d3cfbe096c4b140d3fff02205e9e18922",
 )
 

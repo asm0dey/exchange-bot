@@ -1,6 +1,19 @@
 FROM gradle:9.7.1-jdk25 AS build
 WORKDIR /src
 
+# `webBuild` (below) runs `vue-tsc` through Bun (`bun run build`, see build.gradle.kts).
+# vue-tsc's bin script starts with `#!/usr/bin/env node`; with a real `node` on PATH, Bun
+# execs it there and vue-tsc's Vue-file typecheck plugin works normally. With no `node` at
+# all — this image ships none — Bun instead runs the script on its OWN JS engine, and that
+# breaks the plugin hook vue-tsc needs to resolve `.vue` imports: it fails every one with
+# "Cannot find module './App.vue' or its corresponding type declarations", even though the
+# same install works outside Docker (confirmed by reproducing bit-for-bit identical
+# node_modules under both, then reproducing/fixing the failure with only PATH's `node`
+# presence changed). This doesn't need to be a specific Node version — it only has to exist
+# so Bun's shebang lookup finds it; Ubuntu's packaged one is enough.
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
 # Build scripts and wrapper only, so a source-only change (below) doesn't bust the
 # dependency-resolution layer and force a re-download every build.
 COPY gradlew ./
@@ -18,6 +31,14 @@ COPY settings.gradle.kts build.gradle.kts ./
 # 'readlink /root/.gradle'`.
 RUN --mount=type=cache,target=/home/gradle/.gradle \
     ./gradlew --no-daemon dependencies
+
+# The mini app (web/). `installDist` triggers `webBuild` through `processResources`
+# (see build.gradle.kts), and the `io.clroot.gradle-bun` plugin downloads a pinned,
+# SHA-256-verified Bun into .gradle/bun/ to build it — no separate Node/Bun stage, and
+# the runtime image below stays the same JRE-only one. Copied before `COPY src` so a
+# Kotlin-only change reuses this layer.
+COPY web/package.json web/bun.lock ./web/
+COPY web ./web
 
 COPY src ./src
 RUN --mount=type=cache,target=/home/gradle/.gradle \
@@ -65,6 +86,8 @@ USER 10001:10001
 VOLUME ["/app/data"]
 ENV DB_PATH=/app/data/exchange
 ENV TZ=UTC
+# Only used when MINIAPP_URL is set; the reverse proxy reaches it on the compose network.
+EXPOSE 8080
 # The generated installDist launcher (bin/exchange-bot) is a bash script and can't
 # run here — distroless has no shell — so java is invoked directly instead.
 # applicationDefaultJvmArgs in build.gradle.kts (-Duser.timezone=UTC) is baked into

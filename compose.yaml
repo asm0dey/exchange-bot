@@ -3,6 +3,11 @@ services:
     build: .
     restart: unless-stopped
     env_file: .env
+    # Publishes nothing to the host: only reachable from containers on this compose
+    # network. Set MINIAPP_URL etc. in .env (env_file above already passes them
+    # through); a reverse proxy joins this network, or add your own `ports:` mapping.
+    expose:
+      - "8080"
     volumes:
       - exchange-bot-data:/app/data
 
