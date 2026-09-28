@@ -133,6 +133,19 @@ suspend fun main(): Unit = coroutineScope {
         TokenValidation.Valid -> {}
     }
 
+    // Resolved here, before the menu below is written, so the menu can be keyed on the link
+    // that will actually work — not merely on MINIAPP_URL being set. getMe can fail, or
+    // MINIAPP_SHORT_NAME can be missing, and either one leaves `/app` answering "isn't set
+    // up" (see MiniAppCommands.kt) even though MINIAPP_URL is configured. A mismatch here is
+    // unusual enough (not "off by design", unlike a bare null MINIAPP_URL) to warn about.
+    Registry.miniAppLink = cfg.miniAppUrl?.let {
+        val me = runCatching { getMe().sendReturning(bot).getOrNull() }.getOrNull()
+        me?.username?.let { u -> cfg.miniAppShortName?.let { short -> "https://t.me/$u/$short" } }
+    }
+    if (cfg.miniAppUrl != null && Registry.miniAppLink == null) {
+        logger.warn("exchange-bot: mini app link unavailable")
+    }
+
     // Groups do NOT inherit the default scope's command menu, whatever the documented
     // narrowest-scope-first fallback implies. Verified against the live bot: getMyCommands
     // showed the full list on the default scope and an empty result for every narrower
@@ -142,11 +155,13 @@ suspend fun main(): Unit = coroutineScope {
     // languageCode is passed positionally as null ("applies to every language") so the
     // scope argument lands in the right slot.
     //
-    // `/app` is listed only when the app is actually configured: unconditionally advertising
-    // it would have every bot without MINIAPP_URL suggest a command that only ever answers
-    // "isn't set up" (see MiniAppCommands.kt). Typing it by hand still works and still gives
-    // that same honest answer either way — this only controls what's suggested.
-    registerCommandMenus(bot, cfg.miniAppUrl != null)
+    // `/app` is listed only when the mini app link actually resolved (see above) —
+    // unconditionally advertising it whenever MINIAPP_URL is merely set would have a bot
+    // whose getMe failed or whose MINIAPP_SHORT_NAME is missing suggest a command that only
+    // ever answers "isn't set up" (see MiniAppCommands.kt). Typing it by hand still works
+    // and still gives that same honest answer either way — this only controls what's
+    // suggested.
+    registerCommandMenus(bot, Registry.miniAppLink != null)
 
     // Runs unconditionally, unlike the block below: a bot that had the app enabled and later
     // had MINIAPP_URL removed must not keep Telegram's menu button pointing at a now-dead
@@ -169,9 +184,10 @@ suspend fun main(): Unit = coroutineScope {
     if (menuButtonOk) logger.info("exchange-bot: menu button set") else logger.warn("exchange-bot: menu button failed")
 
     // Off unless configured: an existing deployment without MINIAPP_URL runs exactly as before.
+    // Registry.miniAppLink is already resolved above, before the menu was written — this
+    // block only starts the server itself, which serves the API and web assets regardless of
+    // whether the deep-link username lookup above happened to succeed.
     cfg.miniAppUrl?.let {
-        val me = runCatching { getMe().sendReturning(bot).getOrNull() }.getOrNull()
-        Registry.miniAppLink = me?.username?.let { u -> cfg.miniAppShortName?.let { short -> "https://t.me/$u/$short" } }
         val backend = ServiceBackend(
             Registry.requests, Registry.settings, Registry.people, Registry.rates, Registry.service,
             Registry.interests, Registry.lifecycle, Registry.messages, Registry.names,
@@ -294,8 +310,8 @@ private val APP_COMMAND: Pair<String, String> = "app" to "Open the exchange app"
 
 /**
  * [GROUP_COMMANDS]/[PRIVATE_COMMANDS] plus `/app`, inserted just before `help`, but only
- * when the app is actually configured — see the comment at the `registerCommandMenus` call
- * site in `main` for why. Public (well, `internal`) rather than folded into
+ * when the mini app link actually resolved — see the comment at the `registerCommandMenus`
+ * call site in `main` for why. Public (well, `internal`) rather than folded into
  * `registerCommandMenus` so a test can assert the insertion itself, separately from the
  * network calls that publish it.
  */
