@@ -54,7 +54,7 @@ jobs:
         id: docker-build-cache
         with:
           path: cache-mount
-          key: docker-build-cache-${{ hashFiles('build.gradle.kts', 'gradle/libs.versions.toml', 'web/bun.lock', 'web/tools/package-lock.json') }}
+          key: docker-build-cache-${{ hashFiles('build.gradle.kts', 'gradle/libs.versions.toml', 'web/bun.lock') }}
           restore-keys: |
             docker-build-cache-
 

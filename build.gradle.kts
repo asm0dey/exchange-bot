@@ -1,16 +1,14 @@
-import com.github.gradle.node.npm.task.NpmTask
-import org.gradle.api.file.Directory
-import org.gradle.api.provider.Provider
+import io.clroot.gradle.bun.task.BunInstallTask
+import io.clroot.gradle.bun.task.BunTask
 import org.gradle.api.tasks.Exec
 import org.gradle.internal.os.OperatingSystem
-import java.io.File
 
 plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
     alias(libs.plugins.shadow)
-    alias(libs.plugins.node.gradle)
+    alias(libs.plugins.bun.gradle)
     application
 }
 
@@ -54,90 +52,40 @@ dependencies {
 // resources Ktor serves. Task 8 makes processResources build it first.
 sourceSets.main { resources.srcDir(layout.buildDirectory.dir("web")) }
 
-// Node itself is NOT what runs the mini app's scripts (Bun is, below) — it exists purely so
-// vue-tsc, vite, vitest and playwright's bin scripts (every one starts `#!/usr/bin/env node`)
-// have a real `node` to be exec'd by. Confirmed the hard way: under Bun's own JS runtime,
-// `vue-tsc`'s TypeScript plugin never registers its `.vue`-import resolver, and every `.vue`
-// import fails with "Cannot find module './App.vue'" — this reproduces with `bunx vue-tsc`,
-// `bunx --bun vue-tsc` and `bun --bun x vue-tsc` alike, even with a system Node installed and
-// on PATH, so no Bun-side flag fixes it; only a real Node process running the script does. See
-// the Task 12 fix-round-1 report for the reproduction. `com.github.node-gradle.node` downloads
-// a pinned Node release so this doesn't depend on the host machine having one.
-node {
-    download.set(true)
-    version.set("24.21.0")
-    workDir.set(layout.projectDirectory.dir(".gradle/nodejs"))
-    npmWorkDir.set(layout.projectDirectory.dir(".gradle/npm"))
-}
-
-// The mini app (web/) is a Vue + Vite project with its own dependencies locked in
-// web/bun.lock and run with Bun — nobody installs Bun by hand, and a bot-only contributor
-// needs nothing beyond the JDK (node-gradle above fetches Node; this fetches Bun). Bun
-// itself comes from npm, not a hand-verified download: `web/tools/package.json` pins the
-// exact `bun` version as its only dependency, and its committed `package-lock.json` records
-// npm's own sha512 integrity for it AND for whichever `@oven/bun-<platform>` binary package
-// matches the machine running `npm ci` — the same verification npm gives any dependency, no
-// bespoke digest table to keep in sync by hand. Renovate's npm manager bumps
-// web/tools/package.json + its lockfile natively; no custom manager needed for Bun.
+// The mini app (web/) is a Svelte + Vite project with its own dependencies locked in
+// web/bun.lock, run with Bun. Nobody installs Bun by hand, and a bot-only contributor needs
+// nothing beyond the JDK: the bun plugin downloads the pinned release from GitHub into
+// .gradle/bun/. That download is pinned by version over HTTPS, not by digest, the same trust
+// every Maven dependency here gets (there is no gradle/verification-metadata.xml).
 //
-// `bun`'s own postinstall script (which copies the right platform binary into
-// node_modules/bun/bin/) needs explicit approval under npm's install-scripts allowlist —
-// already recorded in web/tools/package.json's "allowScripts" field (committed), so `npm ci`
-// runs it unattended everywhere, regardless of a machine's global npm config.
-val bunToolInstall = tasks.register<NpmTask>("bunToolInstall") {
-    description = "Installs the pinned Bun binary from npm (web/tools), sha512-verified by npm ci."
-    workingDir.set(layout.projectDirectory.dir("web/tools").asFile)
-    npmCommand.set(listOf("ci"))
-    inputs.files("web/tools/package.json", "web/tools/package-lock.json")
-    outputs.dir(layout.projectDirectory.dir("web/tools/node_modules"))
+// No Node either. Every tool's bin script starts `#!/usr/bin/env node`, and `bun --bun`
+// runs them under Bun's own runtime instead. That used to be impossible: vue-tsc's `.vue`
+// import resolver never registered under Bun. svelte-check, vite and vitest all work.
+bun {
+    version.set(libs.versions.bun.asProvider())
+    workingDir.set(layout.projectDirectory.dir("web"))
 }
 
-// Where node-gradle put the Node it downloaded, and where bunToolInstall above puts the Bun
-// binary npm installed. Every Bun invocation below runs with the Node dir first (so the
-// shebang'd scripts Bun then execs find a real `node`) and the Bun dir right after (so
-// `commandLine` finds Bun without a hardcoded platform-specific executable name beyond this
-// one place) — ahead of the inherited PATH, so neither depends on (or can be shadowed by)
-// whatever Node the host machine happens to have, matching the "no system Node" proof this
-// task requires.
-val bunBinDir = layout.projectDirectory.dir("web/tools/node_modules/.bin")
-val bunExecutableName = if (OperatingSystem.current().isWindows) "bun.cmd" else "bun"
-val nodeBinDir: Provider<Directory> = node.resolvedNodeDir.map {
-    if (OperatingSystem.current().isWindows) it else it.dir("bin")
-}
-
-fun Exec.runBun(vararg bunArgs: String) {
-    dependsOn(bunToolInstall, "nodeSetup")
-    workingDir(layout.projectDirectory.dir("web"))
-    commandLine(bunBinDir.file(bunExecutableName).asFile.absolutePath, *bunArgs)
-    val pathWithNodeAndBun = listOf(
-        nodeBinDir.get().asFile.absolutePath,
-        bunBinDir.asFile.absolutePath,
-        System.getenv("PATH").orEmpty(),
-    ).joinToString(File.pathSeparator)
-    environment("PATH", pathWithNodeAndBun)
-}
-
-val bunInstall = tasks.register<Exec>("bunInstall") {
+val bunInstall = tasks.named<BunInstallTask>("bunInstall") {
     description = "Installs the mini app's own dependencies (web/bun.lock) with Bun."
-    runBun("install", "--frozen-lockfile")
     inputs.files("web/package.json", "web/bun.lock")
     outputs.dir(layout.projectDirectory.dir("web/node_modules"))
 }
 
-val webBuild = tasks.register<Exec>("webBuild") {
+val webBuild = tasks.register<BunTask>("webBuild") {
     description = "Builds the mini app into build/web/static"
     dependsOn(bunInstall)
-    runBun("run", "build")
+    args("--bun", "run", "build")
     inputs.dir("web/src")
     inputs.dir("web/e2e")
     inputs.files("web/index.html", "web/vite.config.ts", "web/tsconfig.json", "web/package.json", "web/bun.lock", "web/playwright.config.ts")
     outputs.dir(layout.buildDirectory.dir("web"))
 }
 
-val webTest = tasks.register<Exec>("webTest") {
+val webTest = tasks.register<BunTask>("webTest") {
     description = "Runs the mini app's unit tests (vitest)"
     dependsOn(bunInstall)
-    runBun("run", "test")
+    args("--bun", "run", "test")
     inputs.dir("web/src")
     outputs.upToDateWhen { false }
 }
