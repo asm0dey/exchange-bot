@@ -149,6 +149,18 @@ val webTest = tasks.register<Exec>("webTest") {
 // screenshots differ from baselines made on a dev machine by ~4% (over the 2%
 // maxDiffPixelRatio in playwright.config.ts) even though the same Chromium/Playwright
 // versions were in use on both sides.
+//
+// The pinned image's own fonts aren't enough, though: its fallback for the generic
+// "system-ui" family is WenQuanYi Zen Hei (a CJK font, pulled in for the image's broad
+// Unicode coverage) — it has no real Bold face (every bold run rendered as regular weight)
+// and doesn't cover ⇄ U+21C4 or ≈ U+2248, which the app renders as literal text characters
+// (checked with `fc-match system-ui`/`fc-match system-ui:bold` and `fc-list
+// :charset=<codepoint>` inside the image). `fonts-dejavu-core` is the smallest package that
+// fixes both: fontconfig prefers it for "system-ui" once installed, it ships a real Bold
+// face, and DejaVu Sans covers ⇄, ≈, and ✓ (U+2713, also used in the app). Fonts are
+// installed fresh at the start of every run (needs network) rather than baked into a
+// derived image, so this stays the exact upstream `mcr.microsoft.com/playwright` tag with
+// no Dockerfile of our own to keep in sync with Playwright version bumps.
 val webE2e = tasks.register<Exec>("webE2e") {
     description = "Runs the mini app's Playwright tests against mock data, inside the pinned Playwright container (needs Docker; not part of check/build)"
     dependsOn(bunInstall)
@@ -195,16 +207,32 @@ val webE2e = tasks.register<Exec>("webE2e") {
         "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin",
     ).joinToString(":")
 
-    // Docker Desktop on Windows has no host UID/GID to map into a bind mount and doesn't need
-    // one; on Linux/macOS, without --user the container's default root user writes
-    // screenshots and test-results back onto the host as root-owned files.
-    val userArgs = if (OperatingSystem.current().isWindows) {
-        emptyList()
+    // Installing fonts (apt-get) needs root, so the container starts as root — no --user
+    // flag on `docker run` — and drops to the host UID/GID with `setpriv` only for the
+    // `playwright test` invocation itself, so files written into the bind-mounted repo
+    // (updated snapshots, test-results) still land host-owned, not root-owned. Docker
+    // Desktop on Windows has no host UID/GID to map into a bind mount and doesn't need one,
+    // so setpriv there is a no-op (reuid/regid 0, i.e. stay root).
+    val (hostUid, hostGid) = if (OperatingSystem.current().isWindows) {
+        "0" to "0"
     } else {
         val uid = providers.exec { commandLine("id", "-u") }.standardOutput.asText.get().trim()
         val gid = providers.exec { commandLine("id", "-g") }.standardOutput.asText.get().trim()
-        listOf("--user", "$uid:$gid")
+        uid to gid
     }
+
+    // Runs as the container's root: installs the fonts (needs network), rebuilds the
+    // fontconfig cache, then execs into `playwright test` as the host user via setpriv
+    // (util-linux, present on this "noble"-based image). $1/$2 are the uid/gid and
+    // "${@:3}" is whatever's left of the argv — see the `bash -c script bash "$@"` call
+    // below; this keeps webE2eArgs values out of the shell-parsed script string entirely.
+    val installAndRunScript = """
+        set -euo pipefail
+        apt-get update -qq
+        apt-get install -y --no-install-recommends fonts-dejavu-core
+        fc-cache -f
+        exec setpriv --reuid="${'$'}1" --regid="${'$'}2" --clear-groups node node_modules/.bin/playwright test "${'$'}{@:3}"
+    """.trimIndent()
 
     // -PwebE2eArgs=--update-snapshots=all reaches `playwright test` directly — there's no
     // package-manager script layer to disambiguate it from anymore, unlike the old
@@ -213,13 +241,15 @@ val webE2e = tasks.register<Exec>("webE2e") {
 
     executable("docker")
     args(
-        listOf("run", "--rm") + userArgs + listOf(
+        listOf(
+            "run", "--rm",
             "-e", "HOME=/tmp",
             "-e", "PATH=$containerPath",
             "-v", "$repoRoot:/repo",
             "-w", containerWebDir,
             dockerImage,
-            "node", "node_modules/.bin/playwright", "test",
+            "bash", "-c", installAndRunScript,
+            "bash", hostUid, hostGid,
         ) + extraArgs
     )
 }
