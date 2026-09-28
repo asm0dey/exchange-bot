@@ -177,7 +177,7 @@ prefix block itself — a trailing slash there tells nginx to strip the `locatio
 prefix before forwarding, which is exactly what must *not* happen here.
 
     location = /exchange {
-        return 301 /exchange/;
+        return 302 /exchange/;
     }
     location /exchange/ {
         proxy_pass http://127.0.0.1:8080;
