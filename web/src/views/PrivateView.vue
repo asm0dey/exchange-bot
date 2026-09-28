@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { Plus, RefreshCw } from 'lucide-vue-next'
+import { Plus } from 'lucide-vue-next'
 import { api, ApiError, type BrowseCard, type BrowseView, type MeView, type Says } from '../api'
 import { approx, fmt, toBase } from '../money'
 import { haptic } from '../tg'
@@ -89,17 +89,12 @@ async function submit(b: { says: Says; amount: string; currency: string; other: 
 <template>
   <main class="min-h-dvh flex flex-col gap-3.5 px-3 py-3.5 pb-28">
     <template v-if="me && browse">
-      <div v-if="tab !== 'tolerance'" class="flex justify-end">
-        <button class="btn btn-ghost btn-circle btn-sm text-hint" aria-label="Refresh" :disabled="loading" @click="load">
-          <RefreshCw :size="18" :class="loading && 'animate-spin'" />
-        </button>
-      </div>
-      <MineTab v-if="tab === 'mine'" :me="me"
+      <MineTab v-if="tab === 'mine'" :me="me" :loading="loading" @refresh="load"
                @confirm="(d, m) => act(api.confirm({ declarerToken: d, mineToken: m }))"
                @refuse="(d, m) => act(api.refuse({ declarerToken: d, mineToken: m }))"
                @cancel="(t) => act(api.cancel(t))"
                @done="(m, s) => act(api.done({ mineToken: m, peerShortId: s }))" />
-      <BrowseTab v-else-if="tab === 'browse'" v-model:pair="browsePair" :view="browse"
+      <BrowseTab v-else-if="tab === 'browse'" v-model:pair="browsePair" :view="browse" :loading="loading" @refresh="load"
                  @take="(c) => openSheet(c.base, c.quote, c)" />
       <ToleranceTab v-else :pct="me.tolerancePct" :error="null"
                     @save="async (p) => { try { me = await api.tolerance(p); haptic('success') } catch (e) { fail(e) } }" />

@@ -62,20 +62,22 @@ async function post(b: { says: Says; amount: string; currency: string }) {
 <template>
   <main class="min-h-dvh flex flex-col gap-3.5 px-3 py-3.5 pb-24" :class="sheet && 'overflow-hidden'">
     <template v-if="view">
-      <header class="bg-base-100 rounded-box p-3.5 flex items-center gap-2.5">
+      <header class="bg-base-100 rounded-box p-3.5 flex justify-between items-center gap-2.5">
         <div class="text-[22px] font-bold tracking-tight">{{ view.base }}<span class="text-hint font-normal mx-1">⇄</span>{{ view.quote }}</div>
-        <div class="ml-auto text-right text-xs text-hint">Reference, not a price
+        <div class="text-right text-xs text-hint">Reference, not a price
           <b v-if="view.rate" class="block text-[15px] text-base-content amount">1 {{ view.base }} = {{ view.rate }} {{ view.quote }}</b>
           <b v-else class="block text-[13px] text-base-content">No rate right now</b>
         </div>
+      </header>
+      <div class="flex items-center gap-2">
+        <div class="grid grid-cols-3 flex-1 bg-base-100 rounded-field p-[3px] text-[13px] text-center" role="tablist">
+          <button v-for="f in (['all', 'give', 'want'] as const)" :key="f" role="tab" :aria-selected="filter === f"
+                  class="py-1.5 rounded-lg" :class="filter === f ? 'bg-base-200 font-semibold' : 'text-hint'" @click="filter = f">
+            {{ f === 'all' ? 'All' : f === 'give' ? `Have ${view.base}` : `Want ${view.base}` }}
+          </button>
+        </div>
         <button class="btn btn-ghost btn-circle btn-sm text-hint shrink-0" aria-label="Refresh" :disabled="loading" @click="load">
           <RefreshCw :size="18" :class="loading && 'animate-spin'" />
-        </button>
-      </header>
-      <div class="grid grid-cols-3 bg-base-100 rounded-field p-[3px] text-[13px] text-center" role="tablist">
-        <button v-for="f in (['all', 'give', 'want'] as const)" :key="f" role="tab" :aria-selected="filter === f"
-                class="py-1.5 rounded-lg" :class="filter === f ? 'bg-base-200 font-semibold' : 'text-hint'" @click="filter = f">
-          {{ f === 'all' ? 'All' : f === 'give' ? `Have ${view.base}` : `Want ${view.base}` }}
         </button>
       </div>
       <template v-for="s in sections" :key="s.key">

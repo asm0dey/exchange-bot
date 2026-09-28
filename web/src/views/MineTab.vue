@@ -1,8 +1,9 @@
 <script setup lang="ts">
+import { RefreshCw } from 'lucide-vue-next'
 import type { MeView } from '../api'
 import { approx, fmt } from '../money'
-defineProps<{ me: MeView }>()
-defineEmits<{ confirm: [string, string]; refuse: [string, string]; cancel: [string]; done: [string, string] }>()
+defineProps<{ me: MeView; loading: boolean }>()
+defineEmits<{ confirm: [string, string]; refuse: [string, string]; cancel: [string]; done: [string, string]; refresh: [] }>()
 </script>
 <template>
   <section class="flex flex-col gap-3.5">
@@ -14,7 +15,15 @@ defineEmits<{ confirm: [string, string]; refuse: [string, string]; cancel: [stri
       </div>
     </div>
 
-    <div class="flex justify-between text-xs uppercase tracking-wider text-hint px-1"><span>Your requests</span><span>{{ me.mine.length }} of {{ me.limit }}</span></div>
+    <div class="flex justify-between items-center text-xs uppercase tracking-wider text-hint px-1">
+      <span>Your requests</span>
+      <div class="flex items-center gap-1">
+        <span>{{ me.mine.length }} of {{ me.limit }}</span>
+        <button class="btn btn-ghost btn-circle btn-xs text-hint" aria-label="Refresh" :disabled="loading" @click="$emit('refresh')">
+          <RefreshCw :size="14" :class="loading && 'animate-spin'" />
+        </button>
+      </div>
+    </div>
     <article v-for="m in me.mine" :key="m.token" class="bg-base-100 rounded-box p-3.5 flex flex-col gap-2.5">
       <div class="flex justify-between items-baseline gap-2">
         <div><span class="amount font-semibold">{{ m.says === 'GIVES' ? 'Gives' : 'Wants' }} {{ fmt(Number(m.amount)) }} {{ m.currency }}</span>
