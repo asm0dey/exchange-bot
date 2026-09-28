@@ -104,8 +104,10 @@ it. Pick one:
         proxy:
           external: true
 
-  (`docker network create proxy` once, and attach your proxy container to it.) The
-  proxy then reaches the bot as `exchange-bot:8080`.
+  (`docker network create proxy` once, and attach your proxy container to it.) Compose
+  gives every service a network alias equal to its own name on every network it joins,
+  and the bot service in `compose.deploy.yaml` is named `bot` — so the proxy reaches it
+  as `bot:8080`, not `exchange-bot:8080` (that's the image name, not the service name).
 - **The proxy runs directly on the host:** publish the port on localhost only, so
   it is not open to the internet:
 
@@ -122,7 +124,7 @@ rewriting, no websockets.
 **Caddy** (gets the certificate for you):
 
     exchange.example.com {
-        reverse_proxy exchange-bot:8080
+        reverse_proxy bot:8080
     }
 
 **nginx** (certificate from certbot or similar):

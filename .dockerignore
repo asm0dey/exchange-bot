@@ -10,5 +10,6 @@ data
 .beans
 .superpowers
 web/node_modules
+web/tools/node_modules
 web/test-results
 web/playwright-report

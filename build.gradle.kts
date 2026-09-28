@@ -1,17 +1,18 @@
+import com.github.gradle.node.npm.task.NpmTask
+import org.gradle.api.file.Directory
+import org.gradle.api.provider.Provider
+import org.gradle.api.tasks.Exec
+import org.gradle.internal.os.OperatingSystem
+import java.io.File
+
 plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
     alias(libs.plugins.shadow)
-    alias(libs.plugins.gradle.bun)
+    alias(libs.plugins.node.gradle)
     application
 }
-
-// `application` pulls in the `java` plugin, which the Kotlin DSL exposes as a `java`
-// extension accessor on Project — shadowing the `java.*` package prefix inside this script.
-// These imports are how verifyBunArchive below reaches java.net.URI / java.security.MessageDigest.
-import java.net.URI
-import java.security.MessageDigest
 
 // Releases are integers: tag v1, v2, ... and the tag IS the version. CI exports
 // VERSION (the tag minus its "v"), so cutting a release never edits this file.
@@ -52,115 +53,104 @@ dependencies {
 // resources Ktor serves. Task 8 makes processResources build it first.
 sourceSets.main { resources.srcDir(layout.buildDirectory.dir("web")) }
 
-// The mini app (web/) is a Vue + Vite project with npm dependencies locked in web/bun.lock.
-// This plugin downloads a pinned Bun into .gradle/bun/ and runs it from there — nobody
-// installs Bun by hand, and a bot-only contributor needs nothing beyond the JDK. The archive
-// it downloads is checked against a pinned SHA-256 below (bun.downloadBaseUrl) before
-// bunSetup ever unpacks it.
-val bunVersion = "1.3.14"
-val bunVerifiedDir = layout.buildDirectory.dir("bun-verified")
-
-bun {
-    version.set(bunVersion)
-    workingDir.set(layout.projectDirectory.dir("web"))
-    // toURI(), not "file://${absolutePath}" — the latter yields "file://C:\..." on Windows,
-    // which URI(String) (used by bunSetup below) rejects. toURI() is correct on every OS.
-    // BunSetupTask appends "/bun-v<version>/<archiveFileName>" itself, so no trailing slash.
-    downloadBaseUrl.set(bunVerifiedDir.map { it.asFile.toURI().toString().removeSuffix("/") })
+// Node itself is NOT what runs the mini app's scripts (Bun is, below) — it exists purely so
+// vue-tsc, vite, vitest and playwright's bin scripts (every one starts `#!/usr/bin/env node`)
+// have a real `node` to be exec'd by. Confirmed the hard way: under Bun's own JS runtime,
+// `vue-tsc`'s TypeScript plugin never registers its `.vue`-import resolver, and every `.vue`
+// import fails with "Cannot find module './App.vue'" — this reproduces with `bunx vue-tsc`,
+// `bunx --bun vue-tsc` and `bun --bun x vue-tsc` alike, even with a system Node installed and
+// on PATH, so no Bun-side flag fixes it; only a real Node process running the script does. See
+// the Task 12 fix-round-1 report for the reproduction. `com.github.node-gradle.node` downloads
+// a pinned Node release so this doesn't depend on the host machine having one.
+node {
+    download.set(true)
+    version.set("24.21.0")
+    workDir.set(layout.projectDirectory.dir(".gradle/nodejs"))
+    npmWorkDir.set(layout.projectDirectory.dir(".gradle/npm"))
 }
 
-// Pinned from https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/SHASUMS256.txt
-// (cross-checked against `gh api repos/oven-sh/bun/releases/tags/bun-v1.3.14`'s per-asset
-// digests). Renovate's github-release-attachments datasource (wired in renovate.json's
-// customManagers, Task 12) needs the version a digest was pinned under alongside the digest
-// itself in the same regex match, so each line below carries its own
-// `// renovate: currentValue=` marker comment repeating bunVersion — Renovate bumps bunVersion
-// above and every marker + digest pair below together, one release at a time (a dedicated
-// packageRule groups all six as a single PR, even across a major Bun bump).
-// Bumping bunVersion without adding that release's digests (and marker comments) here fails
-// verifyBunArchive with a clear "no pinned SHA-256" error rather than silently trusting an
-// unchecked download.
-val bunDigests = mapOf(
-    // renovate: currentValue=1.3.14
-    "bun-darwin-aarch64.zip" to "d8b96221828ad6f97ac7ac0ab7e95872341af763001e8803e8267652c2652620",
-    // renovate: currentValue=1.3.14
-    "bun-darwin-x64.zip" to "4183df3374623e5bab315c547cfa0974533cd457d86b73b639f7a87974cd6633",
-    // renovate: currentValue=1.3.14
-    "bun-linux-aarch64.zip" to "a27ffb63a8310375836e0d6f668ae17fa8d8d18b88c37c821c65331973a19a3b",
-    // renovate: currentValue=1.3.14
-    "bun-linux-x64.zip" to "951ee2aee855f08595aeec6225226a298d3fea83a3dcd6465c09cbccdf7e848f",
-    // renovate: currentValue=1.3.14
-    "bun-windows-x64.zip" to "0a0620930b6675d7ba440e81f4e0e00d3cfbe096c4b140d3fff02205e9e18922",
-)
-
-// BunSetupTask deletes the zip right after extracting it, so there is nothing left to check
-// after the fact. Instead, this task re-downloads the exact same archive to a local path
-// FIRST, verifies its digest, and bun.downloadBaseUrl (above) points bunSetup at that
-// verified copy instead of the network — bunSetup then reads bytes this task already checked.
-val verifyBunArchive = tasks.register("verifyBunArchive") {
-    group = "bun"
-    description = "Downloads the Bun archive for this platform and checks it against the pinned SHA-256 before bunSetup trusts it."
-    val platform = io.clroot.gradle.bun.platform.Platform.current()
-    val archiveFile = bunVerifiedDir.get().dir("bun-v$bunVersion").file(platform.archiveFileName).asFile
-    // Copied into plain locals so doLast's closure captures values, not a reference back to
-    // this script's own object (top-level script properties aren't config-cache-serializable).
-    val version = bunVersion
-    val expectedDigest = bunDigests[platform.archiveFileName]
-        ?: error("No pinned SHA-256 for bun $version / ${platform.archiveFileName}; add one before bumping the version.")
-    // Real inputs, not just the output file: editing a digest for the same version must
-    // invalidate this task, or it stays UP-TO-DATE once the (now-wrongly-verified) archive
-    // already exists on disk.
-    inputs.property("version", version)
-    inputs.property("sha256", expectedDigest)
-    outputs.file(archiveFile)
-    doLast {
-        archiveFile.parentFile.mkdirs()
-        val url = "https://github.com/oven-sh/bun/releases/download/bun-v$version/${platform.archiveFileName}"
-        URI(url).toURL().openStream().use { it.copyTo(archiveFile.outputStream()) }
-        val actual = MessageDigest.getInstance("SHA-256").digest(archiveFile.readBytes())
-            .joinToString("") { "%02x".format(it) }
-        check(actual == expectedDigest) { "Bun archive checksum mismatch for ${platform.archiveFileName}: expected $expectedDigest, got $actual" }
-    }
+// The mini app (web/) is a Vue + Vite project with its own dependencies locked in
+// web/bun.lock and run with Bun — nobody installs Bun by hand, and a bot-only contributor
+// needs nothing beyond the JDK (node-gradle above fetches Node; this fetches Bun). Bun
+// itself comes from npm, not a hand-verified download: `web/tools/package.json` pins the
+// exact `bun` version as its only dependency, and its committed `package-lock.json` records
+// npm's own sha512 integrity for it AND for whichever `@oven/bun-<platform>` binary package
+// matches the machine running `npm ci` — the same verification npm gives any dependency, no
+// bespoke digest table to keep in sync by hand. Renovate's npm manager bumps
+// web/tools/package.json + its lockfile natively; no custom manager needed for Bun.
+//
+// `bun`'s own postinstall script (which copies the right platform binary into
+// node_modules/bun/bin/) needs explicit approval under npm's install-scripts allowlist —
+// already recorded in web/tools/package.json's "allowScripts" field (committed), so `npm ci`
+// runs it unattended everywhere, regardless of a machine's global npm config.
+val bunToolInstall = tasks.register<NpmTask>("bunToolInstall") {
+    description = "Installs the pinned Bun binary from npm (web/tools), sha512-verified by npm ci."
+    workingDir.set(layout.projectDirectory.dir("web/tools").asFile)
+    npmCommand.set(listOf("ci"))
+    inputs.files("web/tools/package.json", "web/tools/package-lock.json")
+    outputs.dir(layout.projectDirectory.dir("web/tools/node_modules"))
 }
 
-tasks.named<io.clroot.gradle.bun.task.BunSetupTask>("bunSetup") {
-    dependsOn(verifyBunArchive)
-    // BunSetupTask returns early when the executable at installDir already exists — a
-    // leftover from an earlier run, a CI cache restore, or a hand-placed binary would then
-    // run without ever being extracted from the archive verifyBunArchive just checked.
-    // Deleting first forces every execution to (re-)extract from the verified archive; the
-    // task's @OutputDirectory installDir means Gradle still reruns it once the directory no
-    // longer matches its last snapshot.
-    doFirst { installDir.get().asFile.deleteRecursively() }
+// Where bunToolInstall above puts the Bun binary npm installed, and where node-gradle put
+// the Node it downloaded. Every Bun invocation below runs with the Bun dir first (so
+// `commandLine` finds Bun without a hardcoded platform-specific executable name beyond this
+// one place) and the Node dir right after (so the shebang'd scripts Bun then execs find a
+// real `node`) — ahead of the inherited PATH, so neither depends on (or can be shadowed by)
+// whatever Node the host machine happens to have, matching the "no system Node" proof this
+// task requires.
+val bunBinDir = layout.projectDirectory.dir("web/tools/node_modules/.bin")
+val bunExecutableName = if (OperatingSystem.current().isWindows) "bun.cmd" else "bun"
+val nodeBinDir: Provider<Directory> = node.resolvedNodeDir.map {
+    if (OperatingSystem.current().isWindows) it else it.dir("bin")
 }
 
-val webBuild = tasks.register<io.clroot.gradle.bun.task.BunTask>("webBuild") {
+fun Exec.runBun(vararg bunArgs: String) {
+    dependsOn(bunToolInstall, "nodeSetup")
+    workingDir(layout.projectDirectory.dir("web"))
+    commandLine(bunBinDir.file(bunExecutableName).asFile.absolutePath, *bunArgs)
+    val pathWithNodeAndBun = listOf(
+        nodeBinDir.get().asFile.absolutePath,
+        bunBinDir.asFile.absolutePath,
+        System.getenv("PATH").orEmpty(),
+    ).joinToString(File.pathSeparator)
+    environment("PATH", pathWithNodeAndBun)
+}
+
+val bunInstall = tasks.register<Exec>("bunInstall") {
+    description = "Installs the mini app's own dependencies (web/bun.lock) with Bun."
+    runBun("install", "--frozen-lockfile")
+    inputs.files("web/package.json", "web/bun.lock")
+    outputs.dir(layout.projectDirectory.dir("web/node_modules"))
+}
+
+val webBuild = tasks.register<Exec>("webBuild") {
     description = "Builds the mini app into build/web/static"
-    dependsOn("bunInstall")
-    args("run", "build")
+    dependsOn(bunInstall)
+    runBun("run", "build")
     inputs.dir("web/src")
     inputs.dir("web/e2e")
     inputs.files("web/index.html", "web/vite.config.ts", "web/tsconfig.json", "web/package.json", "web/bun.lock", "web/playwright.config.ts")
     outputs.dir(layout.buildDirectory.dir("web"))
 }
 
-val webTest = tasks.register<io.clroot.gradle.bun.task.BunTask>("webTest") {
+val webTest = tasks.register<Exec>("webTest") {
     description = "Runs the mini app's unit tests (vitest)"
-    dependsOn("bunInstall")
-    args("run", "test")
+    dependsOn(bunInstall)
+    runBun("run", "test")
     inputs.dir("web/src")
     outputs.upToDateWhen { false }
 }
 
 // Playwright needs a browser, so it is not part of `check`; CI runs it explicitly.
-val webE2e = tasks.register<io.clroot.gradle.bun.task.BunTask>("webE2e") {
+val webE2e = tasks.register<Exec>("webE2e") {
     description = "Runs the mini app's Playwright tests against mock data"
-    dependsOn("bunInstall")
-    args("run", "e2e")
+    dependsOn(bunInstall)
     // -PwebE2eArgs=--update-snapshots reaches `playwright test` (not `playwright install`,
     // the other half of the `e2e` script) because "--" only separates it from `bun run e2e`'s
     // own args; both script commands still share the one trailing argument list.
-    args.addAll(providers.gradleProperty("webE2eArgs").map { listOf("--", it) }.orElse(emptyList()))
+    val extra = providers.gradleProperty("webE2eArgs").orNull
+    val extraArgs = if (extra != null) arrayOf("--", extra) else emptyArray()
+    runBun("run", "e2e", *extraArgs)
     outputs.upToDateWhen { false }
 }
 

@@ -20,42 +20,6 @@
         "bump"
       ],
       "groupName": "all non-major dependencies"
-    },
-    {
-      "description": "The pinned Bun version and its five per-asset SHA-256 digests (build.gradle.kts) are one physical upgrade, never six independent ones — group them together at every update type, including majors, so they always land in a single PR.",
-      "matchPackageNames": [
-        "oven-sh/bun"
-      ],
-      "groupName": "bun"
-    }
-  ],
-  "customManagers": [
-    {
-      "customType": "regex",
-      "description": "Bump the pinned Bun release tag in build.gradle.kts.",
-      "managerFilePatterns": [
-        "/^build\\.gradle\\.kts$/"
-      ],
-      "matchStrings": [
-        "val bunVersion = \"(?<currentValue>[^\"]+)\""
-      ],
-      "datasourceTemplate": "github-releases",
-      "depNameTemplate": "oven-sh/bun",
-      "packageNameTemplate": "oven-sh/bun",
-      "extractVersionTemplate": "^bun-v(?<version>.*)$"
-    },
-    {
-      "customType": "regex",
-      "description": "Bump each pinned per-asset Bun archive SHA-256 in build.gradle.kts's bunDigests map. Each digest line is paired with its own `// renovate: currentValue=` marker comment (see build.gradle.kts) because this datasource needs the version the digest was pinned under alongside the digest itself, in the same match.",
-      "managerFilePatterns": [
-        "/^build\\.gradle\\.kts$/"
-      ],
-      "matchStrings": [
-        "// renovate: currentValue=(?<currentValue>[0-9.]+)\\s*\\n\\s*\"(?<depName>bun-[a-z0-9-]+\\.zip)\" to \"(?<currentDigest>[a-f0-9]{64})\""
-      ],
-      "datasourceTemplate": "github-release-attachments",
-      "packageNameTemplate": "oven-sh/bun",
-      "extractVersionTemplate": "^bun-v(?<version>.*)$"
     }
   ]
 }

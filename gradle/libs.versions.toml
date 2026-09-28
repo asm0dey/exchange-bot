@@ -14,7 +14,7 @@ tink = "1.23.0"
 flyway = "13.7.0"
 exposed = "1.5.0"
 shadow = "9.6.1"
-gradle-bun = "0.1.0"
+node-gradle = "7.1.0"
 
 [libraries]
 telegram-bot = { module = "eu.vendeli:telegram-bot", version.ref = "telegrambot" }
@@ -47,4 +47,4 @@ kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 shadow = { id = "com.gradleup.shadow", version.ref = "shadow" }
-gradle-bun = { id = "io.clroot.gradle-bun", version.ref = "gradle-bun" }
+node-gradle = { id = "com.github.node-gradle.node", version.ref = "node-gradle" }
