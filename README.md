@@ -72,8 +72,9 @@ Your reverse proxy sits in between: it holds the certificate and forwards to the
 ### What you need
 
 - **A domain name** you control, for example `example.com`.
-- **A subdomain for the app**, for example `exchange.example.com`. The app must be at
-  the root of its own hostname; a path like `example.com/exchange/` does not work.
+- **A subdomain, or a path under an existing domain, for the app** — either
+  `exchange.example.com` or `example.com/exchange/` works. The steps below use a
+  subdomain as the primary example, with a note wherever a path setup differs.
 - **A reverse proxy** on a host that is reachable from the internet on port 443
   (Caddy, nginx, Traefik, …), with a trusted certificate for that subdomain. Let's
   Encrypt is fine; a self-signed certificate is not.
@@ -154,12 +155,38 @@ rewriting, no websockets.
 
 Use your own resolver and entrypoint names; the ones above are Traefik's usual examples.
 
+**Using a path instead of a subdomain?** The proxy must forward the path through
+*without stripping it* — the bot itself serves the app under that same path, not at
+its own root, so the request it receives must still carry the `/exchange/` prefix.
+
+**Caddy:**
+
+    example.com {
+        handle /exchange/* {
+            reverse_proxy bot:8080
+        }
+    }
+
+**nginx:** no trailing slash on `proxy_pass` — a trailing slash there tells nginx to
+strip the `location` prefix before forwarding, which is exactly what must *not*
+happen here.
+
+    location /exchange/ {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
 ### 4. Register the app with BotFather
 
 In @BotFather: `/newapp`, pick this bot, and answer its questions. When it asks for
 the **Web App URL**, give `https://exchange.example.com`. When it asks for a **short
 name**, give something like `exchange`. That makes the app's link
 `https://t.me/<your bot>/exchange`.
+
+**Using a path?** Give the URL **with a trailing slash**, e.g.
+`https://example.com/exchange/` — the app's relative asset and API URLs only resolve
+under the right prefix when the opened URL ends in `/`.
 
 ### 5. Tell the bot, and restart
 
@@ -168,8 +195,9 @@ In `.env`:
     MINIAPP_URL=https://exchange.example.com
     MINIAPP_SHORT_NAME=exchange
 
-Then `docker compose -f compose.deploy.yaml up -d`. On start the bot sets its menu
-button to open the app, and `/app` starts answering.
+(for a path setup: `MINIAPP_URL=https://example.com/exchange/`, trailing slash
+included). Then `docker compose -f compose.deploy.yaml up -d`. On start the bot sets
+its menu button to open the app, and `/app` starts answering.
 
 ### 6. Check it
 
@@ -178,6 +206,9 @@ button to open the app, and `/app` starts answering.
 
     curl -s -o /dev/null -w '%{http_code}\n' https://exchange.example.com/api/me
     # 401: the API is up and refuses calls that don't come from Telegram
+
+(for a path setup: `curl -s -o /dev/null -w '%{http_code}\n' https://example.com/exchange/api/me`
+— also 401.)
 
 Then open the bot privately in Telegram and tap the menu button, and send `/app` in
 a group.

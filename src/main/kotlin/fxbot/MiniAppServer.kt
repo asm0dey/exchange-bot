@@ -14,6 +14,7 @@ import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.request.receive
 import io.ktor.server.response.header
 import io.ktor.server.response.respond
+import io.ktor.server.response.respondRedirect
 import io.ktor.server.routing.RoutingContext
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
@@ -29,6 +30,38 @@ import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 
 private val logger = LoggerFactory.getLogger("fxbot.MiniAppServer")
+
+/**
+ * The path prefix the mini app is mounted under, derived from `MINIAPP_URL`'s path —
+ * empty for a bare hostname (root deployment, the existing/default behaviour), or the
+ * path with any trailing slash — and query/fragment, which [java.net.URI.getPath] already
+ * excludes — stripped otherwise. Never throws: a URL [java.net.URI] can't parse falls back
+ * to the empty (root) prefix rather than failing startup.
+ *
+ * ```
+ * https://x/           -> ""
+ * https://x            -> ""
+ * https://x/exchange   -> "/exchange"
+ * https://x/exchange/  -> "/exchange"
+ * https://x/a/b/       -> "/a/b"
+ * ```
+ */
+internal fun miniAppPathPrefix(url: String): String {
+    val path = runCatching { java.net.URI(url).path }.getOrNull() ?: ""
+    return path.trimEnd('/')
+}
+
+/**
+ * The URL to hand Telegram (`setChatMenuButton`'s `web_app.url`, and the BotFather-
+ * registered Web App URL). A root deployment (empty prefix) is returned unchanged — no
+ * behaviour change for existing hostname-root setups. A path-prefixed deployment is
+ * returned with a trailing slash: the SPA's relative asset and API URLs (`base: './'` in
+ * vite.config.ts, `fetch('api...')` in api.ts) only resolve under the right prefix when
+ * the opened URL ends in '/' — a webview treats the last path segment before a bare '/' as
+ * a "file", not a directory, for relative resolution, same as any browser.
+ */
+internal fun miniAppMenuUrl(url: String): String =
+    if (miniAppPathPrefix(url).isEmpty() || url.endsWith("/")) url else "$url/"
 
 /**
  * `getChatMember` answers, remembered briefly. Memory only: which chats a person is in is
@@ -107,7 +140,12 @@ private suspend inline fun <reified T : Any> RoutingContext.reply(r: ApiResult<T
     is ApiResult.Refused -> call.respond(HttpStatusCode.UnprocessableEntity, MessageDto(r.message))
 }
 
-fun Application.miniApp(verify: (String) -> Viewer?, backend: MiniAppBackend, membership: MembershipCache) {
+fun Application.miniApp(
+    verify: (String) -> Viewer?,
+    backend: MiniAppBackend,
+    membership: MembershipCache,
+    pathPrefix: String = "",
+) {
     // encodeDefaults: MiniAppDto's default fields (e.g. CardDto.counterparties,
     // ChatView.rateStale) must always be sent — api.ts declares them required, and
     // Task 9's card.counterparties.length would throw on an omitted default.
@@ -130,6 +168,19 @@ fun Application.miniApp(verify: (String) -> Viewer?, backend: MiniAppBackend, me
     }
 
     routing {
+        // pathPrefix is "" for the default hostname-root deployment (unchanged behaviour)
+        // or e.g. "/exchange" when MINIAPP_URL carries a path — see miniAppPathPrefix's doc
+        // comment. Every route below is mounted under it, and nothing is registered outside
+        // it, so a request for an unprefixed path (e.g. plain "/api/me" when the app is
+        // mounted under "/exchange") falls through to Ktor's own default 404.
+        if (pathPrefix.isNotEmpty()) {
+            // Relative asset/API URLs inside the SPA (base: './', see vite.config.ts) only
+            // resolve under the right prefix once the browser's location ends in '/' — see
+            // miniAppMenuUrl's doc comment. A request for the bare prefix without the
+            // trailing slash (e.g. someone typing ".../exchange" by hand) is redirected to
+            // the one with it, rather than served directly.
+            get(pathPrefix) { call.respondRedirect("$pathPrefix/", permanent = true) }
+        }
         // The jar is built reproducibly, so every `static/` entry carries the same fixed
         // 1980 mtime — Ktor sends that as Last-Modified, with no Cache-Control, and a
         // webview then caches index.html indefinitely. After a redeploy, that stale
@@ -139,13 +190,13 @@ fun Application.miniApp(verify: (String) -> Viewer?, backend: MiniAppBackend, me
         // `/assets/**` files get a long-lived immutable cache since a content change always
         // produces a new hashed filename. `CacheControl.MaxAge` can't render the
         // `immutable` extension itself, so that one line is set directly via `modify`.
-        staticResources("/", "static") {
+        staticResources(pathPrefix.ifEmpty { "/" }, "static") {
             cacheControl { url -> if (url.path.endsWith("/index.html")) listOf(CacheControl.NoCache(null)) else emptyList() }
             modify { url, call ->
                 if (url.path.contains("/assets/")) call.response.header(HttpHeaders.CacheControl, "max-age=31536000, immutable")
             }
         }
-        route("/api") {
+        route("$pathPrefix/api") {
             get("/chat/{id}") {
                 val v = viewer(verify) ?: return@get
                 val c = member(v, membership) ?: return@get
@@ -192,6 +243,11 @@ fun Application.miniApp(verify: (String) -> Viewer?, backend: MiniAppBackend, me
     }
 }
 
-/** Started from `Main` only when MINIAPP_URL is set. */
-fun startMiniApp(port: Int, verify: (String) -> Viewer?, backend: MiniAppBackend, membership: MembershipCache) =
-    embeddedServer(CIO, port = port) { miniApp(verify, backend, membership) }.start(wait = false)
+/** Started from `Main` only when MINIAPP_URL is set. [pathPrefix]: see [miniAppPathPrefix]. */
+fun startMiniApp(
+    port: Int,
+    verify: (String) -> Viewer?,
+    backend: MiniAppBackend,
+    membership: MembershipCache,
+    pathPrefix: String = "",
+) = embeddedServer(CIO, port = port) { miniApp(verify, backend, membership, pathPrefix) }.start(wait = false)

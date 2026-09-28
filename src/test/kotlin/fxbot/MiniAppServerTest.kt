@@ -64,11 +64,14 @@ class MiniAppServerTest : StringSpec({
     val probeCalls = AtomicInteger()
     val probe = MembershipProbe { c, u -> probeCalls.incrementAndGet(); (c to u) in members }
 
-    fun app(backend: MiniAppBackend = FakeBackend(), block: suspend io.ktor.server.testing.ApplicationTestBuilder.() -> Unit) =
-        testApplication {
-            application { miniApp(verify, backend, MembershipCache(probe)) }
-            block()
-        }
+    fun app(
+        backend: MiniAppBackend = FakeBackend(),
+        prefix: String = "",
+        block: suspend io.ktor.server.testing.ApplicationTestBuilder.() -> Unit,
+    ) = testApplication {
+        application { miniApp(verify, backend, MembershipCache(probe), prefix) }
+        block()
+    }
 
     "no initData is 401" {
         app { client.get("/api/me").status shouldBe HttpStatusCode.Unauthorized }
@@ -197,5 +200,37 @@ class MiniAppServerTest : StringSpec({
         cache.isMember(-4, 1)
         cache.isMember(-5, 1)
         cache.size shouldBe 2
+    }
+    "a prefixed app: unauthenticated /exchange/api/me is 401" {
+        app(prefix = "/exchange") {
+            client.get("/exchange/api/me").status shouldBe HttpStatusCode.Unauthorized
+        }
+    }
+    "a prefixed app: the bare prefix without a trailing slash redirects (permanently) to the one with it" {
+        app(prefix = "/exchange") {
+            val noRedirect = createClient { followRedirects = false }
+            val r = noRedirect.get("/exchange")
+            r.status shouldBe HttpStatusCode.MovedPermanently
+            r.headers[HttpHeaders.Location] shouldBe "/exchange/"
+        }
+    }
+    "a prefixed app: the prefix root serves index.html, no-cache" {
+        app(prefix = "/exchange") {
+            val r = client.get("/exchange/")
+            r.status shouldBe HttpStatusCode.OK
+            r.headers[HttpHeaders.CacheControl] shouldBe "no-cache"
+        }
+    }
+    "a prefixed app: a prefixed asset is long-lived and immutable" {
+        app(prefix = "/exchange") {
+            val r = client.get("/exchange/assets/x.js")
+            r.status shouldBe HttpStatusCode.OK
+            r.headers[HttpHeaders.CacheControl] shouldBe "max-age=31536000, immutable"
+        }
+    }
+    "a prefixed app: nothing is served outside the prefix except Ktor's default 404" {
+        app(prefix = "/exchange") {
+            client.get("/api/me").status shouldBe HttpStatusCode.NotFound
+        }
     }
 })

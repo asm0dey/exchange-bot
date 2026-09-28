@@ -28,7 +28,10 @@ const unreachable = () => new ApiError(0, 'Could not reach the server. Try again
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   let res: Response
   try {
-    res = await fetch(`/api${path}`, {
+    // Relative (no leading slash): resolves against wherever index.html was served from —
+    // the hostname root, or a path prefix (MINIAPP_URL with a path) — matching vite's
+    // `base: './'` (see vite.config.ts). A leading '/' would always hit the origin root.
+    res = await fetch(`api${path}`, {
       method,
       headers: { Authorization: `tma ${initData}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
       body: body ? JSON.stringify(body) : undefined,

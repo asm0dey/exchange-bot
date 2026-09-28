@@ -1,5 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { fakeTelegram, mockApi } from './telegram'
+import me from './fixtures/me.json' with { type: 'json' }
+import browse from './fixtures/browse.json' with { type: 'json' }
 
 const marko = (page: import('@playwright/test').Page) =>
   page.locator('div.grid', { hasText: 'Wants 950 EUR' }).getByRole('button', { name: 'Give EUR' })
@@ -106,4 +108,32 @@ test('the private refresh button reloads me and browse, on Mine and on Browse', 
   const beforeOnBrowse = meAndBrowse()
   await page.getByRole('button', { name: 'Refresh' }).click()
   await expect.poll(meAndBrowse).toBeGreaterThan(beforeOnBrowse)
+})
+
+test('resolves relative asset and api URLs correctly when served under a reverse-proxy sub-path', async ({ page }) => {
+  // Mirrors the real deployment: MINIAPP_URL has a path (e.g. https://x/exchange/) and the
+  // reverse proxy forwards /exchange/* WITHOUT stripping it (see README) — so the browser's
+  // address bar, and every relative URL/fetch the SPA resolves against it (vite's
+  // `base: './'`, api.ts's `fetch('api...')`), stays under /exchange/. This file's single
+  // webServer already builds+previews the app at the root, and a second vite build/preview
+  // pinned to a different base would race the first one over the same `emptyOutDir: true`
+  // output folder — not cheap. Instead this route rewrite plays the reverse proxy's part: it
+  // strips the /exchange prefix right before a request leaves the browser, exactly like the
+  // real proxy strips nothing but still lands on this same unprefixed origin, while
+  // window.location (and thus every relative resolution inside the SPA) stays under
+  // /exchange/ throughout — the same shape of test doubling the real Kotlin server-side
+  // prefix routing already gets from MiniAppServerTest.
+  await fakeTelegram(page, { scheme: 'light' })
+  const apiCalls: string[] = []
+  await page.route('**/exchange/**', (route) => {
+    const url = new URL(route.request().url())
+    const rest = url.pathname.replace(/^\/exchange/, '') || '/'
+    if (rest === '/api/me') { apiCalls.push(rest); return route.fulfill({ json: me }) }
+    if (rest === '/api/browse') { apiCalls.push(rest); return route.fulfill({ json: browse }) }
+    url.pathname = rest
+    return route.continue({ url: url.toString() })
+  })
+  await page.goto('/exchange/')
+  await expect(page.getByRole('button', { name: 'New request' })).toBeVisible()
+  expect(apiCalls).toEqual(expect.arrayContaining(['/api/me', '/api/browse']))
 })

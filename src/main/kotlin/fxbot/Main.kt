@@ -179,7 +179,7 @@ suspend fun main(): Unit = coroutineScope {
     // through the library's Action DSL, for exactly that reason. Never fatal, and never logs
     // the token or the URL.
     val menuButtonOk = HttpClient(CIO).use { client ->
-        runCatching { setDefaultMenuButton(client, cfg.botToken, cfg.miniAppUrl) }.getOrDefault(false)
+        runCatching { setDefaultMenuButton(client, cfg.botToken, cfg.miniAppUrl?.let(::miniAppMenuUrl)) }.getOrDefault(false)
     }
     if (menuButtonOk) logger.info("exchange-bot: menu button set") else logger.warn("exchange-bot: menu button failed")
 
@@ -197,7 +197,10 @@ suspend fun main(): Unit = coroutineScope {
         // A bind failure (port already taken) or any other startup exception must not take the
         // whole bot down with it — the polling loop below is the thing that matters most.
         runCatching {
-            startMiniApp(cfg.miniAppPort, InitDataVerifier(cfg.botToken)::verify, backend, MembershipCache(telegramMembership(bot)))
+            startMiniApp(
+                cfg.miniAppPort, InitDataVerifier(cfg.botToken)::verify, backend,
+                MembershipCache(telegramMembership(bot)), miniAppPathPrefix(it),
+            )
             logger.info("exchange-bot: mini app listening")
         }.onFailure {
             logger.error("exchange-bot: mini app failed to start")
