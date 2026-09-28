@@ -30,6 +30,7 @@
   --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
 }
 [data-scheme="dark"] {
+  color-scheme: dark;
   --color-give: #e6a54a;
   --color-give-soft: #35291a;
   --color-want: #56c2cc;
@@ -37,5 +38,8 @@
 }
 
 html, body { background: var(--color-base-200); color: var(--color-base-content); }
+/* A native <select>'s dropdown is drawn by the WebView, not us: without this its options inherit
+   the dark theme's white text onto the platform's default white list. */
+option { background: var(--color-base-100); color: var(--color-base-content); }
 .amount { font-variant-numeric: tabular-nums; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
