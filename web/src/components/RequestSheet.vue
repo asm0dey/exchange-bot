@@ -79,13 +79,13 @@ useBackButton(() => emit('close'))
     <div v-if="pairEditable" class="flex flex-col gap-1.5">
       <label class="text-xs uppercase tracking-wider text-hint" for="pair-base">Pair</label>
       <div class="grid grid-cols-[1fr_auto_1fr] gap-2 items-center">
-        <select id="pair-base" class="bg-base-200 rounded-field px-3 py-2.5 font-semibold" :value="base"
+        <select id="pair-base" class="select w-full bg-base-200 border-0 font-semibold" :value="base"
                 @change="emit('pair', { base: ($event.target as HTMLSelectElement).value, quote })">
           <option v-for="c in currencies" :key="c">{{ c }}</option>
         </select>
         <button class="rounded-full bg-base-200 text-link w-[34px] h-[34px] shrink-0 grid place-items-center" aria-label="Swap currencies"
                 @click="emit('pair', { base: quote, quote: base })"><ArrowLeftRight :size="18" /></button>
-        <select id="pair-quote" class="bg-base-200 rounded-field px-3 py-2.5 font-semibold" :value="quote"
+        <select id="pair-quote" class="select w-full bg-base-200 border-0 font-semibold" :value="quote"
                 @change="emit('pair', { base, quote: ($event.target as HTMLSelectElement).value })">
           <option v-for="c in currencies" :key="c">{{ c }}</option>
         </select>
