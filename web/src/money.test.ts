@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ago, allowedCurrencies, approx, fits, flip, fmt, givesBase, matchCandidates, rangeIn, toBase, type SheetCandidate } from './money'
+import { ago, allowedCurrencies, approx, fits, flip, fmt, givesBase, left, matchCandidates, parseAmount, rangeIn, toBase, type SheetCandidate } from './money'
 
 describe('money', () => {
   it('groups thousands with a thin space', () => {
@@ -17,6 +17,27 @@ describe('money', () => {
     expect(ago(1790424000, now)).toBe('1 day') // a2, Jelena — exactly 24h
     expect(ago(1790337600, now)).toBe('2 days') // a5, @ana.p
     expect(ago(1790251200, now)).toBe('3 days') // a3, @tomas_k
+  })
+  // Mirrors MoneyTest.kt's "parses plain and grouped amounts" / "rejects amounts that are
+  // not positive numbers" — the sheet's amount field must accept exactly what the bot does.
+  it('parses plain and grouped amounts the same way the bot does', () => {
+    expect(parseAmount('1000')).toBe(1000)
+    expect(parseAmount('1 000')).toBe(1000)
+    expect(parseAmount('1,000.50')).toBe(1000.5)
+    expect(parseAmount('0.5')).toBe(0.5)
+  })
+  it('rejects amounts that are not positive numbers', () => {
+    expect(parseAmount('0')).toBeNull()
+    expect(parseAmount('-5')).toBeNull()
+    expect(parseAmount('abc')).toBeNull()
+    expect(parseAmount('')).toBeNull()
+    expect(parseAmount('1e9')).toBeNull()
+  })
+  it('says "1 day left" not "1 days left", and "0 days left" once expired', () => {
+    const now = Date.parse('2026-09-27T12:00:00Z') // e2e/telegram.ts's NOW
+    expect(left(now / 1000 + 5 * 86400, now)).toBe('5 days left')
+    expect(left(now / 1000 + 86400, now)).toBe('1 day left')
+    expect(left(now / 1000 - 3600, now)).toBe('0 days left')
   })
   it('flips the side', () => {
     expect(flip('GIVES')).toBe('WANTS')

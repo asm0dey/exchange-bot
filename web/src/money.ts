@@ -8,6 +8,19 @@ export function fmt(n: number): string {
   return d ? `${group(i)}.${d}` : group(i)
 }
 
+/**
+ * Mirrors the bot's own `parseAmount` (Money.kt): strips spaces and commas from anywhere
+ * in the string (not just the ends), accepts only digits and a decimal point, and rejects
+ * anything non-positive. A comma-grouped amount like "1,000" must parse the same way here
+ * as it does server-side, rather than silently reading as NaN and disabling posting.
+ */
+export function parseAmount(raw: string): number | null {
+  const cleaned = raw.trim().replace(/ /g, '').replace(/,/g, '')
+  if (cleaned === '' || !/^[0-9.]+$/.test(cleaned)) return null
+  const n = Number(cleaned)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
 /** An estimate: 3 significant digits from 1000 up, whole units below. */
 export function approx(n: number): string {
   if (n >= 1000) {
@@ -23,6 +36,12 @@ export function ago(createdAt: number, now: number = Date.now()): string {
   if (h < 24) return `${Math.max(h, 1)} h`
   const d = Math.floor(h / 24)
   return `${d} day${d === 1 ? '' : 's'}`
+}
+
+/** "5 days left" / "1 day left" / "0 days left" — singular only at exactly one day. */
+export function left(expiresAt: number, now: number = Date.now()): string {
+  const d = Math.max(0, Math.ceil((expiresAt - now / 1000) / 86400))
+  return `${d} day${d === 1 ? '' : 's'} left`
 }
 
 export const flip = (s: Says): Says => (s === 'GIVES' ? 'WANTS' : 'GIVES')

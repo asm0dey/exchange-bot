@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { ArrowLeftRight } from 'lucide-vue-next'
 import type { RangeDto, Says } from '../api'
-import { allowedCurrencies, approx, fits, flip, fmt, matchCandidates, rangeIn, toBase, toTyped, type SheetCandidate } from '../money'
+import { allowedCurrencies, approx, fits, flip, fmt, matchCandidates, parseAmount, rangeIn, toBase, toTyped, type SheetCandidate } from '../money'
 import { useBackButton, useMainButton } from '../tg'
 import RangeBar from './RangeBar.vue'
 
@@ -26,7 +26,9 @@ const currency = ref(p.prefill?.currency ?? p.base)
 const amount = ref(p.prefill?.amount ?? '')
 
 const other = computed(() => (currency.value === p.base ? p.quote : p.base))
-const n = computed(() => Number(amount.value.replace(/\s/g, '')))
+// parseAmount mirrors the bot's own comma/space handling (Money.kt's parseAmount) — a
+// comma-grouped amount like "1,000" must be accepted here exactly as it would be server-side.
+const n = computed(() => parseAmount(amount.value) ?? NaN)
 const valid = computed(() => Number.isFinite(n.value) && n.value > 0)
 
 const allowed = computed(() => allowedCurrencies(p.prefill ?? null, p.base, p.quote, says.value))
@@ -130,8 +132,8 @@ useBackButton(() => emit('close'))
       <div v-for="b in bands" :key="b.label" class="bg-base-200 rounded-field px-3 py-2.5 flex flex-col gap-1.5 text-[13px]">
         <div class="flex justify-between gap-2">
           <span>{{ b.label }} · accepts <b class="amount">{{ fmt(b.shown!.min) }} – {{ b.shown!.max === null ? '…' : fmt(b.shown!.max) }}</b></span>
-          <span v-if="b.ok" class="text-want font-semibold">✓ fits</span>
-          <span v-else class="text-hint">{{ b.ok === false && n < b.shown!.min ? 'too small' : 'too big' }}</span>
+          <span v-if="b.ok === true" class="text-want font-semibold">✓ fits</span>
+          <span v-else-if="b.ok === false" class="text-hint">{{ n < b.shown!.min ? 'too small' : 'too big' }}</span>
         </div>
         <RangeBar :min="b.shown!.min" :max="b.shown!.max" :value="valid ? n : null" />
       </div>

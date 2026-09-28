@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { Plus } from 'lucide-vue-next'
 import { api, ApiError, type CardDto, type ChatView, type Says } from '../api'
-import { ago, givesBase } from '../money'
+import { ago, givesBase, left } from '../money'
 import { haptic } from '../tg'
 import RequestCard from '../components/RequestCard.vue'
 import RequestSheet from '../components/RequestSheet.vue'
@@ -20,7 +20,7 @@ async function load() {
   try { view.value = await api.chat(props.chatId); problem.value = null }
   catch (e) {
     if (e instanceof ApiError && e.status === 401) emit('authLost')
-    else problem.value = e instanceof ApiError && e.status === 403 ? "You're not in this chat." : 'Could not load. Pull to retry.'
+    else problem.value = e instanceof ApiError && e.status === 403 ? "You're not in this chat." : 'Could not load. Retrying…'
   }
 }
 let timer: number | undefined
@@ -39,7 +39,6 @@ const sections = computed(() => {
   ]
   return filter.value === 'all' ? all : all.filter((s) => s.key === filter.value)
 })
-const left = (s: number) => `${Math.max(0, Math.ceil((s - Date.now() / 1000) / 86400))} days left`
 /** What the viewer would hand over to take this card: its currency if they want it, else the other leg. */
 const giveLabel = (c: CardDto) => `Give ${c.says === 'WANTS' ? c.currency : c.other}`
 

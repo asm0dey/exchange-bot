@@ -74,3 +74,10 @@ test('an expired session says reopen from Telegram', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByText('Reopen from Telegram.')).toBeVisible()
 })
+
+test('private New request shows no fit verdict before an amount is typed', async ({ page }) => {
+  await fakeTelegram(page, { scheme: 'light' }); await mockApi(page); await page.goto('/')
+  await page.getByRole('button', { name: 'New request' }).click()
+  await expect(page.getByText('too big')).not.toBeVisible()
+  await expect(page.getByText('too small')).not.toBeVisible()
+})
