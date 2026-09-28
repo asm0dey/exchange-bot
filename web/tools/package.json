@@ -3,7 +3,7 @@
   "private": true,
   "description": "Pins the Bun binary the Gradle build runs web/ with. npm verifies its integrity from package-lock.json (npm ci); Bun itself installs web/'s own dependencies from web/bun.lock.",
   "dependencies": {
-    "bun": "1.3.14"
+    "bun": "1.4.2"
   },
   "allowScripts": {
     "bun": true
