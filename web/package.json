@@ -5,11 +5,11 @@
     "@sveltejs/vite-plugin-svelte": "7.3.1",
     "@tailwindcss/vite": "4.3.3",
     "@types/bun": "1.4.2",
-    "daisyui": "5.7.46",
+    "daisyui": "5.7.47",
     "svelte-check": "4.7.6",
     "tailwindcss": "4.3.3",
     "typescript": "5.9.3",
-    "vite": "8.3.1"
+    "vite": "8.3.2"
   },
   "private": true,
   "scripts": {
@@ -21,7 +21,7 @@
   },
   "type": "module",
   "dependencies": {
-    "@lucide/svelte": "1.48.0",
+    "@lucide/svelte": "1.51.0",
     "svelte": "5.57.1"
   }
 }
