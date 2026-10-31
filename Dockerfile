@@ -1,4 +1,4 @@
-FROM gradle:9.8.0-jdk25@sha256:30f0c2e94f2b91cffaa192cebc86f1ba8efc574b9a8e93b33164e5f2ed839c08 AS build
+FROM gradle:9.8.2-jdk25@sha256:e46e15353757ef9c9be0197a243653e88d25ebcd4c3c841057cf839c11fcf898 AS build
 WORKDIR /src
 
 # Build scripts and wrapper only, so a source-only change (below) doesn't bust the
